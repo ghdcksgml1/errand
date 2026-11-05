@@ -1,0 +1,8 @@
+.build/
+dist/
+*.dSYM/
+.DS_Store
+__pycache__/
+/target/
+.idea/
+.claude/

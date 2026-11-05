@@ -1,0 +1,31 @@
+[package]
+name = "errand-macos"
+description = "Errand's macOS services and AppKit shell."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+errand-core.workspace = true
+jiff.workspace = true
+plist.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+# AppKit wants the main thread, so the widget test runs its own `main`.
+[[test]]
+name = "widget"
+harness = false
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+dispatch2 = "0.3"
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-core-foundation = "0.3"
+objc2-core-graphics = "0.3"
+objc2-foundation = "0.3"
+objc2-quartz-core = "0.3"

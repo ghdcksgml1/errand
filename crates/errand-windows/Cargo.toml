@@ -1,0 +1,11 @@
+[package]
+name = "errand-windows"
+description = "Errand's Windows services and Win32 shell."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+errand-core.workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "errand-io"
+description = "Reads what Codex and Claude leave on this computer and keeps Errand's own records."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+errand-core.workspace = true
+jiff.workspace = true
+plist.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

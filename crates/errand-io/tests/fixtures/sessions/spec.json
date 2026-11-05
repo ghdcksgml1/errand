@@ -1,0 +1,218 @@
+{
+ "now": 1792044000.0,
+ "files": [
+  {
+   "path": "codex/sessions/t-done.jsonl",
+   "text": "{\"timestamp\":\"2026-10-15T05:45:00.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n{\"timestamp\":\"2026-10-15T05:45:00.100Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\",\"item\":{\"type\":\"UserMessage\",\"content\":[{\"type\":\"text\",\"text\":\"첫 요청\"}]}}}\n{\"timestamp\":\"2026-10-15T05:45:10.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"last_agent_message\":\"**첫 결과**입니다.\"}}\n{\"timestamp\":\"2026-10-15T05:50:00.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n{\"timestamp\":\"2026-10-15T05:50:00.100Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\",\"item\":{\"type\":\"UserMessage\",\"content\":[{\"type\":\"text\",\"text\":\"로그인 버그 고쳐줘 [이슈](https://x.test/1)\"}]}}}\n{\"timestamp\":\"2026-10-15T05:55:00.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"last_agent_message\":\"## 결과\\n로그인 **수정** 완료 `fix.rs`\"}}\n",
+   "mtime": 1792043700.0
+  },
+  {
+   "path": "codex/sessions/t-running.jsonl",
+   "text": "{\"timestamp\":\"2026-10-15T05:56:40.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n{\"timestamp\":\"2026-10-15T05:56:40.100Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\",\"item\":{\"type\":\"UserMessage\",\"content\":[{\"type\":\"text\",\"text\":\"API 응답 캐시는 꺼줄래? 트래픽이 많지 않아서 아직은 필요 없을 것 같아\"}]}}}\n",
+   "mtime": 1792043940.0
+  },
+  {
+   "path": "codex/sessions/t-stalled.jsonl",
+   "text": "{\"timestamp\":\"2026-10-15T05:00:00.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n{\"timestamp\":\"2026-10-15T05:00:00.100Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\",\"item\":{\"type\":\"UserMessage\",\"content\":[{\"type\":\"text\",\"text\":\"배포 스크립트 고쳐줘\"}]}}}\n",
+   "mtime": 1792041600.0
+  },
+  {
+   "path": "codex/sessions/t-aborted.jsonl",
+   "text": "{\"timestamp\":\"2026-10-15T05:48:20.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n{\"timestamp\":\"2026-10-15T05:48:20.100Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\",\"item\":{\"type\":\"UserMessage\",\"content\":[{\"type\":\"text\",\"text\":\"그만해도 돼\"}]}}}\n{\"timestamp\":\"2026-10-15T05:49:10.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_aborted\",\"reason\":\"interrupted\"}}\n",
+   "mtime": 1792043350.0
+  },
+  {
+   "path": "codex/sessions/t-exec.jsonl",
+   "text": "{\"timestamp\":\"2026-10-15T05:43:20.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n{\"timestamp\":\"2026-10-15T05:43:20.100Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\",\"item\":{\"type\":\"UserMessage\",\"content\":[{\"type\":\"text\",\"text\":\"테스트 돌려줘\"}]}}}\n{\"timestamp\":\"2026-10-15T05:44:10.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"last_agent_message\":\"테스트 통과\"}}\n",
+   "mtime": 1792043050.0
+  },
+  {
+   "path": "codex/sessions/t-noname.jsonl",
+   "text": "{\"timestamp\":\"2026-10-15T05:53:20.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n{\"timestamp\":\"2026-10-15T05:53:20.100Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\",\"item\":{\"type\":\"UserMessage\",\"content\":[{\"type\":\"text\",\"text\":\"다시 해줘\"}]}}}\n{\"timestamp\":\"2026-10-15T05:54:10.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"last_agent_message\":\"끝\"}}\n",
+   "mtime": 1792043650.0
+  },
+  {
+   "path": "codex/sessions/t-long.jsonl",
+   "text": "{\"timestamp\":\"2026-10-15T05:55:50.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n{\"timestamp\":\"2026-10-15T05:55:50.100Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\",\"item\":{\"type\":\"UserMessage\",\"content\":[{\"type\":\"text\",\"text\":\"첫 줄 설명입니다.\\n\\n이어지는 문장이 길게 계속됩니다 🇰🇷 이어지는 문장이 길게 계속됩니다 🇰🇷 이어지는 문장이 길게 계속됩니다 🇰🇷 이어지는 문장이 길게 계속됩니다 🇰🇷 이어지는 문장이 길게 계속됩니다 🇰🇷 이어지는 문장이 길게 계속됩니다 🇰🇷 이어지는 문장이 길게 계속됩니다 🇰🇷 이어지는 문장이 길게 계속됩니다 🇰🇷 이어지는 문장이 길게 계속됩니다 🇰🇷 이어지는 문장이 길게 계속됩니다 🇰🇷 이어지는 문장이 길게 계속됩니다 🇰🇷 이어지는 문장이 길게 계속됩니다 🇰🇷 이어지는 문장이 길게 계속됩니다 🇰🇷 이어지는 문장이 길게 계속됩니다 🇰🇷 이어지는 문장이 길게 계속됩니다 🇰🇷 이어지는 문장이 길게 계속됩니다 🇰🇷 이어지는 문장이 길게 계속됩니다 🇰🇷 이어지는 문장이 길게 계속됩니다 🇰🇷 이어지는 문장이 길게 계속됩니다 🇰🇷 이어지는 문장이 길게 계속됩니다 🇰🇷 👍🏽 끝\"}]}}}\n{\"timestamp\":\"2026-10-15T05:56:00.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"last_agent_message\":\"**결과**: 고친 내용을 하나씩 정리했어요 👩‍💻 고친 내용을 하나씩 정리했어요 👩‍💻 고친 내용을 하나씩 정리했어요 👩‍💻 고친 내용을 하나씩 정리했어요 👩‍💻 고친 내용을 하나씩 정리했어요 👩‍💻 고친 내용을 하나씩 정리했어요 👩‍💻 고친 내용을 하나씩 정리했어요 👩‍💻 고친 내용을 하나씩 정리했어요 👩‍💻 고친 내용을 하나씩 정리했어요 👩‍💻 고친 내용을 하나씩 정리했어요 👩‍💻 고친 내용을 하나씩 정리했어요 👩‍💻 고친 내용을 하나씩 정리했어요 👩‍💻 \"}}\n",
+   "mtime": 1792043760.0
+  },
+  {
+   "path": "codex/sessions/t-torn.jsonl",
+   "text": "{\"timestamp\":\"x\",\"payload\":{\"type\":\"task_st\n{\"timestamp\":\"2026-10-15T05:52:30.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n{\"timestamp\":\"2026-10-15T05:52:30.100Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\",\"item\":{\"type\":\"UserMessage\",\"content\":[{\"type\":\"text\",\"text\":\"깨진 줄 뒤 요청\"}]}}}\n{\"timestamp\":\"2026-10-15T05:52:40.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"last_agent_message\":\"읽었어요\"}}\n",
+   "mtime": 1792043560.0
+  },
+  {
+   "path": "claude-code-sessions/acct-1/org-1/local_summary.json",
+   "text": "{\"sessionId\": \"local_summary\", \"cliSessionId\": \"cli-sum\", \"cwd\": \"/Users/me/Desktop/docs site\", \"title\": \"README 정리\", \"createdAt\": 1792043000000.0, \"latestUserFrameAt\": 1792043880000.0, \"lastFocusedAt\": 1792043970000.0, \"lastAssistantUuid\": \"u-1\", \"postTurnSummaryFor\": \"u-1\", \"postTurnSummary\": \"{\\\"status_category\\\": \\\"completed\\\", \\\"status_detail\\\": \\\"README 커밋 완료, 푸시 전\\\", \\\"needs_action\\\": \\\"푸시 여부 결정\\\"}\"}",
+   "mtime": 1792043960.0
+  },
+  {
+   "path": "projects/-Users-me-Desktop-docs-site/cli-sum.jsonl",
+   "text": "{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:58:00.000Z\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"README 정리하고 커밋해줘\"}]}}\n{\"type\":\"assistant\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:58:10.000Z\",\"uuid\":\"u-x\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"tool_use\",\"content\":[{\"type\":\"text\",\"text\":\"확인할게요\"}]}}\n{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:58:20.000Z\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"file\"}]}}\n{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:58:21.000Z\",\"message\":{\"role\":\"user\",\"content\":\"Caveat: meta\"},\"isMeta\":true}\n{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:58:22.000Z\",\"message\":{\"role\":\"user\",\"content\":\"보이기만 하는 줄\"},\"isVisibleInTranscriptOnly\":true}\n{\"type\":\"assistant\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:59:10.000Z\",\"uuid\":\"u-1\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"커밋했어요\"}]}}\n{\"type\":\"system\",\"subtype\":\"stop_hook_summary\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:59:11.000Z\"}\n",
+   "mtime": 1792043955.0
+  },
+  {
+   "path": "claude-code-sessions/acct-1/org-1/local_stale.json",
+   "text": "{\"sessionId\": \"local_stale\", \"cliSessionId\": \"cli-stale\", \"cwd\": \"/Users/me/app\", \"title\": \"앱 수정\", \"latestUserFrameAt\": 1792043600000.0, \"lastFocusedAt\": 1792043500000.0, \"lastAssistantUuid\": \"u-2\", \"postTurnSummaryFor\": \"u-old\", \"postTurnSummary\": {\"status_detail\": \"예전 요약\", \"needs_action\": \"예전 할 일\"}}",
+   "mtime": 1792043620.0
+  },
+  {
+   "path": "projects/-Users-me-app/cli-stale.jsonl",
+   "text": "{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:53:20.000Z\",\"message\":{\"role\":\"user\",\"content\":\"앱 고쳐줘\"}}\n{\"type\":\"assistant\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:53:40.000Z\",\"uuid\":\"u-2\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"**새 답변** 입니다\"}]}}\n",
+   "mtime": 1792043620.0
+  },
+  {
+   "path": "claude-code-sessions/acct-1/org-1/local_running.json",
+   "text": "{\"sessionId\": \"local_running\", \"cliSessionId\": \"cli-run\", \"cwd\": \"/Users/me/api-server\", \"latestUserFrameAt\": 1792043910000.0}",
+   "mtime": 1792043915.0
+  },
+  {
+   "path": "projects/-Users-me-api-server/cli-run.jsonl",
+   "text": "{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:58:30.000Z\",\"message\":{\"role\":\"user\",\"content\":\"테스트 추가해줘\"}}\n{\"type\":\"assistant\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:58:40.000Z\",\"uuid\":\"u-x\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"tool_use\",\"content\":[{\"type\":\"text\",\"text\":\"추가할게요\"}]}}\n",
+   "mtime": 1792043970.0
+  },
+  {
+   "path": "claude-code-sessions/acct-1/org-1/local_stalled.json",
+   "text": "{\"sessionId\": \"local_stalled\", \"cliSessionId\": \"cli-stall\", \"cwd\": \"/Users/me/deploy\", \"title\": \"멈춘 작업\"}",
+   "mtime": 1792041100.0
+  },
+  {
+   "path": "projects/-Users-me-deploy/cli-stall.jsonl",
+   "text": "{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:10:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"배포해줘\"}}\n{\"type\":\"assistant\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:11:40.000Z\",\"uuid\":\"u-x\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"tool_use\",\"content\":[{\"type\":\"text\",\"text\":\"배포 중\"}]}}\n",
+   "mtime": 1792042200.0
+  },
+  {
+   "path": "claude-code-sessions/acct-1/org-1/local_interrupt.json",
+   "text": "{\"sessionId\": \"local_interrupt\", \"cliSessionId\": \"cli-int\", \"cwd\": \"/Users/me/app\", \"title\": \"중단\"}",
+   "mtime": 1792043320.0
+  },
+  {
+   "path": "projects/-Users-me-app/cli-int.jsonl",
+   "text": "{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:48:20.000Z\",\"message\":{\"role\":\"user\",\"content\":\"길게 해줘\"}}\n{\"type\":\"assistant\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:48:30.000Z\",\"uuid\":\"u-x\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"tool_use\",\"content\":[{\"type\":\"text\",\"text\":\"시작할게요\"}]}}\n{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:48:40.000Z\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"[Request interrupted by user]\"}]}}\n",
+   "mtime": 1792043320.0
+  },
+  {
+   "path": "claude-code-sessions/acct-1/org-1/local_command.json",
+   "text": "{\"sessionId\": \"local_command\", \"cliSessionId\": \"cli-cmd\", \"cwd\": \"/Users/me/app\", \"title\": \"리뷰\"}",
+   "mtime": 1792043410.0
+  },
+  {
+   "path": "projects/-Users-me-app/cli-cmd.jsonl",
+   "text": "{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:50:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"<command-message>review is running…</command-message>\\n<command-name>/review</command-name>\\n<command-args>12</command-args>\"}}\n{\"type\":\"assistant\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:50:10.000Z\",\"uuid\":\"u-x\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"리뷰 끝\"}]}}\n",
+   "mtime": 1792043410.0
+  },
+  {
+   "path": "claude-code-sessions/acct-1/org-1/local_automated.json",
+   "text": "{\"sessionId\": \"local_automated\", \"cliSessionId\": \"cli-auto\", \"cwd\": \"/Users/me/app\", \"title\": \"자동 이벤트\"}",
+   "mtime": 1792043530.0
+  },
+  {
+   "path": "projects/-Users-me-app/cli-auto.jsonl",
+   "text": "{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:51:40.000Z\",\"message\":{\"role\":\"user\",\"content\":\"직접 쓴 요청\"}}\n{\"type\":\"assistant\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:51:50.000Z\",\"uuid\":\"u-x\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"했어요\"}]}}\n{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:52:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"<side-sessions-event>done</side-sessions-event>\"}}\n{\"type\":\"assistant\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:52:10.000Z\",\"uuid\":\"u-x\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"tool_use\",\"content\":[{\"type\":\"text\",\"text\":\"이어서 할게요\"}]}}\n",
+   "mtime": 1792043530.0
+  },
+  {
+   "path": "claude-code-sessions/acct-1/org-1/local_duration.json",
+   "text": "{\"sessionId\": \"local_duration\", \"cliSessionId\": \"cli-dur\", \"cwd\": \"/Users/me/app\", \"title\": \"시간 기록\"}",
+   "mtime": 1792043450.0
+  },
+  {
+   "path": "projects/-Users-me-app/cli-dur.jsonl",
+   "text": "{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:50:40.000Z\",\"message\":{\"role\":\"user\",\"content\":\"시간 재줘\"}}\n{\"type\":\"assistant\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:50:45.000Z\",\"uuid\":\"u-x\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"tool_use\",\"content\":[{\"type\":\"text\",\"text\":\"재는 중\"}]}}\n{\"type\":\"system\",\"subtype\":\"turn_duration\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:50:50.000Z\"}\n",
+   "mtime": 1792043450.0
+  },
+  {
+   "path": "claude-code-sessions/acct-1/org-1/local_nocli.json",
+   "text": "{\"sessionId\": \"local_nocli\", \"title\": \"CLI 없는 세션\", \"latestUserFrameAt\": 1792043800000.0}",
+   "mtime": 1792043800.0
+  },
+  {
+   "path": "claude-code-sessions/acct-1/org-1/local_moved.json",
+   "text": "{\"sessionId\": \"local_moved\", \"cliSessionId\": \"cli-moved\", \"cwd\": \"/Users/me/moved\", \"title\": \"옮긴 기록\"}",
+   "mtime": 1792043660.0
+  },
+  {
+   "path": "projects/-Users-me-elsewhere/cli-moved.jsonl",
+   "text": "{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:54:10.000Z\",\"message\":{\"role\":\"user\",\"content\":\"옮긴 곳에서도 찾아줘\"}}\n{\"type\":\"assistant\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:54:20.000Z\",\"uuid\":\"u-x\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"찾았어요\"}]}}\n",
+   "mtime": 1792043660.0
+  },
+  {
+   "path": "claude-code-sessions/acct-1/org-1/local_lastprompt.json",
+   "text": "{\"sessionId\": \"local_lastprompt\", \"cliSessionId\": \"cli-last\", \"cwd\": \"/Users/me/app\", \"title\": \"마지막 요청\"}",
+   "mtime": 1792043850.0
+  },
+  {
+   "path": "projects/-Users-me-app/cli-last.jsonl",
+   "text": "{\"type\":\"last-prompt\",\"lastPrompt\":\"마지막 요청 기록\",\"sessionId\":\"cli-last\"}\n{\"type\":\"assistant\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:57:30.000Z\",\"uuid\":\"u-x\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"완료했어요\"}]}}\n",
+   "mtime": 1792043850.0
+  },
+  {
+   "path": "claude-code-sessions/acct-1/org-1/local_sidechain.json",
+   "text": "{\"sessionId\": \"local_sidechain\", \"cliSessionId\": \"cli-side\", \"cwd\": \"/Users/me/app\", \"title\": \"사이드체인\"}",
+   "mtime": 1792043700.0
+  },
+  {
+   "path": "projects/-Users-me-app/cli-side.jsonl",
+   "text": "{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:54:30.000Z\",\"message\":{\"role\":\"user\",\"content\":\"메인 요청\"}}\n{\"type\":\"assistant\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:54:40.000Z\",\"uuid\":\"u-x\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"메인 답\"}]}}\n{\"type\":\"user\",\"isSidechain\":true,\"timestamp\":\"2026-10-15T05:54:50.000Z\",\"message\":{\"role\":\"user\",\"content\":\"sub\"}}\n{\"type\":\"assistant\",\"isSidechain\":true,\"timestamp\":\"2026-10-15T05:55:00.000Z\",\"uuid\":\"u-x\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"tool_use\",\"content\":[{\"type\":\"text\",\"text\":\"하위 작업\"}]}}\n",
+   "mtime": 1792043700.0
+  },
+  {
+   "path": "claude-code-sessions/acct-1/org-1/local_old.json",
+   "text": "{\"sessionId\": \"local_old\", \"cliSessionId\": \"cli-old\", \"title\": \"지난주\"}",
+   "mtime": 1791784800.0
+  },
+  {
+   "path": "claude-code-sessions/acct-1/org-1/local_nosession.json",
+   "text": "{\"cliSessionId\": \"cli-none\", \"title\": \"아이디 없음\"}",
+   "mtime": 1792043900.0
+  },
+  {
+   "path": "claude-code-sessions/acct-1/org-1/remote_x.json",
+   "text": "{\"sessionId\": \"remote_x\", \"title\": \"원격\"}",
+   "mtime": 1792043900.0
+  },
+  {
+   "path": "claude-code-sessions/acct-1/org-1/local_y.txt",
+   "text": "{\"sessionId\": \"local_y\", \"title\": \"텍스트\"}",
+   "mtime": 1792043900.0
+  },
+  {
+   "path": "claude-code-sessions/acct-2/org-9/local_other.json",
+   "text": "{\"sessionId\": \"local_other\", \"cliSessionId\": \"cli-other\", \"cwd\": \"/Users/me/other\", \"title\": \"다른 조직\", \"lastFocusedAt\": 1792043990000.0}",
+   "mtime": 1792043745.0
+  },
+  {
+   "path": "projects/-Users-me-other/cli-other.jsonl",
+   "text": "{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:55:40.000Z\",\"message\":{\"role\":\"user\",\"content\":\"다른 조직 요청\"}}\n{\"type\":\"assistant\",\"isSidechain\":false,\"timestamp\":\"2026-10-15T05:55:45.000Z\",\"uuid\":\"u-x\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"끝났어요\"}]}}\n",
+   "mtime": 1792043745.0
+  }
+ ],
+ "databases": {
+  "codex/state_12.sqlite": [
+   "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, name TEXT, title TEXT, first_user_message TEXT, cwd TEXT, updated_at INTEGER, source TEXT, thread_source TEXT)",
+   "CREATE TABLE thread_read_receipts (thread_id TEXT PRIMARY KEY, first_unread_turn TEXT, revision TEXT, last_published_turn TEXT)",
+   "INSERT INTO threads VALUES ('t-done', '{root}/codex/sessions/t-done.jsonl', '로그인 수정', '', '첫 요청', '/Users/me/app', 1792043700, 'vscode', 'user')",
+   "INSERT INTO threads VALUES ('t-running', '{root}/codex/sessions/t-running.jsonl', NULL, 'API 캐시 정리', 'API 응답 캐시', '/Users/me/api-server/', 1792043880, 'vscode', 'user')",
+   "INSERT INTO threads VALUES ('t-stalled', '{root}/codex/sessions/t-stalled.jsonl', '배포 스크립트', '', '', '/Users/me/deploy', 1792041000, 'vscode', 'user')",
+   "INSERT INTO threads VALUES ('t-aborted', '{root}/codex/sessions/t-aborted.jsonl', '중단한 작업', '', '', '/Users/me/app', 1792043500, 'vscode', 'user')",
+   "INSERT INTO threads VALUES ('t-guard', '{root}/codex/sessions/t-done.jsonl', 'Guardian review', '', '', '/Users/me/app', 1792043970, 'subagent', 'guardian_review')",
+   "INSERT INTO threads VALUES ('t-exec', '{root}/codex/sessions/t-exec.jsonl', 'exec 작업', '', '', '/Users/me/tools', 1792043200, 'exec', NULL)",
+   "INSERT INTO threads VALUES ('t-cli', '{root}/codex/sessions/missing.jsonl', 'cli 작업', '', 'first message from db', '', 1792042500, 'cli', '')",
+   "INSERT INTO threads VALUES ('t-old', '{root}/codex/sessions/t-done.jsonl', '어제 작업', '', '', '/Users/me/app', 1791972000, 'vscode', 'user')",
+   "INSERT INTO threads VALUES ('t-noname', '{root}/codex/sessions/t-noname.jsonl', NULL, '', '제목 없는 첫 메시지 <b>굵게</b>', '/Users/me/app', 1792043650, 'vscode', 'user')",
+   "INSERT INTO threads VALUES ('t-long', '{root}/codex/sessions/t-long.jsonl', '긴 요청', '', '', '/Users/me/app', 1792043760, 'vscode', 'user')",
+   "INSERT INTO threads VALUES ('t-desktop', '{root}/codex/sessions/t-done.jsonl', '데스크톱 원본', '', '', '/Users/me/app', 1792043900, 'desktop', NULL)",
+   "INSERT INTO threads VALUES ('t-torn', '{root}/codex/sessions/t-torn.jsonl', '깨진 줄', '', '', '/Users/me/app', 1792043560, 'vscode', 'user')",
+   "INSERT INTO threads VALUES ('t-nullrollout', NULL, '경로 없음', '', '', '/Users/me/app', 1792043900, 'vscode', 'user')",
+   "INSERT INTO threads VALUES ('t-floor', '{root}/codex/sessions/missing.jsonl', '경계', '', '경계 요청', '/Users/me/app', 1792000800, 'vscode', 'user')",
+   "INSERT INTO thread_read_receipts VALUES ('t-done', NULL, 'r', NULL)",
+   "INSERT INTO thread_read_receipts VALUES ('t-running', 'turn-3', 'r', NULL)",
+   "INSERT INTO thread_read_receipts VALUES ('t-exec', NULL, 'r', NULL)"
+  ],
+  "codex/state_5.sqlite": [
+   "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, name TEXT, title TEXT, first_user_message TEXT, cwd TEXT, updated_at INTEGER, source TEXT, thread_source TEXT)",
+   "CREATE TABLE thread_read_receipts (thread_id TEXT PRIMARY KEY, first_unread_turn TEXT, revision TEXT, last_published_turn TEXT)",
+   "INSERT INTO threads VALUES ('t-decoy', '{root}/codex/sessions/t-done.jsonl', '옛 데이터베이스', '', '', '/Users/me/app', 1792043990, 'vscode', 'user')"
+  ]
+ }
+}

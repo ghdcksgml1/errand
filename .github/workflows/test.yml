@@ -1,0 +1,33 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use the current Rust
+        run: rustup update stable --no-self-update
+      # The widget checks draw real AppKit windows, so they stay in scripts/test.sh, on a Mac with a screen.
+      - name: Rust tests
+        run: |
+          cargo test --locked -p errand-core -p errand-io -p errand-app
+          cargo test --locked -p errand-macos --lib
+      - name: Script tests
+        run: |
+          python3 Tests/StartupTests.py
+          python3 Tests/InstallTests.py
+          python3 Tests/ConnectClaudeTests.py
+          python3 Tests/PackageTests.py
+      - name: Build
+        run: zsh scripts/build.sh
