@@ -199,7 +199,8 @@ fn answers_read_as_rooms_and_the_people_in_them() {
                 visibility: Visibility::Public,
                 members: 7,
                 working: 4,
-                faces
+                faces,
+                role: None
             },
             RoomSummary {
                 id: "team-x7k2m9q4w8e1".to_owned(),
@@ -208,7 +209,8 @@ fn answers_read_as_rooms_and_the_people_in_them() {
                 visibility: Visibility::Private,
                 members: 2,
                 working: 0,
-                faces: vec![]
+                faces: vec![],
+                role: None
             },
         ])
     );
@@ -487,4 +489,88 @@ fn no_refusal_or_error_says_the_install_id() {
     let failure = client(&network).sync("late-night", &report(Identity::Anonymous), now());
     assert_eq!(failure, Err(RoomError::Rejected));
     assert!(!format!("{failure:?}").contains(ID));
+}
+
+#[test]
+fn private_rooms_are_made_invited_to_and_left_on_the_server() {
+    let summary = |role: Value| json!({"id": "p-0123456789ab", "name": "우리 팀", "tagline": "", "visibility": "private", "members": 0, "working": 0, "faces": [], "role": role});
+    let invite = json!({"code": "K7QFM2XA9P", "expiresAt": "2026-11-11T13:05:00Z", "usesLeft": 10});
+    let network = FakeServer::replying(vec![
+        registered(),
+        reply(201, summary(json!("owner"))),
+        reply(200, json!({"invites": [invite.clone(), {"code": "not a code", "expiresAt": "2026-11-11T13:05:00Z", "usesLeft": 3}]})),
+        reply(201, invite.clone()),
+        raw(204, ""),
+        reply(200, summary(Value::Null)),
+        reply(200, summary(json!("member"))),
+        raw(204, ""),
+        raw(204, ""),
+        reply(404, json!({"error": "invite_not_found"})),
+        reply(409, json!({"error": "too_many_owned_rooms"})),
+        reply(409, json!({"error": "too_many_invites"})),
+    ]);
+    let rooms = client(&network);
+    let made = rooms.create_room("우리 팀", "", now()).unwrap();
+    assert_eq!((made.id.as_str(), made.role), ("p-0123456789ab", Some(rooms::Role::Owner)));
+    let live = rooms.invites("p-0123456789ab", now()).unwrap();
+    assert_eq!(live, [rooms::Invite { code: "K7QFM2XA9P".to_owned(), expires_at: at("2026-11-11T13:05:00Z"), uses_left: 10 }], "a code that does not read is left out");
+    assert_eq!(rooms.make_invite("p-0123456789ab", now()).unwrap().code, "K7QFM2XA9P");
+    rooms.delete_invite("p-0123456789ab", "K7QF·M2XA·9P").unwrap();
+    assert_eq!(rooms.check_invite("k7qf-m2xa-9p", now()).unwrap().role, None);
+    assert_eq!(rooms.accept_invite("K7QFM2XA9P", now()).unwrap().role, Some(rooms::Role::Member));
+    rooms.quit_room("p-0123456789ab").unwrap();
+    rooms.remove_member("p-0123456789ab", "6f9b1c2d-3e4f-4a5b-8c7d-9e0f1a2b3c4d").unwrap();
+    assert_eq!(rooms.check_invite("K7QFM2XA9P", now()), Err(RoomError::InviteNotFound));
+    assert_eq!(rooms.create_room("여섯 번째", "", now()), Err(RoomError::TooManyOwned));
+    assert_eq!(rooms.make_invite("p-0123456789ab", now()), Err(RoomError::TooManyInvites));
+    let calls: Vec<(HttpMethod, String)> = network.calls().into_iter().skip(1).map(|(method, url)| (method, url.replace(SERVER, ""))).collect();
+    assert_eq!(
+        calls,
+        [
+            (HttpMethod::Post, "/v1/rooms".to_owned()),
+            (HttpMethod::Get, "/v1/rooms/p-0123456789ab/invites".to_owned()),
+            (HttpMethod::Post, "/v1/rooms/p-0123456789ab/invites".to_owned()),
+            (HttpMethod::Post, "/v1/rooms/p-0123456789ab/invites/revoke".to_owned()),
+            (HttpMethod::Post, "/v1/invites/preview".to_owned()),
+            (HttpMethod::Post, "/v1/invites/accept".to_owned()),
+            (HttpMethod::Delete, "/v1/rooms/p-0123456789ab/membership".to_owned()),
+            (HttpMethod::Delete, "/v1/rooms/p-0123456789ab/members/6f9b1c2d-3e4f-4a5b-8c7d-9e0f1a2b3c4d".to_owned()),
+            (HttpMethod::Post, "/v1/invites/preview".to_owned()),
+            (HttpMethod::Post, "/v1/rooms".to_owned()),
+            (HttpMethod::Post, "/v1/rooms/p-0123456789ab/invites".to_owned()),
+        ]
+    );
+    let body = |index: usize| serde_json::from_slice::<Value>(network.requests()[index].body.as_deref().unwrap()).unwrap();
+    assert_eq!(body(1), json!({"name": "우리 팀", "tagline": ""}));
+    assert_eq!([body(4), body(5), body(6)], [json!({"code": "K7QFM2XA9P"}), json!({"code": "K7QFM2XA9P"}), json!({"code": "K7QFM2XA9P"})]);
+    assert!(network.calls().iter().all(|(_, url)| !url.contains("K7QF")), "no code is ever in an address, which servers log");
+}
+
+#[test]
+fn nothing_but_a_code_or_the_servers_own_ids_goes_into_an_address() {
+    let network = FakeServer::replying(vec![]);
+    let rooms = client(&network);
+    assert_eq!(rooms.check_invite("../rooms", now()), Err(RoomError::InviteNotFound));
+    assert_eq!(rooms.remove_member("p-0123456789ab", "../../devices"), Err(RoomError::NotFound));
+    assert_eq!(rooms.quit_room("a/b"), Err(RoomError::NotFound));
+    assert!(network.calls().is_empty(), "none of it was sent");
+}
+
+#[test]
+fn a_full_private_room_reads_as_too_many_members() {
+    let network = FakeServer::replying(vec![registered(), reply(409, json!({"error": "too_many_members"}))]);
+    assert_eq!(client(&network).accept_invite("K7QFM2XA9P", now()), Err(RoomError::TooManyMembers));
+}
+
+#[test]
+fn the_owners_list_reads_everyone_and_leaves_out_ids_that_are_not_the_servers() {
+    let members = json!({"members": [
+        {"id": "6f9b1c2d-3e4f-4a5b-8c7d-9e0f1a2b3c4d", "name": "서연", "avatar": null, "role": "member", "me": false, "present": false, "working": false, "lastSeen": "2026-11-02T13:05:00Z"},
+        {"id": "../../devices", "name": "x", "role": "member"},
+    ]});
+    let network = FakeServer::replying(vec![registered(), reply(200, members)]);
+    let read = client(&network).members("p-0123456789ab", now()).unwrap();
+    assert_eq!(read.len(), 1);
+    assert_eq!((read[0].name.as_deref(), read[0].present, read[0].last_seen), (Some("서연"), false, Some(at("2026-11-02T13:05:00Z"))));
+    assert_eq!(network.calls()[1], (HttpMethod::Get, format!("{SERVER}/v1/rooms/p-0123456789ab/members")));
 }

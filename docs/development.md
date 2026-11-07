@@ -36,7 +36,7 @@ python3 scripts/install.py --update
 "dist/Errand.app/Contents/MacOS/Errand" --preview --preview-tray --language ko "$PWD/.build/tray.png"
 ```
 
-`--preview-floating`(위젯), `--preview-tray`(작업 카드), `--preview-details`(사용량 말풍선), `--preview-rooms`(방 목록), `--preview-room`(방을 펼친 위젯), `--preview-avatar`(프로필 꾸미기)가 있고, `--preview-errors`, `--preview-update` 같은 상태를 더할 수 있습니다. README의 그림은 `zsh scripts/readme-images.sh`로 다시 그립니다.
+`--preview-floating`(위젯), `--preview-tray`(작업 카드), `--preview-details`(사용량 말풍선), `--preview-rooms`(방 목록), `--preview-room`(방을 펼친 위젯), `--preview-avatar`(프로필 꾸미기)가 있고, 방 목록 자리에 `--preview-create`(방 만들기), `--preview-invite`(초대 링크, `--preview-copied`와 함께), `--preview-members`(멤버 관리), `--preview-code`·`--preview-code-error`(코드 입력), `--preview-link`(링크로 열었을 때) 화면을 띄울 수 있으며, `--preview-errors`, `--preview-update` 같은 상태를 더할 수 있습니다. README의 그림은 `zsh scripts/readme-images.sh`로 다시 그립니다.
 
 ## 버전 올리기
 

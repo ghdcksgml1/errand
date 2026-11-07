@@ -193,7 +193,68 @@ impl Runtime {
                 let _ = stores::save_joined_rooms(&self.platform.joined_rooms, &self.state.rooms.remembered());
                 None
             }
+            Effect::CreateRoom { name, tagline } => {
+                self.in_background(move |rooms| Msg::RoomCreated(rooms.create_room(&name, &tagline, errand_io::now())));
+                None
+            }
+            Effect::ReadInvites(room) => {
+                self.in_background(move |rooms| Msg::InvitesRead(room.clone(), rooms.invites(&room, errand_io::now())));
+                None
+            }
+            Effect::MakeInvite { room, replacing } => {
+                let (rooms, poster) = (self.platform.rooms.clone(), self.poster.clone());
+                thread::spawn(move || {
+                    // The link it replaces stops working first; if that fails, it still works, and no second
+                    // link is made. Gone already is as good as deleted.
+                    if let Some(code) = replacing {
+                        match gone(rooms.delete_invite(&room, &code)) {
+                            Ok(()) => poster.post(Msg::InviteReplaced(room.clone())),
+                            Err(failure) => return poster.post(Msg::InviteMade(room, Err(failure))),
+                        }
+                    }
+                    poster.post(Msg::InviteMade(room.clone(), rooms.make_invite(&room, errand_io::now())));
+                });
+                None
+            }
+            Effect::DeleteInvite { room, code } => {
+                self.in_background(move |rooms| Msg::InviteDeleted(room.clone(), gone(rooms.delete_invite(&room, &code))));
+                None
+            }
+            Effect::CheckInvite(code) => {
+                self.in_background(move |rooms| Msg::InviteChecked(code.clone(), rooms.check_invite(&code, errand_io::now())));
+                None
+            }
+            Effect::AcceptInvite(code) => {
+                self.in_background(move |rooms| Msg::InviteAccepted(code.clone(), rooms.accept_invite(&code, errand_io::now())));
+                None
+            }
+            Effect::QuitRoom(room) => {
+                self.in_background(move |rooms| Msg::RoomQuit(room.clone(), rooms.quit_room(&room)));
+                None
+            }
+            Effect::ReadMembers(room) => {
+                self.in_background(move |rooms| Msg::MembersRead(room.clone(), rooms.members(&room, errand_io::now())));
+                None
+            }
+            Effect::RemoveMember { room, member } => {
+                self.in_background(move |rooms| Msg::MemberRemoved(room.clone(), rooms.remove_member(&room, &member)));
+                None
+            }
+            Effect::Copy(text) => {
+                self.shell.copy_text(&text);
+                None
+            }
+            Effect::Confirm(confirm) => {
+                self.shell.confirm(&confirm);
+                None
+            }
         }
+    }
+
+    /// Calls the rooms service off the main thread and posts what it says.
+    fn in_background(&self, call: impl FnOnce(&dyn errand_core::ports::RoomService) -> Msg + Send + 'static) {
+        let (rooms, poster) = (self.platform.rooms.clone(), self.poster.clone());
+        thread::spawn(move || poster.post(call(rooms.as_ref())));
     }
 
     fn read_accounts(&self) -> PerProvider<AccountInfo> {
@@ -204,5 +265,13 @@ impl Runtime {
             },
             running: self.platform.running(provider).is_some(),
         })
+    }
+}
+
+/// An invite deleted, or one already gone, which is the same to the person.
+fn gone(result: Result<(), errand_core::rooms::RoomError>) -> Result<(), errand_core::rooms::RoomError> {
+    match result {
+        Err(errand_core::rooms::RoomError::InviteNotFound) => Ok(()),
+        other => other,
     }
 }

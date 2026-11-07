@@ -8,7 +8,7 @@ use super::widget::Widget;
 use crate::apps;
 use crate::paths::Paths;
 use dispatch2::{DispatchQueue, DispatchTime};
-use errand_core::model::{Alert, AppState, Msg, OpenError, WidgetPreferences};
+use errand_core::model::{Alert, AppState, Confirm, Msg, OpenError, WidgetPreferences};
 use errand_core::{Language, PerProvider, Provider};
 use errand_core::ports::{Poster, Shell};
 use errand_core::view::{self, MenuAction, ViewContext};
@@ -191,6 +191,34 @@ impl Shell for MacShell {
     fn show_dashboard(&mut self) {
         self.dashboard.show(self.mtm);
     }
+
+    fn copy_text(&mut self, text: &str) {
+        let board = objc2_app_kit::NSPasteboard::generalPasteboard();
+        board.clearContents();
+        board.setString_forType(&ns(text), unsafe { objc2_app_kit::NSPasteboardTypeString });
+    }
+
+    fn confirm(&mut self, confirm: &Confirm) {
+        let (title, text, go) = self.language.confirm(confirm);
+        let cancel = self.language.cancel();
+        let (confirm, poster) = (confirm.clone(), self.poster.clone());
+        // Outside the message being handled, since a modal alert runs its own loop; Errand comes forward so the
+        // question shows over other windows.
+        DispatchQueue::main().exec_async(move || {
+            let Some(mtm) = MainThreadMarker::new() else { return };
+            #[allow(deprecated)]
+            NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+            let alert = NSAlert::new(mtm);
+            alert.setMessageText(&ns(&title));
+            alert.setInformativeText(&ns(&text));
+            let ahead = alert.addButtonWithTitle(&ns(go));
+            ahead.setHasDestructiveAction(true);
+            alert.addButtonWithTitle(&ns(cancel));
+            if alert.runModal() == objc2_app_kit::NSAlertFirstButtonReturn {
+                poster.post(Msg::Confirmed(confirm));
+            }
+        });
+    }
 }
 
 /// The widget preferences kept in these defaults, under the keys the Objective-C build used.
@@ -311,6 +339,17 @@ define_class!(
         fn should_handle_reopen(&self, _app: &NSApplication, _visible: bool) -> bool {
             self.ivars().poster.post(Msg::ShowDashboard);
             true
+        }
+
+        /// A link Errand was opened with, such as an invite's `errand://invite/<code>`. AppKit hands over the
+        /// links a launch came with once launching has finished, so the runtime is there to take them.
+        #[unsafe(method(application:openURLs:))]
+        fn open_urls(&self, _app: &NSApplication, urls: &NSArray<NSURL>) {
+            for url in urls.iter() {
+                if let Some(link) = url.absoluteString() {
+                    self.ivars().poster.post(Msg::OpenLink(link.to_string()));
+                }
+            }
         }
 
         #[unsafe(method(applicationSupportsSecureRestorableState:))]

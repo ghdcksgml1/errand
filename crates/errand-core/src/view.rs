@@ -7,7 +7,7 @@ use crate::i18n::Language;
 use crate::layout::{self, DockShape, MEMBER_ROWS, TrayFold};
 use crate::model::{AppState, COMPLETION_DELAY, Notice};
 use crate::provider::Provider;
-use crate::rooms::{Joined, Member, Presence, RoomsState, Visibility};
+use crate::rooms::{INVITE_PAGE, Invite, Joined, Member, NAME_LENGTH, Presence, Role, RoomMember, RoomSummary, RoomsScreen, RoomsState, TAGLINE_LENGTH, Visibility, grouped, invite_code};
 use crate::sessions::{SessionState, TaskCounts, VisibleSession, families};
 use crate::theme::{self, Rgb};
 use crate::update::UpdateState;
@@ -228,6 +228,17 @@ pub struct MemberRowVm {
     pub elapsed: Option<String>,
     /// What VoiceOver says for the row: the tooltip, and how long they have been in the room.
     pub accessibility_label: String,
+    /// For the room's owner, on everyone else's row: a way to turn them out.
+    pub remove: Option<RemoveVm>,
+}
+
+/// Turning someone out of the person's room, from their row's menu.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemoveVm {
+    pub words: &'static str,
+    pub room: String,
+    pub member: String,
+    pub name: String,
 }
 
 /// The rooms under the profile: a tab each, and the open room's people.
@@ -293,7 +304,18 @@ fn dock_rooms(state: &AppState, context: &ViewContext) -> Option<DockRoomsVm> {
             members.sort_by_key(|member| (!member.me, member.presence(context.now), std::cmp::Reverse(member.tasks.running), member.name.clone()));
             let fit = if members.len() > MEMBER_ROWS { MEMBER_ROWS - 1 } else { members.len() };
             vm.more = (members.len() > fit).then(|| language.more_members(members.len() - fit));
-            vm.members = members[..fit].iter().map(|member| member_row(member, context)).collect();
+            let owner = room.role.or_else(|| rooms.role(&room.id)) == Some(Role::Owner);
+            vm.members = members[..fit]
+                .iter()
+                .map(|member| {
+                    let mut row = member_row(member, context);
+                    if owner && !member.me {
+                        row.remove = Some(RemoveVm { words: language.remove_member(), room: room.id.clone(), member: member.id.clone(), name: member.name.clone() });
+                        row.tooltip = format!("{}\n{}", row.tooltip, language.remove_member_hint());
+                    }
+                    row
+                })
+                .collect();
         }
     }
     Some(vm)
@@ -350,6 +372,7 @@ fn member_row(member: &Member, context: &ViewContext) -> MemberRowVm {
         pills,
         faded: presence == Presence::Away,
         name,
+        remove: None,
     }
 }
 
@@ -818,8 +841,13 @@ pub struct RoomCardVm {
     pub faces: Vec<FaceVm>,
     pub working: CountVm,
     pub people: String,
-    /// The person is in it, so its button leaves.
+    /// The person is in it, so its button leaves and its name is marked.
     pub joined: bool,
+    pub badge: Option<&'static str>,
+    /// For the owner of a private room: a way to its invite link, beside the room's way in or out.
+    pub invite: Option<&'static str>,
+    /// For a member of a private room they are not in right now: a way out of it for good.
+    pub quit: Option<&'static str>,
     pub button: &'static str,
     /// Why its button cannot be pressed, for a room the person cannot join yet.
     pub shut: Option<String>,
@@ -831,11 +859,122 @@ pub struct RoomsVm {
     pub title: &'static str,
     /// What rooms are, or why no more can be joined.
     pub subtitle: String,
+    /// The rooms the person is in first, then the rest.
     pub list: Vec<RoomCardVm>,
+    /// Over the rooms the person is in and over the rest, once they are in one; a list with none joined has no
+    /// headings.
+    pub joined_heading: Option<String>,
+    pub others_heading: Option<&'static str>,
     /// Loading or a failure, while there is no list to show.
     pub status: Option<String>,
     pub footer: &'static str,
     pub close: &'static str,
+    /// The two ways to private rooms under the title: making one, and coming in by a code.
+    pub create: &'static str,
+    pub enter_code: &'static str,
+    /// The list, or a step of making or joining a private room in its place.
+    pub screen: RoomsScreenVm,
+    pub back: &'static str,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RoomsScreenVm {
+    List,
+    Create(CreateRoomVm),
+    Invite(InviteVm),
+    Members(MembersVm),
+    Code(Box<CodeVm>),
+}
+
+/// Everyone a room the person owns lets in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MembersVm {
+    pub room: String,
+    pub title: &'static str,
+    pub subtitle: String,
+    pub rows: Vec<MemberListRowVm>,
+    /// Loading, or why the list did not come.
+    pub status: Option<String>,
+    pub note: &'static str,
+}
+
+/// One person on the owner's list.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MemberListRowVm {
+    pub face: FaceVm,
+    pub name: String,
+    /// Without a nickname, a muted stand-in.
+    pub named: bool,
+    /// Owner or not, working, resting, or when they were last here.
+    pub status: String,
+    /// Not in the room now: drawn faded.
+    pub away: bool,
+    pub remove: Option<RemoveVm>,
+}
+
+/// Naming a new private room.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreateRoomVm {
+    pub title: &'static str,
+    pub subtitle: &'static str,
+    pub name_label: &'static str,
+    pub name_placeholder: &'static str,
+    pub name_limit: usize,
+    pub tagline_label: &'static str,
+    pub tagline_placeholder: &'static str,
+    pub tagline_limit: usize,
+    pub notes: Vec<&'static str>,
+    pub button: &'static str,
+    pub sending: bool,
+    pub failure: Option<String>,
+}
+
+/// A room's invite link, for its owner.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InviteVm {
+    pub room: String,
+    pub title: &'static str,
+    pub subtitle: String,
+    /// The link as the box shows it: where it goes, without the code, which shows below.
+    pub host: String,
+    /// How long it has left and for how many; or loading, or why there is none.
+    pub left: String,
+    pub link: Option<String>,
+    pub copy_link: &'static str,
+    pub copied: bool,
+    pub code_caption: &'static str,
+    /// In fours: K7QF-M2XA-9P.
+    pub code: Option<String>,
+    pub copy_code: &'static str,
+    pub notes: Vec<&'static str>,
+    pub renew: &'static str,
+    pub delete: &'static str,
+    pub remove_room: &'static str,
+    /// The way to everyone the room lets in.
+    pub members: &'static str,
+    pub busy: bool,
+    pub failure: Option<String>,
+}
+
+/// Typing or pasting an invite code, or one a link brought, and the room it opens.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CodeVm {
+    pub title: &'static str,
+    pub subtitle: &'static str,
+    pub from_link: bool,
+    pub label: &'static str,
+    /// What the field holds: the code in fours once read, or what was typed.
+    pub code: String,
+    pub placeholder: String,
+    pub check: &'static str,
+    pub checking: bool,
+    pub failure: Option<String>,
+    pub invited_to: &'static str,
+    /// The room the code opens, once the server says.
+    pub room: Option<RoomCardVm>,
+    pub accept: &'static str,
+    pub accepting: bool,
+    pub notes: Vec<&'static str>,
 }
 
 pub fn rooms(state: &AppState, context: &ViewContext) -> RoomsVm {
@@ -847,27 +986,183 @@ pub fn rooms(state: &AppState, context: &ViewContext) -> RoomsVm {
         Some(failure) => Some(language.room_error(failure).to_owned()),
         None => rooms.loading.then(|| language.rooms_loading().to_owned()),
     };
-    let list = rooms
-        .list
-        .iter()
-        .map(|room| {
-            let joined = rooms.is_joined(&room.id);
-            RoomCardVm {
-                id: room.id.clone(),
-                name: room.name.clone(),
-                tagline: room.tagline.clone(),
-                visibility: visibility_chip(room.visibility, language),
-                faces: room.faces.iter().map(|someone| face(&someone.name, someone.avatar.as_deref())).collect(),
-                working: CountVm { count: room.working, icon: "loader-circle", spinning: true, color: theme::RUNNING, words: language.working_words(room.working) },
-                people: language.room_people(room.members),
-                joined,
-                button: if joined { language.leave_room() } else { language.join_room() },
-                shut: (rooms.at_limit() && !joined).then(|| language.rooms_full()),
-            }
-        })
-        .collect();
+    let mut list: Vec<RoomCardVm> = rooms.list.iter().map(|room| room_card(room, rooms, language)).collect();
+    list.sort_by_key(|card| !card.joined);
+    let any_joined = list.iter().any(|card| card.joined);
+    let joined_heading = any_joined.then(|| language.joined_rooms(rooms.joined.len()));
+    let others_heading = (any_joined && list.iter().any(|card| !card.joined)).then(|| language.other_rooms());
     let subtitle = if rooms.at_limit() { language.rooms_full() } else { language.rooms_subtitle().to_owned() };
-    RoomsVm { title: language.rooms_title(), subtitle, list, status, footer: language.rooms_footer(rooms.sample), close: language.close() }
+    let screen = rooms_screen(state, context);
+    RoomsVm {
+        title: language.rooms_title(),
+        subtitle,
+        list,
+        joined_heading,
+        others_heading,
+        status,
+        footer: language.rooms_footer(rooms.sample),
+        close: language.close(),
+        create: language.create_room_button(),
+        enter_code: language.invite_code_button(),
+        screen,
+        back: language.back(),
+    }
+}
+
+/// A room on offer as its card shows it, with the ways in and out the person has.
+fn room_card(room: &RoomSummary, rooms: &RoomsState, language: Language) -> RoomCardVm {
+    let joined = rooms.is_joined(&room.id);
+    RoomCardVm {
+        id: room.id.clone(),
+        name: room.name.clone(),
+        tagline: room.tagline.clone(),
+        visibility: visibility_chip(room.visibility, language),
+        faces: room.faces.iter().map(|someone| face(&someone.name, someone.avatar.as_deref())).collect(),
+        working: CountVm { count: room.working, icon: "loader-circle", spinning: true, color: theme::RUNNING, words: language.working_words(room.working) },
+        people: language.room_people(room.members),
+        joined,
+        badge: joined.then(|| language.joined_badge()),
+        invite: (room.role == Some(Role::Owner)).then(|| language.invite_room()),
+        quit: (room.role == Some(Role::Member) && !joined).then(|| language.quit_room()),
+        button: if joined { language.leave_room() } else { language.join_room() },
+        shut: (rooms.at_limit() && !joined).then(|| language.rooms_full()),
+    }
+}
+
+/// Someone on the owner's list: who, how they are or when they were last here, and a way to turn them out.
+fn member_list_row(member: &RoomMember, room: &str, context: &ViewContext) -> MemberListRowVm {
+    let language = context.language;
+    let name = member.name.clone().filter(|name| !name.trim().is_empty());
+    let mut status: Vec<String> = Vec::new();
+    if member.role == Role::Owner {
+        status.push(language.owner().to_owned());
+    }
+    if member.me {
+        status.push(language.me().to_owned());
+    }
+    if !member.me {
+        status.push(match (member.present, member.working) {
+            (true, true) => language.presence(Presence::Working).to_owned(),
+            (true, false) => language.presence(Presence::Resting).to_owned(),
+            (false, _) => member.last_seen.map_or_else(
+                || language.away_now().to_owned(),
+                |seen| {
+                    let day = |at: Timestamp| at.to_zoned(context.zone.clone()).date();
+                    let days = day(seen).until(day(context.now)).map_or(0, |span| span.get_days() as i64).max(0);
+                    language.last_here(days)
+                },
+            ),
+        });
+    }
+    let shown = name.clone().unwrap_or_else(|| language.unnamed_member().to_owned());
+    MemberListRowVm {
+        face: face(&shown, member.avatar.as_deref()),
+        named: name.is_some(),
+        status: status.join(" · "),
+        away: !member.present && !member.me,
+        remove: (member.role != Role::Owner && !member.me).then(|| RemoveVm {
+            words: language.remove_member(),
+            room: room.to_owned(),
+            member: member.id.clone(),
+            name: shown.clone(),
+        }),
+        name: shown,
+    }
+}
+
+fn rooms_screen(state: &AppState, context: &ViewContext) -> RoomsScreenVm {
+    let language = context.language;
+    let rooms = &state.rooms;
+    match &rooms.screen {
+        RoomsScreen::List => RoomsScreenVm::List,
+        RoomsScreen::Create { sending, failure } => RoomsScreenVm::Create(CreateRoomVm {
+            title: language.create_room_title(),
+            subtitle: language.create_room_subtitle(),
+            name_label: language.room_name_label(),
+            name_placeholder: language.room_name_placeholder(),
+            name_limit: NAME_LENGTH,
+            tagline_label: language.room_tagline_label(),
+            tagline_placeholder: language.room_tagline_placeholder(),
+            tagline_limit: TAGLINE_LENGTH,
+            notes: language.create_room_notes().to_vec(),
+            button: language.create_room_go(*sending),
+            sending: *sending,
+            failure: failure.map(|failure| language.room_error(failure).to_owned()),
+        }),
+        RoomsScreen::Invite { room, invite, loading, failure, copied } => {
+            let left = match (invite, loading) {
+                (Some(invite), _) => {
+                    let seconds = invite.expires_at.as_second() - context.now.as_second();
+                    language.invite_left((seconds.max(0) + 86_399) / 86_400, invite.uses_left)
+                }
+                (None, true) => language.invite_loading().to_owned(),
+                (None, false) => language.no_invite().to_owned(),
+            };
+            RoomsScreenVm::Invite(InviteVm {
+                room: room.clone(),
+                title: language.invite_title(),
+                subtitle: language.invite_subtitle(rooms.name(room).unwrap_or_default()),
+                host: INVITE_PAGE.trim_start_matches("https://").to_owned(),
+                left,
+                link: invite.as_ref().map(Invite::link),
+                copy_link: language.copy_link(*copied),
+                copied: *copied,
+                code_caption: language.invite_code_caption(),
+                code: invite.as_ref().map(|invite| grouped(&invite.code, '-')),
+                copy_code: language.copy_code(),
+                notes: language.invite_notes().to_vec(),
+                renew: language.renew_invite(),
+                delete: language.delete_invite(),
+                remove_room: language.remove_room(),
+                members: language.members_title(),
+                busy: *loading,
+                failure: failure.map(|failure| language.room_error(failure).to_owned()),
+            })
+        }
+        RoomsScreen::Members { room, members, loading, failure } => {
+            let name = rooms.name(room).unwrap_or_default();
+            let rows: Vec<MemberListRowVm> = members.iter().flatten().map(|member| member_list_row(member, room, context)).collect();
+            let status = match (members, loading, failure) {
+                (_, _, Some(failure)) => Some(language.room_error(*failure).to_owned()),
+                (None, true, _) => Some(language.members_loading().to_owned()),
+                _ => None,
+            };
+            RoomsScreenVm::Members(MembersVm {
+                room: room.clone(),
+                title: language.members_title(),
+                subtitle: language.members_subtitle(name, rows.len()),
+                rows,
+                status,
+                note: language.members_note(),
+            })
+        }
+        RoomsScreen::Code { code, checking, room, failure, from_link, accepting } => {
+            let card = room.as_ref().map(|summary| {
+                let mut card = room_card(summary, rooms, language);
+                // The card is about coming in: no other ways in or out, and no mark.
+                card.invite = None;
+                card.quit = None;
+                card.badge = None;
+                card
+            });
+            RoomsScreenVm::Code(Box::new(CodeVm {
+                title: language.code_title(*from_link),
+                subtitle: language.code_subtitle(*from_link),
+                from_link: *from_link,
+                label: language.code_label(),
+                code: invite_code(code).map_or_else(|| code.clone(), |code| grouped(&code, '-')),
+                placeholder: "K7QF-M2XA-9P".to_owned(),
+                check: language.check_code(*checking),
+                checking: *checking,
+                failure: failure.map(|failure| language.room_error(failure).to_owned()),
+                invited_to: language.invited_to(),
+                room: card,
+                accept: language.accept_invite(*accepting),
+                accepting: *accepting,
+                notes: language.accept_notes().to_vec(),
+            }))
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

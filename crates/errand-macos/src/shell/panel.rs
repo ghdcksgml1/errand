@@ -1,13 +1,15 @@
-//! Floating panels that never take the person's typing focus unless they click into a text field, and the conversion between AppKit's screen
-//! coordinates (origin bottom left, y up) and the core's (origin top left, y down).
+//! Floating panels that take the person's typing only while they hold something to type in, and the conversion
+//! between AppKit's screen coordinates (origin bottom left, y up) and the core's (origin top left, y down).
 
 use super::kit::{ns, rect};
 use errand_core::layout::Rect;
 use objc2::rc::Retained;
-use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::runtime::Bool;
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use std::cell::Cell;
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSBackingStoreType, NSColor, NSFloatingWindowLevel, NSPanel, NSScreen, NSWindow,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSApplication, NSEvent, NSEventModifierFlags, NSView, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_foundation::{NSRect, NSSize};
 
@@ -32,25 +34,71 @@ define_class!(
 );
 
 define_class!(
-    // Takes typing only once a click lands in one of its text fields, and even then Errand does not become the
-    // active app: the app the person was in stays in front, and gets the keys back when the panel goes.
+    /// A panel like the others that can take typing: the profile editor's once a click lands in its nickname
+    /// field, the rooms list's while it holds a form, such as naming a new room. It stays non-activating: the app
+    /// the person was in stays the active one, and gets its typing back when the panel goes or with a click.
     #[unsafe(super(NSPanel))]
     #[thread_kind = MainThreadOnly]
     #[name = "ErrandTypingPanel"]
+    #[ivars = Cell<bool>]
     pub struct TypingPanel;
 
     impl TypingPanel {
         #[unsafe(method(canBecomeKeyWindow))]
         fn can_become_key(&self) -> bool {
-            true
+            self.ivars().get()
         }
 
         #[unsafe(method(canBecomeMainWindow))]
         fn can_become_main(&self) -> bool {
             false
         }
+
+        /// Errand's menu bar has no Edit menu, and is not there at all while another app is in front, so the
+        /// form's Command-X, C, V, A and Z go to its field from here.
+        #[unsafe(method(performKeyEquivalent:))]
+        fn perform_key_equivalent(&self, event: &NSEvent) -> Bool {
+            let command = event.modifierFlags().contains(NSEventModifierFlags::Command);
+            let key = event.charactersIgnoringModifiers().map(|key| key.to_string().to_lowercase()).unwrap_or_default();
+            let action = match key.as_str() {
+                "x" => Some(sel!(cut:)),
+                "c" => Some(sel!(copy:)),
+                "v" => Some(sel!(paste:)),
+                "a" => Some(sel!(selectAll:)),
+                "z" if event.modifierFlags().contains(NSEventModifierFlags::Shift) => Some(sel!(redo:)),
+                "z" => Some(sel!(undo:)),
+                _ => None,
+            };
+            if let Some(action) = action.filter(|_| command && self.ivars().get()) {
+                let app = NSApplication::sharedApplication(self.mtm());
+                if unsafe { app.sendAction_to_from(action, None, Some(self)) } {
+                    return Bool::YES;
+                }
+            }
+            unsafe { msg_send![super(self), performKeyEquivalent: event] }
+        }
     }
 );
+
+impl TypingPanel {
+    /// Lets a click in one of its fields take typing at any time, as the profile editor's nickname does.
+    pub fn allow_typing(&self) {
+        self.ivars().set(true);
+    }
+
+    /// Takes typing, typing into `field`, while a form shows; gives it up with the form.
+    pub fn set_typing(&self, field: Option<&NSView>) {
+        self.ivars().set(field.is_some());
+        if let Some(field) = field {
+            self.makeKeyWindow();
+            self.makeFirstResponder(Some(field));
+        } else if self.isKeyWindow() {
+            // AppKit hands key status on when a key window goes; brought straight back, it shows as before.
+            self.orderOut(None);
+            self.orderFrontRegardless();
+        }
+    }
+}
 
 const STYLE: NSWindowStyleMask = NSWindowStyleMask::Borderless.union(NSWindowStyleMask::NonactivatingPanel);
 
@@ -60,19 +108,23 @@ pub fn make_panel(mtm: MainThreadMarker, size: NSSize, title: &str) -> Retained<
         msg_send![PassivePanel::alloc(mtm), initWithContentRect: rect(0.0, 0.0, size.width, size.height), styleMask: STYLE,
                   backing: NSBackingStoreType::Buffered, defer: false]
     };
-    floating(Retained::into_super(panel), title)
+    let panel = Retained::into_super(panel);
+    configure(&panel, title);
+    panel
 }
 
-/// The same panel, for one with a text field to type in.
-pub fn make_typing_panel(mtm: MainThreadMarker, size: NSSize, title: &str) -> Retained<NSPanel> {
+/// The same panel, able to take typing while it holds a form.
+pub fn make_typing_panel(mtm: MainThreadMarker, size: NSSize, title: &str) -> Retained<TypingPanel> {
+    let this = TypingPanel::alloc(mtm).set_ivars(Cell::new(false));
     let panel: Retained<TypingPanel> = unsafe {
-        msg_send![TypingPanel::alloc(mtm), initWithContentRect: rect(0.0, 0.0, size.width, size.height), styleMask: STYLE,
+        msg_send![super(this), initWithContentRect: rect(0.0, 0.0, size.width, size.height), styleMask: STYLE,
                   backing: NSBackingStoreType::Buffered, defer: false]
     };
-    floating(Retained::into_super(panel), title)
+    configure(&panel, title);
+    panel
 }
 
-fn floating(panel: Retained<NSPanel>, title: &str) -> Retained<NSPanel> {
+fn configure(panel: &NSPanel, title: &str) {
     panel.setLevel(NSFloatingWindowLevel);
     panel.setFloatingPanel(true);
     panel.setHidesOnDeactivate(false);
@@ -85,7 +137,6 @@ fn floating(panel: Retained<NSPanel>, title: &str) -> Retained<NSPanel> {
     panel.setCollectionBehavior(NSWindowCollectionBehavior::CanJoinAllSpaces | NSWindowCollectionBehavior::FullScreenAuxiliary);
     panel.setAppearance(NSAppearance::appearanceNamed(unsafe { NSAppearanceNameAqua }).as_deref());
     panel.setTitle(&ns(title));
-    panel
 }
 
 /// The height AppKit's flipped y is measured against: the primary screen's.

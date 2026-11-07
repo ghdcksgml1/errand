@@ -4,7 +4,7 @@
 //! bubble like the usage details listing the rooms on cards like the task cards.
 
 use super::details::{PopoverView, button};
-use super::dock::{AvatarView, count_pill, replace_tracking_area, tinted_icon};
+use super::dock::{AvatarView, RemoveMember, count_pill, replace_tracking_area, tinted_icon};
 use super::kit::{self, Action, CHIP_ICON, FlippedView, Weight, color, digits_font, fitting_width, grey, label, ns, rect, text_width};
 use super::spinner::SpinningIconView;
 use super::tray::{ChipMark, chip_icon_frame, chip_rect, draw_card, draw_chip};
@@ -14,19 +14,28 @@ use errand_core::model::Msg;
 use errand_core::ports::Poster;
 use errand_core::sessions::SessionState;
 use errand_core::theme::{self, CardStyle, Paint};
-use errand_core::view::{ChipVm, DockRoomsVm, FaceVm, MemberRowVm, RoomCardVm, RoomTabVm, RoomsVm};
+use errand_core::view::{ChipVm, CodeVm, CreateRoomVm, DockRoomsVm, FaceVm, InviteVm, MemberRowVm, MembersVm, RoomCardVm, RoomTabVm, RoomsScreenVm, RoomsVm};
 use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAccessibility, NSBezierPath, NSBox, NSBoxType, NSButton, NSEvent, NSGradient, NSImageView, NSLineBreakMode, NSScrollElasticity, NSScrollView,
-    NSScrollerStyle, NSTextAlignment, NSTextField, NSView,
+    NSAccessibility, NSBezierPath, NSBox, NSBoxType, NSButton, NSControlTextEditingDelegate, NSEvent, NSFont, NSFontWeightRegular, NSFontWeightSemibold,
+    NSGradient, NSImageView, NSMenu, NSMenuItem, NSLineBreakMode, NSScrollElasticity, NSScrollView, NSScrollerStyle, NSTextAlignment, NSTextField, NSTextFieldBezelStyle,
+    NSTextFieldDelegate, NSView,
 };
-use objc2_foundation::{NSPoint, NSRect, NSSize};
+use objc2_foundation::{NSAttributedString, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
 const ROOM_CARD_HEIGHT: f64 = 100.0;
+/// A heading over the rooms the person is in, or over the rest: its line and the space under it.
+const HEADING_HEIGHT: f64 = 24.0;
+const HEADING_INSET: f64 = 6.0;
+/// Between the last joined room and the heading over the rest, past the gap between cards.
+const SECTION_GAP: f64 = 6.0;
+/// Between a joined room's name and its mark.
+const BADGE_GAP: f64 = 6.0;
 /// An open tab and its room's panel share this fill, so they read as one.
 const OPEN_FILL: Paint = theme::INK.alpha(0.055);
 const TAB_GAP: f64 = 6.0;
@@ -98,8 +107,8 @@ define_class!(
 );
 
 impl RoomCard {
-    fn new(mtm: MainThreadMarker, frame: NSRect, style: SessionState, chip: Option<Chip>) -> Retained<RoomCard> {
-        let this = RoomCard::alloc(mtm).set_ivars(CardIvars { style: theme::card_style(style, false), chip });
+    fn new(mtm: MainThreadMarker, frame: NSRect, chip: Option<Chip>) -> Retained<RoomCard> {
+        let this = RoomCard::alloc(mtm).set_ivars(CardIvars { style: theme::card_style(SessionState::Seen, false), chip });
         let card: Retained<RoomCard> = unsafe { msg_send![super(this), initWithFrame: frame] };
         // A chip whose work is under way turns its spinner where the icon would be.
         if let Some(chip) = &card.ivars().chip
@@ -408,10 +417,11 @@ define_class!(
 );
 
 define_class!(
-    /// One person in the open room.
+    /// One person in the open room. For the room's owner, everyone else's row has a menu to turn them out.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "ErrandMemberRow"]
+    #[ivars = RefCell<Option<Retained<NSMenu>>>]
     pub struct MemberRow;
 
     impl MemberRow {
@@ -419,8 +429,20 @@ define_class!(
         fn is_flipped(&self) -> bool {
             true
         }
+
+        #[unsafe(method_id(menuForEvent:))]
+        fn menu_for_event(&self, _event: &NSEvent) -> Option<Retained<NSMenu>> {
+            self.menu()
+        }
     }
 );
+
+impl MemberRow {
+    /// For the room's owner: the menu that turns this person out.
+    pub fn menu(&self) -> Option<Retained<NSMenu>> {
+        self.ivars().borrow().clone()
+    }
+}
 
 /// The width of the room's column of times, right-aligned at the rows' ends: the widest time among them, so the
 /// pills line up from row to row. Digits are all one width, so it changes only when a time grows a digit.
@@ -431,8 +453,21 @@ fn clock_column(members: &[MemberRowVm]) -> f64 {
 
 /// One person: their face and name, their task header's pills and, in the room's column of times at the right,
 /// how long they have been in the room. The time comes back too, to count up in place.
-fn member_row(vm: &MemberRowVm, width: f64, clock: f64, mtm: MainThreadMarker) -> (Retained<MemberRow>, Option<Retained<NSTextField>>) {
-    let row: Retained<MemberRow> = unsafe { msg_send![MemberRow::alloc(mtm), initWithFrame: rect(0.0, 0.0, width, MEMBER_ROW_HEIGHT)] };
+fn member_row(vm: &MemberRowVm, width: f64, clock: f64, remove_member: &RemoveMember, mtm: MainThreadMarker) -> (Retained<MemberRow>, Option<Retained<NSTextField>>) {
+    let this = MemberRow::alloc(mtm).set_ivars(RefCell::new(None));
+    let row: Retained<MemberRow> = unsafe { msg_send![super(this), initWithFrame: rect(0.0, 0.0, width, MEMBER_ROW_HEIGHT)] };
+    if let Some(remove) = &vm.remove {
+        let (room, member, name) = (remove.room.clone(), remove.member.clone(), remove.name.clone());
+        let remove_member = remove_member.clone();
+        let action = Action::new(mtm, move || remove_member(room.clone(), member.clone(), name.clone()));
+        let menu = NSMenu::new(mtm);
+        let item = unsafe { NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &ns(remove.words), Some(objc2::sel!(perform:)), &ns("")) };
+        unsafe { item.setTarget(Some(&action)) };
+        // The item holds its action, so it still works if the rows are laid out again while the menu is open.
+        unsafe { item.setRepresentedObject(Some(&action)) };
+        menu.addItem(&item);
+        *row.ivars().borrow_mut() = Some(menu);
+    }
     row.addSubview(&avatar(&vm.face, rect(8.0, (MEMBER_ROW_HEIGHT - FACE) / 2.0, FACE, FACE), false, mtm));
     // The time's text ends where the pills would, its label's inset past it.
     let clock_end = width - ROW_END + LABEL_INSET;
@@ -490,6 +525,7 @@ pub struct DockRooms {
     plus: Retained<RoomTab>,
     pub members: Retained<MembersView>,
     expand: Rc<dyn Fn(String)>,
+    remove_member: RemoveMember,
     /// Tabs hold their targets weakly.
     actions: Vec<Retained<Action>>,
     _plus_action: Retained<Action>,
@@ -502,7 +538,7 @@ pub struct DockRooms {
 }
 
 impl DockRooms {
-    pub fn new(mtm: MainThreadMarker, expand: Rc<dyn Fn(String)>, show_rooms: Rc<dyn Fn()>, language: Language) -> DockRooms {
+    pub fn new(mtm: MainThreadMarker, expand: Rc<dyn Fn(String)>, remove_member: RemoveMember, show_rooms: Rc<dyn Fn()>, language: Language) -> DockRooms {
         let width = STACK_WIDTH - 2.0 * DOCK_PADDING;
         let tabs = FlippedView::new(mtm, rect(DOCK_PADDING, 0.0, width, ROOM_TAB_HEIGHT));
         tabs.setHidden(true);
@@ -515,7 +551,7 @@ impl DockRooms {
         tabs.addSubview(&plus);
         let members: Retained<MembersView> = unsafe { msg_send![MembersView::alloc(mtm), initWithFrame: rect(DOCK_PADDING, 0.0, width, 0.0)] };
         members.setHidden(true);
-        DockRooms { tabs, strip, document, plus, members, expand, actions: Vec::new(), _plus_action: plus_action, opened: None, rows: Vec::new(), clock: 0.0, shown: None }
+        DockRooms { tabs, strip, document, plus, members, expand, remove_member, actions: Vec::new(), _plus_action: plus_action, opened: None, rows: Vec::new(), clock: 0.0, shown: None }
     }
 
     /// The plus reads as pressed while the list of rooms is open.
@@ -564,7 +600,7 @@ impl DockRooms {
         self.clock = clock_column(&vm.members);
         let mut y = MEMBERS_INSET;
         for member in &vm.members {
-            let (row, time) = member_row(member, width, self.clock, mtm);
+            let (row, time) = member_row(member, width, self.clock, &self.remove_member, mtm);
             row.setFrameOrigin(NSPoint::new(0.0, y));
             self.members.addSubview(&row);
             self.rows.push((row, time));
@@ -629,15 +665,88 @@ impl DockRooms {
     }
 }
 
-/// The list of rooms beside the dock.
+define_class!(
+    /// Tells a form when one of its fields changes, so its counts and button keep up with the typing.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "ErrandFieldWatcher"]
+    #[ivars = Box<dyn Fn()>]
+    struct FieldWatcher;
+
+    unsafe impl NSObjectProtocol for FieldWatcher {}
+
+    unsafe impl NSControlTextEditingDelegate for FieldWatcher {
+        #[unsafe(method(controlTextDidChange:))]
+        fn text_did_change(&self, _notification: &NSNotification) {
+            (self.ivars())();
+        }
+    }
+
+    unsafe impl NSTextFieldDelegate for FieldWatcher {}
+);
+
+impl FieldWatcher {
+    fn new(mtm: MainThreadMarker, changed: impl Fn() + 'static) -> Retained<FieldWatcher> {
+        let this = FieldWatcher::alloc(mtm).set_ivars(Box::new(changed) as Box<dyn Fn()>);
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// Which screen a layout was for, so a form keeps its fields, and what is typed in them, while only its state
+/// changes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Screen {
+    List,
+    Create,
+    Invite,
+    Members,
+    Code { from_link: bool },
+}
+
+impl Screen {
+    fn of(vm: &RoomsVm) -> Screen {
+        match &vm.screen {
+            RoomsScreenVm::List => Screen::List,
+            RoomsScreenVm::Create(_) => Screen::Create,
+            RoomsScreenVm::Invite(_) => Screen::Invite,
+            RoomsScreenVm::Members(_) => Screen::Members,
+            RoomsScreenVm::Code(code) => Screen::Code { from_link: code.from_link },
+        }
+    }
+}
+
+/// A form's fields, which outlast its updates.
+struct Form {
+    fields: Vec<Retained<NSTextField>>,
+    /// Under the fields: what changes with the form's state, laid out again each time.
+    below: Retained<FlippedView>,
+    /// A button beside the fields that the form's state turns on and off.
+    beside: Option<Retained<NSButton>>,
+    _watchers: Vec<Retained<FieldWatcher>>,
+}
+
+/// Where the screens past the list start their content, under the title and subtitle.
+const SCREEN_TOP: f64 = 92.0;
+const BUTTON_HEIGHT: f64 = 30.0;
+/// Two buttons side by side on a room's card.
+const CARD_BUTTON: f64 = 74.0;
+
+/// The list of rooms beside the dock, or a step of making or joining a private room in its place.
 pub struct Rooms {
     pub view: Retained<PopoverView>,
     body: Retained<FlippedView>,
     poster: Arc<dyn Poster>,
     /// Buttons hold their targets weakly.
     actions: Vec<Retained<Action>>,
+    /// The form's own, kept with it.
+    form_actions: Vec<Retained<Action>>,
+    /// What lays out under a form's fields, or a link's room: rebuilt on their own.
+    below_actions: Vec<Retained<Action>>,
     scroll: Option<Retained<NSScrollView>>,
     shown: Option<RoomsVm>,
+    form: Option<Form>,
+    /// A form just laid out, whose first field should take typing.
+    focus: Option<Retained<NSView>>,
 }
 
 impl Rooms {
@@ -646,7 +755,7 @@ impl Rooms {
         let view = PopoverView::new(mtm, NSSize::new(width, height));
         let body = FlippedView::new(mtm, rect(0.0, 0.0, width, height));
         view.addSubview(&body);
-        Rooms { view, body, poster, actions: Vec::new(), scroll: None, shown: None }
+        Rooms { view, body, poster, actions: Vec::new(), form_actions: Vec::new(), below_actions: Vec::new(), scroll: None, shown: None, form: None, focus: None }
     }
 
     /// Turns the tail toward the dock, level with what opens the list.
@@ -654,24 +763,87 @@ impl Rooms {
         self.view.point(&self.body, tail_on_right, tail_y);
     }
 
-    /// Lays the bubble out again from the view model, keeping the list's scroll position.
+    /// The field to type in, once, after a form is laid out.
+    pub fn take_focus(&mut self) -> Option<Retained<NSView>> {
+        self.focus.take()
+    }
+
+    /// A form shows, which takes typing.
+    pub fn typing(&self) -> bool {
+        self.form.is_some()
+    }
+
+    fn post(&self, msg: impl Fn() -> Msg + 'static) -> impl Fn() + 'static {
+        let poster = self.poster.clone();
+        move || poster.post(msg())
+    }
+
+    /// Lays the bubble out again from the view model, keeping the list's scroll position, and a form's fields
+    /// while it stays on screen.
     pub fn render(&mut self, vm: &RoomsVm, mtm: MainThreadMarker) {
         if self.shown.as_ref() == Some(vm) {
             return;
         }
-        let (width, height) = (layout::ROOMS_WIDTH, layout::ROOMS_HEIGHT);
+        let screen = Screen::of(vm);
+        if self.form.is_some() && self.shown.as_ref().map(Screen::of) == Some(screen) {
+            self.lay_below(vm, mtm);
+            self.shown = Some(vm.clone());
+            return;
+        }
         let previous = self.scroll.as_ref().map_or(NSPoint::ZERO, |scroll| scroll.contentView().bounds().origin);
-        let body: &NSView = &self.body;
-        kit::clear(body);
+        let keep_scroll = self.shown.as_ref().map(Screen::of) == Some(Screen::List);
+        kit::clear(&self.body);
         self.actions.clear();
+        self.form_actions.clear();
+        self.below_actions.clear();
         self.scroll = None;
+        self.form = None;
+        self.focus = None;
+        match &vm.screen {
+            RoomsScreenVm::List => self.lay_list(vm, if keep_scroll { previous } else { NSPoint::ZERO }, mtm),
+            RoomsScreenVm::Create(create) => self.lay_create(vm, create, mtm),
+            RoomsScreenVm::Invite(invite) => self.lay_invite(vm, invite, mtm),
+            RoomsScreenVm::Members(members) => self.lay_members(vm, members, mtm),
+            RoomsScreenVm::Code(code) => self.lay_code(vm, code, mtm),
+        }
+        self.shown = Some(vm.clone());
+    }
 
-        let poster = self.poster.clone();
-        let (close, action) = button("", "x", false, rect(width - 16.0 - 34.0, 14.0, 34.0, 26.0), move || poster.post(Msg::CloseRooms), mtm);
+    fn close_button(&mut self, vm: &RoomsVm, mtm: MainThreadMarker) {
+        let width = layout::ROOMS_WIDTH;
+        let (close, action) = button("", "x", false, rect(width - 16.0 - 34.0, 14.0, 34.0, 26.0), self.post(|| Msg::CloseRooms), mtm);
         close.setToolTip(Some(&ns(vm.close)));
         close.setAccessibilityLabel(Some(&ns(vm.close)));
-        body.addSubview(&close);
+        self.body.addSubview(&close);
         self.actions.push(action);
+    }
+
+    /// A screen past the list: a way back, its title and what it is for, and the way to close.
+    fn lay_header(&mut self, vm: &RoomsVm, title: &str, subtitle: &str, mtm: MainThreadMarker) {
+        self.lay_header_back(vm, title, subtitle, || Msg::ShowRoomsList, mtm);
+    }
+
+    /// The header, its way back going where `back` says.
+    fn lay_header_back(&mut self, vm: &RoomsVm, title: &str, subtitle: &str, back: impl Fn() -> Msg + 'static, mtm: MainThreadMarker) {
+        let width = layout::ROOMS_WIDTH;
+        let (back, action) = button("", "chevron-left", false, rect(14.0, 14.0, 34.0, 26.0), self.post(back), mtm);
+        back.setToolTip(Some(&ns(vm.back)));
+        back.setAccessibilityLabel(Some(&ns(vm.back)));
+        self.body.addSubview(&back);
+        self.actions.push(action);
+        self.close_button(vm, mtm);
+        let heading = label(title, 18.0, Weight::Semibold, theme::INK, mtm);
+        heading.setFrame(rect(56.0, 15.0, width - 56.0 - 60.0, 25.0));
+        self.body.addSubview(&heading);
+        let words = wrapped(subtitle, 11.0, Weight::Regular, theme::MUTED, width - 36.0, mtm);
+        words.setFrameOrigin(NSPoint::new(18.0, 48.0));
+        self.body.addSubview(&words);
+    }
+
+    fn lay_list(&mut self, vm: &RoomsVm, previous: NSPoint, mtm: MainThreadMarker) {
+        let (width, height) = (layout::ROOMS_WIDTH, layout::ROOMS_HEIGHT);
+        self.close_button(vm, mtm);
+        let body: &NSView = &self.body;
         let title = label(vm.title, 18.0, Weight::Semibold, theme::INK, mtm);
         title.setFrame(rect(18.0, 15.0, width - 16.0 - 34.0 - 8.0 - 18.0, 25.0));
         body.addSubview(&title);
@@ -681,6 +853,16 @@ impl Rooms {
         subtitle.setFrame(rect(18.0, 44.0, width - 36.0, 30.0));
         body.addSubview(&subtitle);
 
+        // The ways to private rooms, always in sight above the list.
+        let half = (width - 32.0 - 6.0) / 2.0;
+        let (create, action) = button(vm.create, "plus", false, rect(16.0, 80.0, half, BUTTON_HEIGHT), self.post(|| Msg::ShowCreateRoom), mtm);
+        self.body.addSubview(&create);
+        self.actions.push(action);
+        let (code, action) = button(vm.enter_code, "", false, rect(16.0 + half + 6.0, 80.0, half, BUTTON_HEIGHT), self.post(|| Msg::ShowInviteCode), mtm);
+        self.body.addSubview(&code);
+        self.actions.push(action);
+
+        let body: &NSView = &self.body;
         let rule = NSBox::initWithFrame(NSBox::alloc(mtm), rect(18.0, height - 45.0, width - 36.0, 1.0));
         rule.setBoxType(NSBoxType::Separator);
         body.addSubview(&rule);
@@ -690,25 +872,37 @@ impl Rooms {
         footer.setFrame(rect(18.0, height - 38.0, width - 36.0, 28.0));
         body.addSubview(&footer);
 
-        let top = 84.0;
+        let top = 120.0;
         let area = rect(12.0, top, width - 24.0, height - 52.0 - top);
         if let Some(status) = &vm.status {
             let words = label(status, 12.0, Weight::Medium, theme::MUTED, mtm);
             words.setAlignment(NSTextAlignment::Center);
             words.setFrame(rect(area.origin.x, area.origin.y + 40.0, area.size.width, 18.0));
             body.addSubview(&words);
-            self.shown = Some(vm.clone());
             return;
         }
         let card_width = area.size.width;
         let mut y = 0.0;
         let document = FlippedView::new(mtm, rect(0.0, 0.0, card_width, 0.0));
-        for room in &vm.list {
-            let (card, action) = room_card(room, card_width, self.poster.clone(), mtm);
+        let heading = |words: &str, y: &mut f64| {
+            let line = label(words, 11.5, Weight::Semibold, theme::MUTED, mtm);
+            line.setFrame(rect(HEADING_INSET, *y + 2.0, card_width - 2.0 * HEADING_INSET, 16.0));
+            document.addSubview(&line);
+            *y += HEADING_HEIGHT;
+        };
+        for (index, room) in vm.list.iter().enumerate() {
+            let first_other = !room.joined && vm.list.get(index.wrapping_sub(1)).is_none_or(|before| before.joined);
+            if let Some(words) = vm.joined_heading.as_deref().filter(|_| index == 0 && room.joined) {
+                heading(words, &mut y);
+            } else if let Some(words) = vm.others_heading.filter(|_| first_other) {
+                y += SECTION_GAP;
+                heading(words, &mut y);
+            }
+            let (card, actions) = room_card(room, card_width, &list_buttons(room, &self.poster), mtm);
             card.setFrameOrigin(NSPoint::new(0.0, y));
             y += card.frame().size.height + layout::CARD_GAP;
             document.addSubview(&card);
-            self.actions.push(action);
+            self.actions.extend(actions);
         }
         document.setFrameSize(NSSize::new(card_width, y.max(area.size.height)));
         let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), area);
@@ -721,21 +915,456 @@ impl Rooms {
         let limit = (document.frame().size.height - area.size.height).max(0.0);
         scroll.contentView().scrollToPoint(NSPoint::new(0.0, previous.y.min(limit)));
         scroll.reflectScrolledClipView(&scroll.contentView());
-        body.addSubview(&scroll);
+        self.body.addSubview(&scroll);
         self.scroll = Some(scroll);
-        self.shown = Some(vm.clone());
+    }
+
+    fn lay_create(&mut self, vm: &RoomsVm, create: &CreateRoomVm, mtm: MainThreadMarker) {
+        let width = layout::ROOMS_WIDTH;
+        self.lay_header(vm, create.title, create.subtitle, mtm);
+        let name = self.field_with_caption(SCREEN_TOP + 4.0, create.name_label, create.name_placeholder, "", width - 36.0, mtm);
+        let tagline = self.field_with_caption(SCREEN_TOP + 66.0, create.tagline_label, create.tagline_placeholder, "", width - 36.0, mtm);
+        let counters = [(name.clone(), create.name_limit, SCREEN_TOP + 4.0), (tagline.clone(), create.tagline_limit, SCREEN_TOP + 66.0)].map(|(field, limit, y)| {
+            let count = label("", 10.5, Weight::Medium, theme::MUTED, mtm);
+            count.setFont(Some(&digits_font(10.5, Weight::Medium)));
+            count.setAlignment(NSTextAlignment::Right);
+            count.setFrame(rect(width - 18.0 - 70.0, y, 68.0, 16.0));
+            self.body.addSubview(&count);
+            (field, limit, count)
+        });
+        let mut y = SCREEN_TOP + 124.0;
+        for note in &create.notes {
+            let words = wrapped(note, 11.0, Weight::Regular, theme::MUTED, width - 40.0, mtm);
+            words.setFrameOrigin(NSPoint::new(20.0, y));
+            y += words.frame().size.height + 4.0;
+            self.body.addSubview(&words);
+        }
+        let below = FlippedView::new(mtm, rect(0.0, y + 8.0, width, layout::ROOMS_HEIGHT - y - 8.0));
+        self.body.addSubview(&below);
+        // The counts follow the typing, red past the limit, and the button waits for a name that fits.
+        let counted = {
+            let counters = counters.clone();
+            let below = below.clone();
+            move || {
+                let mut fits = true;
+                for (index, (field, limit, count)) in counters.iter().enumerate() {
+                    let typed = errand_core::rooms::clean_text(&field.stringValue().to_string()).chars().count();
+                    count.setStringValue(&ns(&format!("{typed}/{limit}")));
+                    let over = typed > *limit || (index == 0 && typed == 0);
+                    count.setTextColor(Some(&color(if typed > *limit { theme::LOW } else { theme::MUTED })));
+                    fits &= !over;
+                }
+                for view in below.subviews().iter() {
+                    if let Some(go) = view.downcast_ref::<NSButton>().filter(|go| go.tag() == SUBMIT_TAG) {
+                        go.setEnabled(fits && go.tag() == SUBMIT_TAG && !go.title().to_string().ends_with('…'));
+                    }
+                }
+            }
+        };
+        let counted = Rc::new(counted);
+        let watchers: Vec<Retained<FieldWatcher>> = [&name, &tagline]
+            .into_iter()
+            .map(|field| {
+                let counted = counted.clone();
+                let watcher = FieldWatcher::new(mtm, move || counted());
+                unsafe { field.setDelegate(Some(ProtocolObject::from_ref(&*watcher))) };
+                watcher
+            })
+            .collect();
+        let submit = {
+            let (poster, name, tagline) = (self.poster.clone(), name.clone(), tagline.clone());
+            move || poster.post(Msg::CreateRoom { name: name.stringValue().to_string(), tagline: tagline.stringValue().to_string() })
+        };
+        let submit = Rc::new(submit);
+        for field in [&name, &tagline] {
+            let submit = submit.clone();
+            let action = Action::new(mtm, move || submit());
+            action.attach(field);
+            self.form_actions.push(action);
+        }
+        self.focus = Some(Retained::into_super(Retained::into_super(name.clone())));
+        self.form = Some(Form { fields: vec![name, tagline], below, beside: None, _watchers: watchers });
+        self.lay_below(vm, mtm);
+        counted();
+    }
+
+    /// A caption over a field, the field, and the field back.
+    fn field_with_caption(&mut self, y: f64, caption: &str, placeholder: &str, value: &str, width: f64, mtm: MainThreadMarker) -> Retained<NSTextField> {
+        let words = label(caption, 11.5, Weight::Semibold, theme::INK, mtm);
+        words.setFrame(rect(20.0, y, width - 80.0, 16.0));
+        self.body.addSubview(&words);
+        let field = NSTextField::initWithFrame(NSTextField::alloc(mtm), rect(18.0, y + 20.0, width, 28.0));
+        field.setBezeled(true);
+        field.setBezelStyle(NSTextFieldBezelStyle::RoundedBezel);
+        field.setFont(Some(&kit::font(13.0, Weight::Regular)));
+        field.setStringValue(&ns(value));
+        field.setPlaceholderString(Some(&ns(placeholder)));
+        field.setAccessibilityLabel(Some(&ns(caption)));
+        self.body.addSubview(&field);
+        field
+    }
+
+    /// What changes under a form's fields: why it failed, and its button, or the room a code opens.
+    fn lay_below(&mut self, vm: &RoomsVm, mtm: MainThreadMarker) {
+        let Some(form) = &self.form else { return };
+        let below = form.below.clone();
+        let fields = form.fields.clone();
+        let beside = form.beside.clone();
+        kit::clear(&below);
+        self.below_actions.clear();
+        let width = layout::ROOMS_WIDTH;
+        let bottom = below.frame().size.height;
+        match &vm.screen {
+            RoomsScreenVm::Create(create) => {
+                if let Some(failure) = &create.failure {
+                    below.addSubview(&failure_line(failure, 0.0, mtm));
+                }
+                let submit = {
+                    let (poster, name, tagline) = (self.poster.clone(), fields[0].clone(), fields[1].clone());
+                    move || poster.post(Msg::CreateRoom { name: name.stringValue().to_string(), tagline: tagline.stringValue().to_string() })
+                };
+                let (go, action) = button(create.button, "", false, rect(14.0, bottom - 20.0 - 32.0, width - 28.0, 32.0), submit, mtm);
+                go.setKeyEquivalent(&ns("\r"));
+                go.setTag(SUBMIT_TAG);
+                let name = errand_core::rooms::clean_text(&fields[0].stringValue().to_string()).chars().count();
+                let tagline = errand_core::rooms::clean_text(&fields[1].stringValue().to_string()).chars().count();
+                go.setEnabled(!create.sending && (1..=create.name_limit).contains(&name) && tagline <= create.tagline_limit);
+                below.addSubview(&go);
+                self.below_actions.push(action);
+                for field in &fields {
+                    // Sending, the typing stops where it is.
+                    if create.sending {
+                        field.abortEditing();
+                    }
+                    field.setEditable(!create.sending);
+                }
+            }
+            RoomsScreenVm::Code(code) => {
+                let mut y = 0.0;
+                if let Some(failure) = &code.failure {
+                    below.addSubview(&failure_line(failure, y, mtm));
+                    y += 24.0;
+                }
+                if let Some(room) = &code.room {
+                    y = self.lay_invited(&below, room, code, y, mtm);
+                    let _ = y;
+                }
+                if let Some(check) = beside {
+                    check.setTitle(&ns(code.check));
+                    check.setEnabled(!code.checking && !code.accepting);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The room a code opens, its way in, and what joining it means.
+    fn lay_invited(&mut self, into: &NSView, room: &RoomCardVm, code: &CodeVm, y: f64, mtm: MainThreadMarker) -> f64 {
+        let width = layout::ROOMS_WIDTH;
+        let mut y = y;
+        let caption = label(code.invited_to, 11.5, Weight::Semibold, theme::MUTED, mtm);
+        caption.setFrame(rect(20.0, y, width - 40.0, 16.0));
+        into.addSubview(&caption);
+        y += 22.0;
+        let accept = CardButton { title: code.accept, icon: "circle-arrow-right", trailing: true, enabled: !code.accepting, tooltip: None, run: Rc::new(self.post(|| Msg::AcceptInvite)) };
+        let (card, actions) = room_card(room, width - 24.0, &[accept], mtm);
+        card.setFrameOrigin(NSPoint::new(12.0, y));
+        into.addSubview(&card);
+        self.below_actions.extend(actions);
+        y += ROOM_CARD_HEIGHT + 12.0;
+        // Already in as many rooms as Errand joins: coming in by the code still works, and the room waits in
+        // the list until another is left.
+        if let Some(shut) = &room.shut {
+            let words = wrapped(shut, 11.0, Weight::Medium, theme::MUTED, width - 40.0, mtm);
+            words.setFrameOrigin(NSPoint::new(20.0, y));
+            y += words.frame().size.height + 6.0;
+            into.addSubview(&words);
+        }
+        for note in &code.notes {
+            let words = wrapped(note, 11.0, Weight::Regular, theme::MUTED, width - 40.0, mtm);
+            words.setFrameOrigin(NSPoint::new(20.0, y));
+            y += words.frame().size.height + 4.0;
+            into.addSubview(&words);
+        }
+        y
+    }
+
+    fn lay_code(&mut self, vm: &RoomsVm, code: &CodeVm, mtm: MainThreadMarker) {
+        let width = layout::ROOMS_WIDTH;
+        self.lay_header(vm, code.title, code.subtitle, mtm);
+        if code.from_link {
+            // Opened by a link: the room it opens, and nothing to type unless the link did not work.
+            let below = FlippedView::new(mtm, rect(0.0, SCREEN_TOP, width, layout::ROOMS_HEIGHT - SCREEN_TOP));
+            self.body.addSubview(&below);
+            if code.checking {
+                let words = label(code.check, 12.0, Weight::Medium, theme::MUTED, mtm);
+                words.setFrame(rect(20.0, 4.0, width - 40.0, 18.0));
+                below.addSubview(&words);
+            }
+            let mut y = 0.0;
+            if let Some(failure) = &code.failure {
+                below.addSubview(&failure_line(failure, y, mtm));
+                y += 26.0;
+            }
+            match &code.room {
+                Some(room) => {
+                    self.lay_invited(&below, room, code, y, mtm);
+                }
+                None if code.failure.is_some() => {
+                    let (by_hand, action) = button(vm.enter_code, "", false, rect(14.0, y + 4.0, width - 28.0, BUTTON_HEIGHT), self.post(|| Msg::ShowInviteCode), mtm);
+                    below.addSubview(&by_hand);
+                    self.actions.push(action);
+                }
+                None => {}
+            }
+            return;
+        }
+        let field_width = width - 36.0 - 72.0 - 8.0;
+        let field = self.field_with_caption(SCREEN_TOP + 4.0, code.label, &code.placeholder, &code.code, field_width, mtm);
+        field.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(13.0, unsafe { NSFontWeightRegular })));
+        let check = {
+            let (poster, field) = (self.poster.clone(), field.clone());
+            Rc::new(move || poster.post(Msg::CheckInvite(field.stringValue().to_string())))
+        };
+        let run = check.clone();
+        let (go, action) = button(code.check, "", false, rect(width - 18.0 - 72.0, SCREEN_TOP + 23.0, 72.0, BUTTON_HEIGHT), move || run(), mtm);
+        self.body.addSubview(&go);
+        self.form_actions.push(action);
+        let run = check.clone();
+        let action = Action::new(mtm, move || run());
+        action.attach(&field);
+        self.form_actions.push(action);
+        let below = FlippedView::new(mtm, rect(0.0, SCREEN_TOP + 62.0, width, layout::ROOMS_HEIGHT - SCREEN_TOP - 62.0));
+        self.body.addSubview(&below);
+        self.focus = Some(Retained::into_super(Retained::into_super(field.clone())));
+        self.form = Some(Form { fields: vec![field], below, beside: Some(go), _watchers: Vec::new() });
+        self.lay_below(vm, mtm);
+    }
+
+    fn lay_members(&mut self, vm: &RoomsVm, members: &MembersVm, mtm: MainThreadMarker) {
+        let (width, height) = (layout::ROOMS_WIDTH, layout::ROOMS_HEIGHT);
+        let room = members.room.clone();
+        self.lay_header_back(vm, members.title, &members.subtitle, move || Msg::ShowInvite(room.clone()), mtm);
+        let top = SCREEN_TOP + 10.0;
+        if let Some(status) = &members.status {
+            let words = label(status, 12.0, Weight::Medium, theme::MUTED, mtm);
+            words.setAlignment(NSTextAlignment::Center);
+            words.setFrame(rect(12.0, top + 40.0, width - 24.0, 18.0));
+            self.body.addSubview(&words);
+            return;
+        }
+        let note = wrapped(members.note, 11.0, Weight::Regular, theme::MUTED, width - 40.0, mtm);
+        let note_height = note.frame().size.height;
+        note.setFrameOrigin(NSPoint::new(20.0, height - 16.0 - note_height));
+        self.body.addSubview(&note);
+        let area = rect(12.0, top, width - 24.0, height - 16.0 - note_height - 10.0 - top);
+        let row_height = 50.0;
+        let document = FlippedView::new(mtm, rect(0.0, 0.0, area.size.width, (members.rows.len() as f64 * row_height).max(area.size.height)));
+        for (index, vm) in members.rows.iter().enumerate() {
+            let row = FlippedView::new(mtm, rect(0.0, index as f64 * row_height, area.size.width, row_height - 2.0));
+            let face = avatar(&vm.face, rect(8.0, 10.0, 28.0, 28.0), false, mtm);
+            row.addSubview(&face);
+            let name = label(&vm.name, 12.5, if vm.named { Weight::Semibold } else { Weight::Medium }, if vm.named && !vm.away { theme::INK } else { theme::MUTED }, mtm);
+            name.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+            name.setFrame(rect(46.0, 7.0, area.size.width - 46.0 - 96.0, 18.0));
+            row.addSubview(&name);
+            let status = label(&vm.status, 11.0, Weight::Regular, theme::MUTED, mtm);
+            status.setFrame(rect(46.0, 25.0, area.size.width - 46.0 - 96.0, 16.0));
+            row.addSubview(&status);
+            if vm.away {
+                face.setAlphaValue(0.55);
+            }
+            if let Some(remove) = &vm.remove {
+                let (room, member, who) = (remove.room.clone(), remove.member.clone(), remove.name.clone());
+                let ask = move || Msg::AskRemoveMember { room: room.clone(), member: member.clone(), name: who.clone() };
+                let (out, action) = button(remove.words, "", false, rect(area.size.width - 8.0 - 80.0, 10.0, 80.0, 28.0), self.post(ask), mtm);
+                row.addSubview(&out);
+                self.actions.push(action);
+            }
+            row.setAccessibilityElement(true);
+            row.setAccessibilityLabel(Some(&ns(&format!("{}, {}", vm.name, vm.status))));
+            document.addSubview(&row);
+        }
+        let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), area);
+        scroll.setDrawsBackground(false);
+        scroll.setHasVerticalScroller(members.rows.len() as f64 * row_height > area.size.height);
+        scroll.setAutohidesScrollers(true);
+        scroll.setScrollerStyle(NSScrollerStyle::Overlay);
+        scroll.setHorizontalScrollElasticity(NSScrollElasticity::None);
+        scroll.setDocumentView(Some(&document));
+        self.body.addSubview(&scroll);
+        self.scroll = Some(scroll);
+    }
+
+    fn lay_invite(&mut self, vm: &RoomsVm, invite: &InviteVm, mtm: MainThreadMarker) {
+        let (width, height) = (layout::ROOMS_WIDTH, layout::ROOMS_HEIGHT);
+        self.lay_header(vm, invite.title, &invite.subtitle, mtm);
+        let boxed: Retained<MembersView> = unsafe { msg_send![MembersView::alloc(mtm), initWithFrame: rect(14.0, SCREEN_TOP - 4.0, width - 28.0, 58.0)] };
+        let host = label(&invite.host, 12.5, Weight::Semibold, if invite.link.is_some() { theme::INK } else { theme::MUTED }, mtm);
+        host.setFrame(rect(14.0, 10.0, width - 56.0, 18.0));
+        boxed.addSubview(&host);
+        let left = label(&invite.left, 11.0, Weight::Medium, theme::MUTED, mtm);
+        left.setFrame(rect(14.0, 31.0, width - 56.0, 16.0));
+        boxed.addSubview(&left);
+        self.body.addSubview(&boxed);
+        let mut y = SCREEN_TOP + 64.0;
+        let room = invite.room.clone();
+        let (copy, action) = button(invite.copy_link, if invite.copied { "check" } else { "" }, false, rect(14.0, y, width - 28.0, 32.0), self.post(|| Msg::CopyInviteLink), mtm);
+        copy.setKeyEquivalent(&ns("\r"));
+        copy.setEnabled(invite.link.is_some() && !invite.busy);
+        self.body.addSubview(&copy);
+        self.actions.push(action);
+        y += 44.0;
+        if let Some(failure) = &invite.failure {
+            self.body.addSubview(&failure_line(failure, y - 6.0, mtm));
+            y += 20.0;
+        }
+        if let Some(code) = &invite.code {
+            let caption = label(invite.code_caption, 11.5, Weight::Semibold, theme::MUTED, mtm);
+            caption.setFrame(rect(20.0, y, width - 40.0, 16.0));
+            self.body.addSubview(&caption);
+            let shown = label(code, 15.0, Weight::Semibold, theme::INK, mtm);
+            shown.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(15.0, unsafe { NSFontWeightSemibold })));
+            shown.setSelectable(true);
+            shown.setFrame(rect(20.0, y + 24.0, 180.0, 22.0));
+            self.body.addSubview(&shown);
+            let (copy_code, action) = button(invite.copy_code, "", false, rect(width - 14.0 - 92.0, y + 20.0, 92.0, 28.0), self.post(|| Msg::CopyInviteCode), mtm);
+            copy_code.setEnabled(!invite.busy);
+            self.body.addSubview(&copy_code);
+            self.actions.push(action);
+            y += 62.0;
+        }
+        for note in &invite.notes {
+            let words = wrapped(note, 11.0, Weight::Regular, theme::MUTED, width - 40.0, mtm);
+            words.setFrameOrigin(NSPoint::new(20.0, y));
+            y += words.frame().size.height + 4.0;
+            self.body.addSubview(&words);
+        }
+        y += 8.0;
+        let rule = NSBox::initWithFrame(NSBox::alloc(mtm), rect(18.0, y, width - 36.0, 1.0));
+        rule.setBoxType(NSBoxType::Separator);
+        self.body.addSubview(&rule);
+        y += 12.0;
+        let half = (width - 28.0 - 8.0) / 2.0;
+        let renew_room = room.clone();
+        let (renew, action) = button(invite.renew, "refresh-cw", false, rect(14.0, y, half, 28.0), self.post(move || Msg::RenewInvite(renew_room.clone())), mtm);
+        renew.setEnabled(!invite.busy);
+        self.body.addSubview(&renew);
+        self.actions.push(action);
+        let delete_room = room.clone();
+        let (delete, action) = button(invite.delete, "", false, rect(14.0 + half + 8.0, y, half, 28.0), self.post(move || Msg::DeleteInvite(delete_room.clone())), mtm);
+        delete.setEnabled(!invite.busy && invite.link.is_some());
+        self.body.addSubview(&delete);
+        self.actions.push(action);
+        // Everyone the room lets in, a step further.
+        let members_room = room.clone();
+        let entry_frame = rect(14.0, height - 14.0 - 28.0 - 12.0 - 40.0, width - 28.0, 40.0);
+        let boxed: Retained<MembersView> = unsafe { msg_send![MembersView::alloc(mtm), initWithFrame: entry_frame] };
+        let icon = tinted_icon("users", 13.0, theme::INK, mtm);
+        icon.setFrameOrigin(NSPoint::new(14.0, 13.5));
+        boxed.addSubview(&icon);
+        let words = label(invite.members, 12.5, Weight::Semibold, theme::INK, mtm);
+        words.setFrame(rect(34.0, 11.0, width - 120.0, 18.0));
+        boxed.addSubview(&words);
+        let chevron = tinted_icon("chevron-right", 12.0, theme::MUTED, mtm);
+        chevron.setFrameOrigin(NSPoint::new(entry_frame.size.width - 26.0, 14.0));
+        boxed.addSubview(&chevron);
+        self.body.addSubview(&boxed);
+        let (entry, action) = button("", "", false, entry_frame, self.post(move || Msg::ShowMembers(members_room.clone())), mtm);
+        entry.setBordered(false);
+        entry.setTransparent(true);
+        entry.setAccessibilityLabel(Some(&ns(invite.members)));
+        self.body.addSubview(&entry);
+        self.actions.push(action);
+        // Deleting the room is out of the way, at the bottom, and asks first.
+        let quit_room = room.clone();
+        let (remove, action) = button(invite.remove_room, "", false, rect(18.0, height - 14.0 - 28.0, text_width(invite.remove_room, &kit::font(12.0, Weight::Medium)).ceil() + 4.0, 28.0), self.post(move || Msg::AskQuitRoom(quit_room.clone())), mtm);
+        remove.setBordered(false);
+        remove.setContentTintColor(Some(&color(theme::LOW)));
+        let attributes = kit::attributes(&kit::font(12.0, Weight::Medium), Some(&color(theme::LOW)));
+        let title = unsafe { NSAttributedString::initWithString_attributes(NSAttributedString::alloc(), &ns(invite.remove_room), Some(&attributes)) };
+        remove.setAttributedTitle(&title);
+        self.body.addSubview(&remove);
+        self.actions.push(action);
     }
 }
 
-/// A room on offer: its name and what it is like, how people show up there, who is at work, and a way in,
-/// or out of a room the person is in, whose card is edged as work under way is.
-fn room_card(vm: &RoomCardVm, width: f64, poster: Arc<dyn Poster>, mtm: MainThreadMarker) -> (Retained<RoomCard>, Retained<Action>) {
-    let style = if vm.joined { SessionState::Running } else { SessionState::Seen };
-    let card = RoomCard::new(mtm, rect(0.0, 0.0, width, ROOM_CARD_HEIGHT), style, Some(Chip::from(&vm.visibility)));
+/// The button a form's Return presses: a form's own submit, found again when its state changes.
+const SUBMIT_TAG: isize = 7;
+
+/// A label that wraps to `width`, as tall as its lines.
+fn wrapped(text: &str, size: f64, weight: Weight, ink: theme::Rgb, width: f64, mtm: MainThreadMarker) -> Retained<NSTextField> {
+    let words = label(text, size, weight, ink, mtm);
+    words.setMaximumNumberOfLines(0);
+    words.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
+    words.setPreferredMaxLayoutWidth(width);
+    let height = words.fittingSize().height.ceil();
+    words.setFrameSize(NSSize::new(width, height));
+    words
+}
+
+/// Why something failed, in red under what it was about.
+fn failure_line(text: &str, y: f64, mtm: MainThreadMarker) -> Retained<NSView> {
+    let width = layout::ROOMS_WIDTH;
+    let line = FlippedView::new(mtm, rect(0.0, y, width, 18.0));
+    let mark = tinted_icon("circle-alert", CHIP_ICON, theme::LOW, mtm);
+    mark.setFrameOrigin(NSPoint::new(20.0, 3.5));
+    line.addSubview(&mark);
+    let words = label(text, 11.0, Weight::Medium, theme::LOW, mtm);
+    words.setFrame(rect(20.0 + CHIP_ICON + 4.0, 1.0, width - 60.0, 16.0));
+    line.addSubview(&words);
+    Retained::into_super(line)
+}
+
+/// A button on a room's card.
+struct CardButton {
+    title: &'static str,
+    icon: &'static str,
+    trailing: bool,
+    enabled: bool,
+    tooltip: Option<String>,
+    run: Rc<dyn Fn()>,
+}
+
+/// A room's buttons in the list: its owner's way to the invite link, a member's way out for good, and the
+/// way in or out.
+fn list_buttons(vm: &RoomCardVm, poster: &Arc<dyn Poster>) -> Vec<CardButton> {
+    let room = vm.id.clone();
+    let on = |make: fn(String) -> Msg| -> Rc<dyn Fn()> {
+        let (poster, room) = (poster.clone(), room.clone());
+        Rc::new(move || poster.post(make(room.clone())))
+    };
+    let mut buttons = Vec::new();
+    if let Some(invite) = vm.invite {
+        buttons.push(CardButton { title: invite, icon: "plus", trailing: false, enabled: true, tooltip: None, run: on(Msg::ShowInvite) });
+    }
+    if let Some(quit) = vm.quit {
+        buttons.push(CardButton { title: quit, icon: "", trailing: false, enabled: true, tooltip: None, run: on(Msg::AskQuitRoom) });
+    }
+    let (icon, trailing, run) = if vm.joined { ("", false, on(Msg::LeaveRoom)) } else { ("circle-arrow-right", true, on(Msg::JoinRoom)) };
+    buttons.push(CardButton { title: vm.button, icon, trailing, enabled: vm.shut.is_none(), tooltip: vm.shut.clone(), run });
+    buttons
+}
+
+/// A room on offer: its name and what it is like, how people show up there, who is at work, and its buttons.
+/// Every card is drawn alike: the heading over the list and the mark beside a joined room's name say which
+/// rooms the person is in, rather than a colour that elsewhere means work under way.
+fn room_card(vm: &RoomCardVm, width: f64, buttons: &[CardButton], mtm: MainThreadMarker) -> (Retained<RoomCard>, Vec<Retained<Action>>) {
+    let card = RoomCard::new(mtm, rect(0.0, 0.0, width, ROOM_CARD_HEIGHT), Some(Chip::from(&vm.visibility)));
     let name = label(&vm.name, 13.5, Weight::Semibold, theme::INK, mtm);
     name.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-    name.setFrame(rect(16.0, 11.0, card.chip_left() - 8.0 - 16.0, 19.0));
+    let badge = vm.badge.map(|words| (tinted_icon("circle-check", CHIP_ICON, theme::INK, mtm), label(words, 11.0, Weight::Semibold, theme::INK, mtm)));
+    let badge_width = badge.as_ref().map_or(0.0, |(_, words)| BADGE_GAP + CHIP_ICON + 3.0 + fitting_width(words));
+    let name_width = fitting_width(&name).min(card.chip_left() - 8.0 - 16.0 - badge_width);
+    name.setFrame(rect(16.0, 11.0, name_width, 19.0));
     card.addSubview(&name);
+    if let Some((check, words)) = badge {
+        let x = 16.0 + name_width + BADGE_GAP;
+        check.setFrameOrigin(NSPoint::new(x, 11.0 + (19.0 - CHIP_ICON) / 2.0 + 0.5));
+        words.setFrame(rect(x + CHIP_ICON + 3.0, 13.0, fitting_width(&words), 16.0));
+        card.addSubview(&check);
+        card.addSubview(&words);
+    }
     let tagline = label(&vm.tagline, 11.0, Weight::Regular, theme::MUTED, mtm);
     tagline.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
     tagline.setFrame(rect(16.0, 33.0, width - 32.0, 16.0));
@@ -744,26 +1373,42 @@ fn room_card(vm: &RoomCardVm, width: f64, poster: Arc<dyn Poster>, mtm: MainThre
     for (index, member) in vm.faces.iter().enumerate() {
         card.addSubview(&avatar(member, rect(16.0 + index as f64 * step, 63.0, face, face), true, mtm));
     }
-    let faces = if vm.faces.is_empty() { 0.0 } else { face + step * (vm.faces.len() - 1) as f64 + 8.0 };
-    let pill = count_pill(vm.working.count, vm.working.icon, vm.working.spinning, vm.working.color, &vm.working.words, NSPoint::new(16.0 + faces, 65.0), mtm);
-    let after = pill.frame().origin.x + pill.frame().size.width + 6.0;
-    card.addSubview(&pill);
+    // More at work than the faces show: how many more, on one more face at the stack's end.
+    let more = vm.working.count.saturating_sub(vm.faces.len());
+    let mut shown = vm.faces.len();
+    if more > 0 && shown > 0 {
+        let rest = FaceVm { avatar: None, initial: format!("+{more}") };
+        card.addSubview(&avatar(&rest, rect(16.0 + shown as f64 * step, 63.0, face, face), true, mtm));
+        shown += 1;
+    }
+    let mut after = 16.0;
+    if shown > 0 {
+        let faces_width = face + step * (shown - 1) as f64;
+        // The faces are the people at work, which their tooltip says.
+        let faces = NSView::initWithFrame(NSView::alloc(mtm), rect(16.0, 61.0, faces_width, 26.0));
+        faces.setToolTip(Some(&ns(&vm.working.words)));
+        card.addSubview(&faces);
+        after += faces_width + 8.0;
+    }
     let people = label(&vm.people, 11.0, Weight::Medium, theme::MUTED, mtm);
     people.setFrame(rect(after, 66.0, 80.0, 16.0));
     card.addSubview(&people);
-    let room = vm.id.clone();
-    let frame = rect(width - 14.0 - 96.0, 60.0, 96.0, 28.0);
-    let (button, action) = if vm.joined {
-        button(vm.button, "", false, frame, move || poster.post(Msg::LeaveRoom(room.clone())), mtm)
-    } else {
-        button(vm.button, "circle-arrow-right", true, frame, move || poster.post(Msg::JoinRoom(room.clone())), mtm)
-    };
-    if let Some(reason) = &vm.shut {
-        button.setEnabled(false);
-        button.setToolTip(Some(&ns(reason)));
+    // One button is the wide way in or out; two share its place.
+    let mut actions = Vec::new();
+    let mut right = width - 14.0;
+    for spec in buttons.iter().rev() {
+        let button_width = if buttons.len() == 1 { 96.0 } else { CARD_BUTTON };
+        let run = spec.run.clone();
+        let (made, action) = button(spec.title, spec.icon, spec.trailing, rect(right - button_width, 60.0, button_width, 28.0), move || run(), mtm);
+        made.setEnabled(spec.enabled);
+        if let Some(tooltip) = &spec.tooltip {
+            made.setToolTip(Some(&ns(tooltip)));
+        }
+        card.addSubview(&made);
+        actions.push(action);
+        right -= button_width + 6.0;
     }
-    card.addSubview(&button);
     card.setAccessibilityElement(true);
     card.setAccessibilityLabel(Some(&ns(&format!("{}, {}, {}, {}", vm.name, vm.visibility.text, vm.people, vm.working.words))));
-    (card, action)
+    (card, actions)
 }

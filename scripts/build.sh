@@ -45,6 +45,8 @@ info = {
     # The app words itself in these; declaring them lists Errand under System Settings' per-app languages.
     'CFBundleDevelopmentRegion': 'en',
     'CFBundleLocalizations': ['en', 'ko'],
+    # errand:// links, so an invite link's page can hand its code to Errand.
+    'CFBundleURLTypes': [{'CFBundleURLName': 'com.errand.app.invite', 'CFBundleURLSchemes': ['errand']}],
 }
 with (app / 'Contents/Info.plist').open('wb') as f:
     plistlib.dump(info, f)

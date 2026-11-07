@@ -5,7 +5,7 @@ use crate::platform::Platform;
 use errand_core::format::{self, timestamp_from_seconds};
 use errand_core::model::{AccountInfo, AppState, Msg, Profile, WidgetPreferences, update};
 use errand_core::ports::RoomService;
-use errand_core::rooms;
+use errand_core::rooms::{self, Invite, Role, RoomError, RoomMember, RoomSummary, RoomsScreen};
 use errand_core::reset_history::ResetHistory;
 use errand_core::sessions::{Question, SessionRecords, SessionRow, TaskCounts, VisibleSession};
 use errand_core::update::Release;
@@ -106,6 +106,39 @@ pub fn state(arguments: &[String], now: Timestamp, language: Language) -> AppSta
         // Read again, the person now counted in the rooms they are in.
         state.rooms.list = sample.rooms(now).unwrap_or_default();
         state.rooms.expanded = Some(if has("--preview-private-room") { "team" } else { "late-night" }.to_owned());
+    }
+    // The steps of making and joining a private room, in the bubble in place of the list.
+    let team = || state.rooms.list.iter().find(|room| room.id == "team").cloned().map(|room| RoomSummary { role: None, ..room });
+    let code = "K7QFM2XA9P".to_owned();
+    let screen = if has("--preview-create") {
+        Some(RoomsScreen::Create { sending: false, failure: None })
+    } else if has("--preview-invite") {
+        let invite = Invite { code: code.clone(), expires_at: now + SignedDuration::from_hours(24 * 7), uses_left: 10 };
+        Some(RoomsScreen::Invite { room: "team".to_owned(), invite: Some(invite), loading: false, failure: None, copied: has("--preview-copied") })
+    } else if has("--preview-members") {
+        // The owner, two here now, and two who were here days ago, kept by the nickname they had.
+        let someone = |id: &str, name: &str, present: bool, working: bool, days: i64| RoomMember {
+            id: id.to_owned(),
+            name: Some(name.to_owned()),
+            avatar: Some(errand_core::avatar::Avatar::from_seed(name).code()),
+            role: Role::Member,
+            me: false,
+            present,
+            working,
+            last_seen: Some(now - SignedDuration::from_hours(24 * days)),
+        };
+        let owner = RoomMember { role: Role::Owner, me: true, ..someone("me", &state.profile.name, true, false, 0) };
+        let members = vec![owner, someone("1", "민지", true, true, 0), someone("2", "지훈", true, false, 0), someone("3", "서연", false, false, 2), someone("4", "도윤", false, false, 9)];
+        Some(RoomsScreen::Members { room: "team".to_owned(), members: Some(members), loading: false, failure: None })
+    } else if has("--preview-code") || has("--preview-link") {
+        Some(RoomsScreen::Code { code: code.clone(), checking: false, room: team(), failure: None, from_link: has("--preview-link"), accepting: false })
+    } else if has("--preview-code-error") {
+        Some(RoomsScreen::Code { code: "K7QFM2XA9Q".to_owned(), checking: false, room: None, failure: Some(RoomError::InviteNotFound), from_link: false, accepting: false })
+    } else {
+        None
+    };
+    if let Some(screen) = screen {
+        state.rooms.screen = screen;
     }
     state
 }
