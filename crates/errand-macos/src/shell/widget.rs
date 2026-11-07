@@ -8,7 +8,7 @@ use super::rooms::Rooms;
 use super::dock::{Dock, DockEvents};
 use super::tray::Tray;
 use super::kit::ns;
-use super::panel::{make_panel, primary_height, screen_frame, to_cocoa, to_core, visible_frames};
+use super::panel::{TypingPanel, make_panel, make_typing_panel, primary_height, screen_frame, to_cocoa, to_core, visible_frames};
 use errand_core::Language;
 use errand_core::layout::{self, DockShape, Rect, STACK_WIDTH};
 use errand_core::model::{AppState, Msg};
@@ -34,7 +34,7 @@ pub struct Widget {
     avatar_editor: AvatarEditor,
     pub tray_panel: Retained<NSPanel>,
     pub tray: Tray,
-    pub rooms_panel: Retained<NSPanel>,
+    pub rooms_panel: Retained<TypingPanel>,
     rooms: Rooms,
     poster: Arc<dyn Poster>,
     defaults: Retained<NSUserDefaults>,
@@ -60,6 +60,10 @@ impl Widget {
                 expand_room: {
                     let poster = poster.clone();
                     Rc::new(move |room: String| poster.post(Msg::ExpandRoom(room)))
+                },
+                remove_member: {
+                    let poster = poster.clone();
+                    Rc::new(move |room, member, name| poster.post(Msg::AskRemoveMember { room, member, name }))
                 },
                 drag_began: {
                     let poster = poster.clone();
@@ -102,7 +106,7 @@ impl Widget {
             let tray_panel = make_panel(mtm, NSSize::new(STACK_WIDTH, 120.0), language.tray_window_title());
             tray_panel.setContentView(Some(&tray.view));
             let rooms = Rooms::new(mtm, poster.clone());
-            let rooms_panel = make_panel(mtm, rooms.view.frame().size, language.rooms_title());
+            let rooms_panel = make_typing_panel(mtm, rooms.view.frame().size, language.rooms_title());
             rooms_panel.setContentView(Some(&rooms.view));
             let mut widget = Widget {
                 mtm,
@@ -274,7 +278,14 @@ impl Widget {
             if !self.rooms_panel.isVisible() {
                 self.rooms_panel.orderFrontRegardless();
             }
+            // A form just shown takes typing in its first field; the list gives typing back.
+            if let Some(focus) = self.rooms.take_focus() {
+                self.rooms_panel.set_typing(Some(&focus));
+            } else if !self.rooms.typing() {
+                self.rooms_panel.set_typing(None);
+            }
         } else {
+            self.rooms_panel.set_typing(None);
             self.rooms_panel.orderOut(None);
         }
         if state.tray_visible() {

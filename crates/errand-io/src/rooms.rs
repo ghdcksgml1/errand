@@ -5,7 +5,7 @@
 use errand_core::Timestamp;
 use errand_core::avatar::Avatar;
 use errand_core::ports::RoomService;
-use errand_core::rooms::{Face, Identity, Member, PresenceReport, Room, RoomError, RoomSummary, Visibility};
+use errand_core::rooms::{Face, Identity, Invite, Member, OWNED_ROOMS, PresenceReport, Role, Room, RoomError, RoomSummary, Visibility, invite_code};
 use errand_core::sessions::TaskCounts;
 use jiff::SignedDuration;
 use std::hash::{BuildHasher, RandomState};
@@ -19,6 +19,37 @@ struct Sample {
     /// Aliases the room gave in a public room; profile names in a private one.
     members: &'static [&'static str],
 }
+
+/// A room as the samples have it now: one of [`SAMPLES`], or one the person made.
+struct Spot {
+    id: String,
+    name: String,
+    tagline: String,
+    visibility: Visibility,
+    members: Vec<&'static str>,
+    role: Option<Role>,
+}
+
+/// What the person changed in the samples this run.
+#[derive(Default)]
+struct Changes {
+    /// The person as each room they are in last heard them, by room.
+    present: Vec<(String, Member)>,
+    /// Private rooms the person made: id, name, tagline.
+    made: Vec<(String, String, String)>,
+    /// Invites to the person's rooms, by room, newest last.
+    invites: Vec<(String, Invite)>,
+    /// Rooms the person is out of for good.
+    quit: Vec<String>,
+    /// Sample members turned out of a room, by member id.
+    removed: Vec<String>,
+    /// Makes room ids and codes differ.
+    counter: u64,
+}
+
+/// How long a new invite lasts, and for how many.
+const INVITE_DAYS: i64 = 7;
+const INVITE_USES: usize = 10;
 
 const SAMPLES: [Sample; 5] = [
     Sample {
@@ -68,8 +99,7 @@ const FACES: usize = 3;
 pub struct SampleRooms {
     /// Picks the person's alias, so it differs from launch to launch and says nothing about them.
     alias_seed: u64,
-    /// The person as each room they are in last heard them, by room.
-    present: Mutex<Vec<(String, Member)>>,
+    changes: Mutex<Changes>,
 }
 
 impl Default for SampleRooms {
@@ -80,27 +110,56 @@ impl Default for SampleRooms {
 
 impl SampleRooms {
     pub fn new() -> SampleRooms {
-        SampleRooms { alias_seed: RandomState::new().hash_one("alias"), present: Mutex::new(Vec::new()) }
+        SampleRooms { alias_seed: RandomState::new().hash_one("alias"), changes: Mutex::new(Changes::default()) }
+    }
+
+    fn changes(&self) -> std::sync::MutexGuard<'_, Changes> {
+        self.changes.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The person in `room`, if they are in it.
     fn me(&self, room: &str) -> Option<Member> {
-        let present = self.present.lock().unwrap_or_else(PoisonError::into_inner);
-        present.iter().find(|(id, _)| id == room).map(|(_, me)| me.clone())
+        self.changes().present.iter().find(|(id, _)| id == room).map(|(_, me)| me.clone())
     }
 
-    fn members(&self, sample: &Sample, now: Timestamp) -> Vec<Member> {
+    /// The rooms as they are now: the samples the person is not out of, and the ones they made. The private
+    /// sample room is the person's own, so making invites and turning people out can be tried.
+    fn spots(&self) -> Vec<Spot> {
+        let changes = self.changes();
+        let samples = SAMPLES.iter().filter(|sample| !changes.quit.iter().any(|id| id == sample.id)).map(|sample| Spot {
+            id: sample.id.to_owned(),
+            name: sample.name.to_owned(),
+            tagline: sample.tagline.to_owned(),
+            visibility: sample.visibility,
+            members: sample.members.iter().copied().filter(|name| !changes.removed.contains(&format!("{}/{name}", sample.id))).collect(),
+            role: (sample.visibility == Visibility::Private).then_some(Role::Owner),
+        });
+        let made = changes.made.iter().map(|(id, name, tagline)| Spot {
+            id: id.clone(),
+            name: name.clone(),
+            tagline: tagline.clone(),
+            visibility: Visibility::Private,
+            members: Vec::new(),
+            role: Some(Role::Owner),
+        });
+        samples.chain(made).collect()
+    }
+
+    fn spot(&self, room: &str) -> Option<Spot> {
+        self.spots().into_iter().find(|spot| spot.id == room)
+    }
+
+    fn members(&self, spot: &Spot, now: Timestamp) -> Vec<Member> {
         let minute = now.as_second().div_euclid(60);
-        sample
-            .members
+        spot.members
             .iter()
             .map(|name| {
-                let seed = seed(sample.id, name);
+                let seed = seed(&spot.id, name);
                 let (tasks, quiet) = activity(seed, minute);
                 Member {
-                    id: format!("{}/{name}", sample.id),
+                    id: format!("{}/{name}", spot.id),
                     name: (*name).to_owned(),
-                    avatar: character(seed, &format!("{}/{name}", sample.id)),
+                    avatar: character(seed, &format!("{}/{name}", spot.id)),
                     tasks,
                     last_active: now - SignedDuration::from_mins(quiet),
                     joined_at: Some(joined(seed, now)),
@@ -108,6 +167,37 @@ impl SampleRooms {
                 }
             })
             .collect()
+    }
+
+    fn summary(&self, spot: &Spot, now: Timestamp) -> RoomSummary {
+        let mut members = self.members(spot, now);
+        members.extend(self.me(&spot.id));
+        let working: Vec<&Member> = members.iter().filter(|member| member.tasks.running > 0).collect();
+        RoomSummary {
+            id: spot.id.clone(),
+            name: spot.name.clone(),
+            tagline: spot.tagline.clone(),
+            visibility: spot.visibility,
+            members: members.len(),
+            working: working.len(),
+            faces: working.iter().take(FACES).map(|member| Face { name: member.name.clone(), avatar: member.avatar.clone() }).collect(),
+            role: spot.role,
+        }
+    }
+
+    /// The room a live invite opens.
+    fn invited(&self, code: &str, now: Timestamp) -> Result<Spot, RoomError> {
+        let code = invite_code(code).ok_or(RoomError::InviteNotFound)?;
+        let room = {
+            let changes = self.changes();
+            let live = changes.invites.iter().find(|(_, invite)| invite.code == code && invite.uses_left > 0 && invite.expires_at > now);
+            live.map(|(room, _)| room.clone()).ok_or(RoomError::InviteNotFound)?
+        };
+        self.spot(&room).ok_or(RoomError::InviteNotFound)
+    }
+
+    fn owned(&self, room: &str) -> Result<Spot, RoomError> {
+        self.spot(room).filter(|spot| spot.role == Some(Role::Owner)).ok_or(RoomError::NotFound)
     }
 
     /// The alias a public room gives the person: one nobody else in it has.
@@ -125,35 +215,20 @@ impl SampleRooms {
 
 impl RoomService for SampleRooms {
     fn rooms(&self, now: Timestamp) -> Result<Vec<RoomSummary>, RoomError> {
-        Ok(SAMPLES
-            .iter()
-            .map(|sample| {
-                let mut members = self.members(sample, now);
-                members.extend(self.me(sample.id));
-                let working: Vec<&Member> = members.iter().filter(|member| member.tasks.running > 0).collect();
-                RoomSummary {
-                    id: sample.id.to_owned(),
-                    name: sample.name.to_owned(),
-                    tagline: sample.tagline.to_owned(),
-                    visibility: sample.visibility,
-                    members: members.len(),
-                    working: working.len(),
-                    faces: working.iter().take(FACES).map(|member| Face { name: member.name.clone(), avatar: member.avatar.clone() }).collect(),
-                }
-            })
-            .collect())
+        Ok(self.spots().iter().map(|spot| self.summary(spot, now)).collect())
     }
 
     fn sync(&self, room: &str, report: &PresenceReport, now: Timestamp) -> Result<Room, RoomError> {
         // A room the samples do not have, perhaps one joined on a server, is gone, as the server would say.
-        let sample = SAMPLES.iter().find(|sample| sample.id == room).ok_or(RoomError::NotFound)?;
-        let mut members = self.members(sample, now);
+        let sample = self.spot(room).ok_or(RoomError::NotFound)?;
+        let mut members = self.members(&sample, now);
         // A public room never shows a name, even one sent to it; a private one shows the person's own.
         let name = match (&report.identity, sample.visibility) {
             (Identity::Profile(name), Visibility::Private) => name.clone(),
             _ => self.alias(&members),
         };
-        let mut present = self.present.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut changes = self.changes();
+        let present = &mut changes.present;
         // In since the first report, until they leave.
         let joined_at = present.iter().find(|(id, _)| id == room).and_then(|(_, me)| me.joined_at).unwrap_or(now);
         let avatar = Some(report.avatar.code());
@@ -161,16 +236,97 @@ impl RoomService for SampleRooms {
         present.retain(|(id, _)| id != room);
         present.push((room.to_owned(), me.clone()));
         members.push(me);
-        Ok(Room { id: sample.id.to_owned(), name: sample.name.to_owned(), tagline: sample.tagline.to_owned(), visibility: sample.visibility, members })
+        Ok(Room { id: sample.id, name: sample.name, tagline: sample.tagline, visibility: sample.visibility, members, role: sample.role })
     }
 
     fn leave(&self, room: &str) {
-        self.present.lock().unwrap_or_else(PoisonError::into_inner).retain(|(id, _)| id != room);
+        self.changes().present.retain(|(id, _)| id != room);
+    }
+
+    fn create_room(&self, name: &str, tagline: &str, now: Timestamp) -> Result<RoomSummary, RoomError> {
+        let owned = self.spots().iter().filter(|spot| spot.role == Some(Role::Owner)).count();
+        if owned >= OWNED_ROOMS {
+            return Err(RoomError::TooManyOwned);
+        }
+        let id = {
+            let mut changes = self.changes();
+            changes.counter += 1;
+            let id = format!("p-sample{}", changes.counter);
+            changes.made.push((id.clone(), name.to_owned(), tagline.to_owned()));
+            id
+        };
+        let spot = self.spot(&id).ok_or(RoomError::NotFound)?;
+        Ok(self.summary(&spot, now))
+    }
+
+    fn invites(&self, room: &str, now: Timestamp) -> Result<Vec<Invite>, RoomError> {
+        self.owned(room)?;
+        let changes = self.changes();
+        let live = changes.invites.iter().rev().filter(|(id, invite)| id == room && invite.uses_left > 0 && invite.expires_at > now);
+        Ok(live.map(|(_, invite)| invite.clone()).collect())
+    }
+
+    fn make_invite(&self, room: &str, now: Timestamp) -> Result<Invite, RoomError> {
+        self.owned(room)?;
+        let mut changes = self.changes();
+        changes.counter += 1;
+        let code = sample_code(self.alias_seed ^ changes.counter.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        let invite = Invite { code, expires_at: now + SignedDuration::from_hours(24 * INVITE_DAYS), uses_left: INVITE_USES };
+        changes.invites.push((room.to_owned(), invite.clone()));
+        Ok(invite)
+    }
+
+    fn delete_invite(&self, room: &str, code: &str) -> Result<(), RoomError> {
+        self.owned(room)?;
+        self.changes().invites.retain(|(id, invite)| !(id == room && invite.code == code));
+        Ok(())
+    }
+
+    fn check_invite(&self, code: &str, now: Timestamp) -> Result<RoomSummary, RoomError> {
+        let spot = self.invited(code, now)?;
+        Ok(self.summary(&spot, now))
+    }
+
+    /// The sample rooms the person owns are already theirs, so an invite to one lets them in without using it.
+    fn accept_invite(&self, code: &str, now: Timestamp) -> Result<RoomSummary, RoomError> {
+        let spot = self.invited(code, now)?;
+        Ok(self.summary(&spot, now))
+    }
+
+    fn quit_room(&self, room: &str) -> Result<(), RoomError> {
+        let spot = self.spot(room).filter(|spot| spot.role.is_some()).ok_or(RoomError::NotFound)?;
+        let mut changes = self.changes();
+        changes.present.retain(|(id, _)| id != room);
+        changes.invites.retain(|(id, _)| id != room);
+        changes.made.retain(|(id, _, _)| id != room);
+        changes.quit.push(spot.id);
+        Ok(())
+    }
+
+    fn remove_member(&self, room: &str, member: &str) -> Result<(), RoomError> {
+        let spot = self.owned(room)?;
+        if !spot.members.iter().any(|name| format!("{room}/{name}") == member) {
+            return Err(RoomError::NotFound);
+        }
+        self.changes().removed.push(member.to_owned());
+        Ok(())
     }
 
     fn sample(&self) -> bool {
         true
     }
+}
+
+/// An invite code drawn from a number: ten characters of Crockford base32.
+fn sample_code(mut number: u64) -> String {
+    const CROCKFORD: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    (0..10)
+        .map(|_| {
+            let digit = CROCKFORD[(number % 32) as usize] as char;
+            number = (number / 32) ^ 0x5bd1_e995;
+            digit
+        })
+        .collect()
 }
 
 /// A sample member's character, drawn from who they are so it stays theirs. About one in four, one in each

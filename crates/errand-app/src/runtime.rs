@@ -189,7 +189,57 @@ impl Runtime {
                 let _ = stores::save_joined_rooms(&self.platform.joined_rooms, &self.state.rooms.remembered());
                 None
             }
+            Effect::CreateRoom { name, tagline } => {
+                self.in_background(move |rooms| Msg::RoomCreated(rooms.create_room(&name, &tagline, errand_io::now())));
+                None
+            }
+            Effect::ReadInvites(room) => {
+                self.in_background(move |rooms| Msg::InvitesRead(room.clone(), rooms.invites(&room, errand_io::now())));
+                None
+            }
+            Effect::MakeInvite { room, replacing } => {
+                self.in_background(move |rooms| {
+                    // The link it replaces stops working first; if that fails, no second link is made.
+                    let replaced = replacing.map_or(Ok(()), |code| rooms.delete_invite(&room, &code));
+                    Msg::InviteMade(room.clone(), replaced.and_then(|()| rooms.make_invite(&room, errand_io::now())))
+                });
+                None
+            }
+            Effect::DeleteInvite { room, code } => {
+                self.in_background(move |rooms| Msg::InviteDeleted(room.clone(), rooms.delete_invite(&room, &code)));
+                None
+            }
+            Effect::CheckInvite(code) => {
+                self.in_background(move |rooms| Msg::InviteChecked(code.clone(), rooms.check_invite(&code, errand_io::now())));
+                None
+            }
+            Effect::AcceptInvite(code) => {
+                self.in_background(move |rooms| Msg::InviteAccepted(code.clone(), rooms.accept_invite(&code, errand_io::now())));
+                None
+            }
+            Effect::QuitRoom(room) => {
+                self.in_background(move |rooms| Msg::RoomQuit(room.clone(), rooms.quit_room(&room)));
+                None
+            }
+            Effect::RemoveMember { room, member } => {
+                self.in_background(move |rooms| Msg::MemberRemoved(room.clone(), rooms.remove_member(&room, &member)));
+                None
+            }
+            Effect::Copy(text) => {
+                self.shell.copy_text(&text);
+                None
+            }
+            Effect::Confirm(confirm) => {
+                self.shell.confirm(&confirm);
+                None
+            }
         }
+    }
+
+    /// Calls the rooms service off the main thread and posts what it says.
+    fn in_background(&self, call: impl FnOnce(&dyn errand_core::ports::RoomService) -> Msg + Send + 'static) {
+        let (rooms, poster) = (self.platform.rooms.clone(), self.poster.clone());
+        thread::spawn(move || poster.post(call(rooms.as_ref())));
     }
 
     fn read_accounts(&self) -> PerProvider<AccountInfo> {

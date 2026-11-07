@@ -20,6 +20,16 @@ pub const NICKNAME_LENGTH: usize = 20;
 /// How many rooms Errand joins at once, fewer than the server allows, so the tabs stay readable. Rooms an older
 /// Errand joined past this stay until the person leaves them.
 pub const MAX_ROOMS: usize = 3;
+/// How many private rooms one install may make, as the server counts them.
+pub const OWNED_ROOMS: usize = 5;
+/// The longest room name and tagline the server takes, in characters.
+pub const NAME_LENGTH: usize = 30;
+pub const TAGLINE_LENGTH: usize = 60;
+/// Where an invite link goes: a page on the rooms server that hands the code, kept in the link's fragment so no
+/// server ever hears it, on to Errand as an `errand://invite/<code>` link.
+pub const INVITE_PAGE: &str = "https://errand-backend.vercel.app/join";
+/// The scheme Errand opens links in.
+pub const URL_SCHEME: &str = "errand";
 
 /// Who may see a room, and so who the person shows up as in it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,6 +38,68 @@ pub enum Visibility {
     Public,
     /// By invitation; members show their own profiles.
     Private,
+}
+
+/// The person's standing in a private room they may come into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    /// Made it: invites others and can turn them out.
+    Owner,
+    /// Came in by an invite.
+    Member,
+}
+
+/// A code that lets others into a private room, for a week or ten people, whichever runs out first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Invite {
+    /// Ten characters of Crockford base32, as [`invite_code`] reads them.
+    pub code: String,
+    pub expires_at: Timestamp,
+    pub uses_left: usize,
+}
+
+impl Invite {
+    /// The link to send: the server's page, the code after a `#`.
+    pub fn link(&self) -> String {
+        format!("{INVITE_PAGE}#{}", grouped(&self.code, '-'))
+    }
+}
+
+/// How long an invite code is.
+pub const INVITE_CODE_LENGTH: usize = 10;
+const CROCKFORD: &str = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/// An invite code as typed or pasted: letters and digits only, any case, separators dropped, and the letters
+/// Crockford base32 leaves out read as the digits they look like. None unless ten valid characters remain.
+pub fn invite_code(text: &str) -> Option<String> {
+    let code: String = text
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|character| match character.to_ascii_uppercase() {
+            'O' => '0',
+            'I' | 'L' => '1',
+            other => other,
+        })
+        .collect();
+    (code.len() == INVITE_CODE_LENGTH && code.chars().all(|character| CROCKFORD.contains(character))).then_some(code)
+}
+
+/// A code as people read it: in fours, `K7QF·M2XA·9P`, joined by `separator`.
+pub fn grouped(code: &str, separator: char) -> String {
+    let characters: Vec<char> = code.chars().collect();
+    characters.chunks(4).map(|chunk| chunk.iter().collect::<String>()).collect::<Vec<_>>().join(&separator.to_string())
+}
+
+/// The code an `errand://invite/<code>` link carries, if it is one.
+pub fn invite_from_link(link: &str) -> Option<String> {
+    let rest = link.trim().strip_prefix(URL_SCHEME)?.strip_prefix("://")?;
+    let (kind, code) = rest.split_once('/')?;
+    kind.eq_ignore_ascii_case("invite").then(|| invite_code(code.trim_end_matches('/'))).flatten()
+}
+
+/// A room's name or tagline as the server keeps it: no control characters, trimmed.
+pub fn clean_text(text: &str) -> String {
+    text.chars().filter(|character| !character.is_control()).collect::<String>().trim().to_owned()
 }
 
 /// Who the person shows up as in a room.
@@ -91,6 +163,8 @@ pub struct RoomSummary {
     pub working: usize,
     /// A few of the working members, for faces beside the counts.
     pub faces: Vec<Face>,
+    /// The person's standing in it, for a private room they may come into.
+    pub role: Option<Role>,
 }
 
 /// One person in a room, as the room reports them.
@@ -139,6 +213,8 @@ pub struct Room {
     pub tagline: String,
     pub visibility: Visibility,
     pub members: Vec<Member>,
+    /// The person's standing in it, for a private room they may come into.
+    pub role: Option<Role>,
 }
 
 impl Room {
@@ -165,12 +241,18 @@ pub enum RoomError {
     ClientTooOld,
     /// The server could not take what Errand sent: a mistake in Errand, not the person's.
     Rejected,
+    /// The person has made as many private rooms as the server allows.
+    TooManyOwned,
+    /// The room has as many live invites as the server allows.
+    TooManyInvites,
+    /// No such invite, or one that ran out.
+    InviteNotFound,
 }
 
 impl RoomError {
     /// The room no longer counts the person, so its last answer no longer says who is there with them.
     pub fn left_out(self) -> bool {
-        !matches!(self, RoomError::Unreachable | RoomError::RateLimited)
+        !matches!(self, RoomError::Unreachable | RoomError::RateLimited | RoomError::TooManyOwned | RoomError::TooManyInvites | RoomError::InviteNotFound)
     }
 }
 
@@ -213,9 +295,41 @@ pub struct RoomsState {
     pub sample: bool,
     /// A tick is on its way to count up the open room's times in the room.
     pub clock: bool,
+    /// What the bubble beside the dock shows: the list, or a step of making or joining a private room.
+    pub screen: RoomsScreen,
+}
+
+/// The bubble's screens past the list.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum RoomsScreen {
+    #[default]
+    List,
+    /// Naming a new private room. `sending` while the server makes it.
+    Create { sending: bool, failure: Option<RoomError> },
+    /// A room's invite link, for its owner.
+    Invite { room: String, invite: Option<Invite>, loading: bool, failure: Option<RoomError>, copied: bool },
+    /// Typing or pasting a code, or one a link brought, and the room it opens once the server says.
+    Code { code: String, checking: bool, room: Option<RoomSummary>, failure: Option<RoomError>, from_link: bool, accepting: bool },
 }
 
 impl RoomsState {
+    /// The person's standing in a room, as it last answered or the list says.
+    pub fn role(&self, id: &str) -> Option<Role> {
+        let answered = self.joined.iter().find(|joined| joined.id == id).and_then(|joined| joined.room.as_ref()).and_then(|room| room.role);
+        answered.or_else(|| self.list.iter().find(|room| room.id == id).and_then(|room| room.role))
+    }
+
+    /// A room's name as far as Errand knows it.
+    pub fn name(&self, id: &str) -> Option<&str> {
+        let listed = self.list.iter().find(|room| room.id == id).map(|room| room.name.as_str());
+        listed.or_else(|| self.joined.iter().find(|joined| joined.id == id).and_then(|joined| joined.room.as_ref()).map(|room| room.name.as_str()))
+    }
+
+    /// How many private rooms the person has made, as far as the list says.
+    pub fn owned(&self) -> usize {
+        self.list.iter().filter(|room| room.role == Some(Role::Owner)).count()
+    }
+
     pub fn is_joined(&self, id: &str) -> bool {
         self.joined.iter().any(|joined| joined.id == id)
     }

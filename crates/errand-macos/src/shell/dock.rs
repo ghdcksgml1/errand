@@ -28,6 +28,8 @@ use std::rc::Rc;
 const UPDATE_WIDTH: f64 = 112.0;
 
 /// What the dock asks of the widget around it.
+pub type RemoveMember = Rc<dyn Fn(String, String, String)>;
+
 #[derive(Clone)]
 pub struct DockEvents {
     pub toggle_details: Rc<dyn Fn()>,
@@ -40,6 +42,8 @@ pub struct DockEvents {
     pub edit_avatar: Rc<dyn Fn()>,
     /// A room's tab: shows or folds its people.
     pub expand_room: Rc<dyn Fn(String)>,
+    /// The owner's menu on someone's row: the room, the member's id in it, and their name.
+    pub remove_member: RemoveMember,
     /// The way to the rooms: opens their list, or closes it.
     pub show_rooms: Rc<dyn Fn()>,
     /// The update beside the profile.
@@ -393,6 +397,7 @@ impl Dock {
         let update_event = events.update.clone();
         let edit_avatar = events.edit_avatar.clone();
         let expand_event = events.expand_room.clone();
+        let remove_event = events.remove_member.clone();
         let show_rooms = events.show_rooms.clone();
         let view: Retained<DockView> = {
             let this = DockView::alloc(mtm).set_ivars(DockIvars {
@@ -479,7 +484,7 @@ impl Dock {
         profile.setAccessibilityRole(Some(unsafe { NSAccessibilityGroupRole }));
         view.addSubview(&profile);
         *view.ivars().header.borrow_mut() = Some(header.clone());
-        let rooms = DockRooms::new(mtm, expand_event, show_rooms, language);
+        let rooms = DockRooms::new(mtm, expand_event, remove_event, show_rooms, language);
         view.addSubview(&rooms.tabs);
         view.addSubview(&rooms.members);
         *view.ivars().strip.borrow_mut() = Some(rooms.strip.clone());

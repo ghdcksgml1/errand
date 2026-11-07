@@ -139,6 +139,7 @@ pub fn render(
         }
         PreviewKind::Dock => {
             let events = DockEvents {
+                remove_member: Rc::new(|_, _, _| {}),
                 toggle_details: nothing.clone(),
                 toggle_tray: nothing.clone(),
                 refresh: nothing.clone(),
@@ -158,6 +159,7 @@ pub fn render(
         }
         PreviewKind::Tray => {
             let events = DockEvents {
+                remove_member: Rc::new(|_, _, _| {}),
                 toggle_details: nothing.clone(),
                 toggle_tray: nothing.clone(),
                 refresh: nothing.clone(),

@@ -3,7 +3,7 @@
 //! session titles or a model's name, is shown as it came.
 
 use crate::avatar::{Avatar, Eyes, Mouth, Outfit, Part, Shape, Top};
-use crate::model::{Alert, Notice, OpenError};
+use crate::model::{Alert, Confirm, Notice, OpenError};
 use crate::provider::Provider;
 use crate::rooms::{MAX_ROOMS, Presence, RoomError, Visibility};
 use crate::sessions::SessionState;
@@ -905,6 +905,223 @@ impl Language {
             RoomError::RateLimited => self.pick("작업방 서버가 잠시 쉬어 달래요. 곧 다시 이어져요.", "The rooms server asked for a break. Back soon."),
             RoomError::ClientTooOld => self.pick("작업방을 쓰려면 Errand를 업데이트하세요.", "Update Errand to use work rooms."),
             RoomError::Rejected => self.pick("작업방 서버가 요청을 받지 않았어요.", "The rooms server turned the request down."),
+            RoomError::TooManyOwned => self.owned_rooms_full(),
+            RoomError::TooManyInvites => self.pick("이 방에 살아 있는 링크가 너무 많아요. 쓰지 않는 링크를 지우세요.", "This room has too many live links. Delete one you don't use."),
+            RoomError::InviteNotFound => self.pick("코드가 맞지 않거나 기한이 지났어요.", "That code is wrong or has run out."),
+        }
+    }
+
+    // Making and joining private rooms.
+
+    pub fn create_room_button(self) -> &'static str {
+        self.pick("방 만들기", "New room")
+    }
+
+    pub fn invite_code_button(self) -> &'static str {
+        self.pick("초대 코드 입력", "Enter invite code")
+    }
+
+    pub fn owned_rooms_full(self) -> &'static str {
+        // OWNED_ROOMS is 5.
+        self.pick("방은 5개까지 만들 수 있어요. 만든 방을 없애면 새로 만들 수 있어요.", "You can make up to 5 rooms. Remove one to make another.")
+    }
+
+    pub fn create_room_title(self) -> &'static str {
+        self.pick("비공개 방 만들기", "New private room")
+    }
+
+    pub fn create_room_subtitle(self) -> &'static str {
+        self.pick("초대 링크를 받은 사람만 들어올 수 있어요. 서로 닉네임과 캐릭터가 보여요.", "Only people with an invite link can come in. Everyone sees each other's nickname and character.")
+    }
+
+    pub fn room_name_label(self) -> &'static str {
+        self.pick("방 이름", "Name")
+    }
+
+    pub fn room_name_placeholder(self) -> &'static str {
+        self.pick("예: 우리 팀 야근방", "e.g. Team late shift")
+    }
+
+    pub fn room_tagline_label(self) -> &'static str {
+        self.pick("한 줄 소개 (선택)", "One-line description (optional)")
+    }
+
+    pub fn room_tagline_placeholder(self) -> &'static str {
+        self.pick("어떤 사람들이 모이는 방인가요?", "Who is this room for?")
+    }
+
+    pub fn create_room_notes(self) -> [&'static str; 2] {
+        match self {
+            Language::Korean => ["· 만든 사람이 방장이 돼요. 방장은 초대 링크를 만들고 멤버를 내보낼 수 있어요.", "· 방은 5개까지 만들 수 있어요."],
+            Language::English => ["· You own the room: you make invite links and can remove members.", "· You can make up to 5 rooms."],
+        }
+    }
+
+    pub fn create_room_go(self, sending: bool) -> &'static str {
+        match sending {
+            false => self.pick("만들고 초대 링크 받기", "Create and get a link"),
+            true => self.pick("만드는 중…", "Creating…"),
+        }
+    }
+
+    pub fn invite_title(self) -> &'static str {
+        self.pick("친구 초대하기", "Invite friends")
+    }
+
+    pub fn invite_subtitle(self, room: &str) -> String {
+        match self {
+            Language::Korean => format!("{room}에 들어올 수 있는 링크예요. 친구에게 보내 주세요."),
+            Language::English => format!("A link into {room}. Send it to your friends."),
+        }
+    }
+
+    /// How long an invite has left, and for how many.
+    pub fn invite_left(self, days: i64, uses: usize) -> String {
+        let when = match (self, days) {
+            (Language::Korean, 0) => "오늘까지".to_owned(),
+            (Language::Korean, days) => format!("{days}일 남음"),
+            (Language::English, 0) => "Ends today".to_owned(),
+            (Language::English, 1) => "1 day left".to_owned(),
+            (Language::English, days) => format!("{days} days left"),
+        };
+        match self {
+            Language::Korean => format!("{when} · {uses}번 더 쓸 수 있어요"),
+            Language::English => format!("{when} · {uses} more uses"),
+        }
+    }
+
+    pub fn copy_link(self, copied: bool) -> &'static str {
+        match copied {
+            false => self.pick("링크 복사", "Copy link"),
+            true => self.pick("복사했어요", "Copied"),
+        }
+    }
+
+    pub fn invite_code_caption(self) -> &'static str {
+        self.pick("링크를 못 여는 친구에게는 코드로", "Or the code, for someone who can't open links")
+    }
+
+    pub fn copy_code(self) -> &'static str {
+        self.pick("코드 복사", "Copy code")
+    }
+
+    pub fn invite_notes(self) -> [&'static str; 3] {
+        match self {
+            Language::Korean => ["· 받은 사람이 링크를 누르면 Errand가 열리고 이 방을 보여줘요.", "· 링크를 여는 것만으로는 들어가지 않아요.", "· 링크를 지워도 이미 들어온 사람은 그대로예요."],
+            Language::English => ["· Opening the link shows this room in Errand.", "· Opening it alone doesn't let anyone in.", "· Deleting a link keeps everyone already in."],
+        }
+    }
+
+    pub fn renew_invite(self) -> &'static str {
+        self.pick("새 링크 만들기", "New link")
+    }
+
+    pub fn delete_invite(self) -> &'static str {
+        self.pick("이 링크 지우기", "Delete link")
+    }
+
+    pub fn no_invite(self) -> &'static str {
+        self.pick("지금 쓸 수 있는 링크가 없어요.", "There's no live link right now.")
+    }
+
+    pub fn invite_loading(self) -> &'static str {
+        self.pick("링크를 불러오는 중…", "Getting the link…")
+    }
+
+    pub fn remove_room(self) -> &'static str {
+        self.pick("방 없애기", "Delete room")
+    }
+
+    pub fn code_title(self, from_link: bool) -> &'static str {
+        match from_link {
+            false => self.pick("초대 코드 입력", "Enter invite code"),
+            true => self.pick("초대받은 방", "You're invited"),
+        }
+    }
+
+    pub fn code_subtitle(self, from_link: bool) -> &'static str {
+        match from_link {
+            false => self.pick("친구에게 받은 코드를 붙여넣으면 그 방이 목록에 생겨요.", "Paste the code a friend sent you to add their room."),
+            true => self.pick("초대 링크로 열었어요. 어떤 방인지 보고 들어가세요.", "Opened from an invite link. See the room, then join."),
+        }
+    }
+
+    pub fn code_label(self) -> &'static str {
+        self.pick("초대 코드", "Invite code")
+    }
+
+    pub fn check_code(self, checking: bool) -> &'static str {
+        match checking {
+            false => self.pick("확인", "Check"),
+            true => self.pick("확인하는 중…", "Checking…"),
+        }
+    }
+
+    pub fn invited_to(self) -> &'static str {
+        self.pick("이 방에 초대받았어요", "You're invited to")
+    }
+
+    pub fn accept_invite(self, accepting: bool) -> &'static str {
+        match accepting {
+            false => self.pick("들어가기", "Join"),
+            true => self.pick("들어가는 중…", "Joining…"),
+        }
+    }
+
+    pub fn accept_notes(self) -> [&'static str; 2] {
+        match self {
+            Language::Korean => ["· 들어가면 이 방에서는 닉네임과 캐릭터가 보여요.", "· 무슨 작업인지는 여기서도 공유되지 않아요."],
+            Language::English => ["· In this room, your nickname and character show.", "· What you work on is never shared, here too."],
+        }
+    }
+
+    pub fn back(self) -> &'static str {
+        self.pick("뒤로", "Back")
+    }
+
+    pub fn invite_room(self) -> &'static str {
+        self.pick("초대", "Invite")
+    }
+
+    /// Out of a private room for good, beside its way in.
+    pub fn quit_room(self) -> &'static str {
+        self.pick("빠지기", "Remove")
+    }
+
+    pub fn remove_member(self) -> &'static str {
+        self.pick("내보내기", "Remove from room")
+    }
+
+    /// A member's row, for the room's owner.
+    pub fn remove_member_hint(self) -> &'static str {
+        self.pick("우클릭해서 내보내기", "Right-click to remove")
+    }
+
+    pub fn cancel(self) -> &'static str {
+        self.pick("취소", "Cancel")
+    }
+
+    /// A question, its text, and the button that goes ahead.
+    pub fn confirm(self, confirm: &Confirm) -> (String, String, &'static str) {
+        match (self, confirm) {
+            (Language::Korean, Confirm::QuitRoom { name, owner: true, .. }) => {
+                (format!("{name}을(를) 없앨까요?"), "방장이 빠지면 방이 사라지고, 모든 멤버의 목록에서도 없어져요. 되돌릴 수 없어요.".to_owned(), "방 없애기")
+            }
+            (Language::English, Confirm::QuitRoom { name, owner: true, .. }) => {
+                (format!("Delete {name}?"), "The room goes for everyone in it, and can't be brought back.".to_owned(), "Delete Room")
+            }
+            (Language::Korean, Confirm::QuitRoom { name, owner: false, .. }) => {
+                (format!("{name}에서 빠질까요?"), "목록에서 이 방이 사라져요. 다시 들어오려면 새 초대 링크가 필요해요.".to_owned(), "빠지기")
+            }
+            (Language::English, Confirm::QuitRoom { name, owner: false, .. }) => {
+                (format!("Remove {name}?"), "The room leaves your list. You'll need a new invite to come back.".to_owned(), "Remove")
+            }
+            (Language::Korean, Confirm::RemoveMember { name, .. }) => {
+                (format!("{name}님을 내보낼까요?"), "이 방에서 바로 빠지고, 다시 들어오려면 새 초대 링크가 필요해요.".to_owned(), "내보내기")
+            }
+            (Language::English, Confirm::RemoveMember { name, .. }) => {
+                (format!("Remove {name}?"), "They leave the room now and need a new invite to come back.".to_owned(), "Remove")
+            }
         }
     }
 

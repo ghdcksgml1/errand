@@ -1029,6 +1029,7 @@ mod widget {
             members: 3,
             working: 2,
             faces: vec![Face { name: "바쁜 너구리".to_owned(), avatar: Some(Avatar::from_seed("바쁜 너구리").code()) }],
+            role: None,
         };
         h.send(Msg::RoomsRead(Ok(vec![summary("late-night", "고독한 야근방", Visibility::Public), summary("team", "우리 팀 야근방", Visibility::Private)])));
         let list = rooms_panel.contentView().expect("the list's view");
@@ -1066,6 +1067,7 @@ mod widget {
             tagline: "불 꺼진 사무실".to_owned(),
             visibility,
             members: vec![member("졸린 수달", tasks(1, 1, 2), true), member("바쁜 너구리", tasks(0, 2, 0), false), member("조용한 부엉이", tasks(0, 0, 1), false)],
+            role: None,
         };
         h.send(Msg::RoomRead("late-night".to_owned(), Ok(room("late-night", "고독한 야근방", Visibility::Public))));
         let joined = tabs();
@@ -1198,8 +1200,9 @@ mod widget {
             members: 3,
             working: 1,
             faces: Vec::new(),
+            role: None,
         };
-        let room = |id: &str, name: &str| Room { id: id.to_owned(), name: name.to_owned(), tagline: String::new(), visibility: Visibility::Public, members: Vec::new() };
+        let room = |id: &str, name: &str| Room { id: id.to_owned(), name: name.to_owned(), tagline: String::new(), visibility: Visibility::Public, members: Vec::new(), role: None };
         let names = [("late-night", "고독한 야근방"), ("team", "우리 팀 야근방"), ("dawn", "새벽 코딩방"), ("deadline", "마감 직전방"), ("quiet", "조용히 집중방")];
         h.send(Msg::RoomsRead(Ok(names[..4].iter().map(|(id, name)| summary(id, name)).collect())));
         let join = |h: &mut Harness, (id, name): (&str, &str)| {

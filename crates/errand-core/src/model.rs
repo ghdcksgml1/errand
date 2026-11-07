@@ -5,7 +5,10 @@
 use crate::avatar::Avatar;
 use crate::provider::{PerProvider, Provider};
 use crate::reset_history::ResetHistory;
-use crate::rooms::{Joined, Room, RoomError, RoomSummary, RoomsState, Visibility, room_id};
+use crate::rooms::{
+    Invite, Joined, NAME_LENGTH, Role, Room, RoomError, RoomSummary, RoomsScreen, RoomsState, TAGLINE_LENGTH, Visibility, clean_text, invite_code,
+    invite_from_link, room_id,
+};
 use crate::sessions::{SessionRecords, SessionRow, SessionState, TaskCounts, VisibleSession, families};
 use crate::update::{self, Release, UpdateState};
 use crate::usage::{self, Mood, Reading, UsageError, UsageWindow};
@@ -76,6 +79,16 @@ pub enum Alert {
     OpenFailed(OpenError),
     /// The Dual Codex folder could not move to Errand's, with the system's reason.
     MigrationFailed(String),
+}
+
+/// A question the person answers before Errand goes on, asked in a dialog with a button that does it and one
+/// that does not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Confirm {
+    /// Out of a private room for good. For its owner the room goes with them, and everyone else loses it too.
+    QuitRoom { room: String, name: String, owner: bool },
+    /// Turning someone out of the person's room; they need a new invite to come back.
+    RemoveMember { room: String, member: String, name: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -274,6 +287,42 @@ pub enum Msg {
     RoomsRemembered(Vec<(String, Visibility)>),
     /// A second on, while the open room's people show: only their times in the room to draw again.
     RoomClock,
+    /// The bubble back to the list of rooms.
+    ShowRoomsList,
+    /// The bubble to naming a new private room.
+    ShowCreateRoom,
+    CreateRoom { name: String, tagline: String },
+    RoomCreated(Result<RoomSummary, RoomError>),
+    /// The bubble to a room's invite link, for its owner.
+    ShowInvite(String),
+    /// A room's live invites, newest first.
+    InvitesRead(String, Result<Vec<Invite>, RoomError>),
+    InviteMade(String, Result<Invite, RoomError>),
+    /// A new link in place of the one shown, which stops working.
+    RenewInvite(String),
+    /// The link shown stops working, and none takes its place until asked for.
+    DeleteInvite(String),
+    InviteDeleted(String, Result<(), RoomError>),
+    CopyInviteLink,
+    CopyInviteCode,
+    /// The bubble to typing or pasting an invite code.
+    ShowInviteCode,
+    /// A code typed or pasted, to see which room it opens.
+    CheckInvite(String),
+    InviteChecked(String, Result<RoomSummary, RoomError>),
+    /// In by the invite checked, then into the room.
+    AcceptInvite,
+    InviteAccepted(String, Result<RoomSummary, RoomError>),
+    /// A link Errand was opened with, such as `errand://invite/<code>`.
+    OpenLink(String),
+    /// Asks first, then `Confirmed`.
+    AskQuitRoom(String),
+    /// The person went ahead with what they were asked.
+    Confirmed(Confirm),
+    RoomQuit(String, Result<(), RoomError>),
+    /// Asks first, then `Confirmed`.
+    AskRemoveMember { room: String, member: String, name: String },
+    MemberRemoved(String, Result<(), RoomError>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -313,6 +362,26 @@ pub enum Effect {
     SaveRooms,
     /// Send `RoomClock` a `rooms::CLOCK_TICK` from now.
     TickRoomClock,
+    /// Make a private room, then send `RoomCreated`.
+    CreateRoom { name: String, tagline: String },
+    /// Read a room's live invites, then send `InvitesRead`.
+    ReadInvites(String),
+    /// Make an invite, first deleting the one it replaces, then send `InviteMade`.
+    MakeInvite { room: String, replacing: Option<String> },
+    /// Delete an invite, then send `InviteDeleted`.
+    DeleteInvite { room: String, code: String },
+    /// Ask which room a code opens, without using it up, then send `InviteChecked`.
+    CheckInvite(String),
+    /// Use the code, then send `InviteAccepted`.
+    AcceptInvite(String),
+    /// Out of a private room for good, then send `RoomQuit`.
+    QuitRoom(String),
+    /// Turn someone out of a room, then send `MemberRemoved`.
+    RemoveMember { room: String, member: String },
+    /// Put this on the clipboard.
+    Copy(String),
+    /// Ask this, and send `Confirmed` with it if the person goes ahead.
+    Confirm(Confirm),
 }
 
 pub fn update(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
@@ -557,12 +626,14 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
         Msg::ToggleRooms => {
             if state.rooms.open {
                 state.rooms.open = false;
+                state.rooms.screen = RoomsScreen::List;
                 return vec![];
             }
             open_rooms(state)
         }
         Msg::CloseRooms => {
             state.rooms.open = false;
+            state.rooms.screen = RoomsScreen::List;
             vec![]
         }
         Msg::RoomsRead(result) => {
@@ -635,6 +706,231 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             }
             vec![]
         }
+        Msg::ShowRoomsList => {
+            state.rooms.screen = RoomsScreen::List;
+            vec![Effect::FetchRooms]
+        }
+        Msg::ShowCreateRoom => {
+            state.rooms.screen = RoomsScreen::Create { sending: false, failure: None };
+            vec![]
+        }
+        Msg::CreateRoom { name, tagline } => {
+            let (name, tagline) = (clean_text(&name), clean_text(&tagline));
+            let fits = (1..=NAME_LENGTH).contains(&name.chars().count()) && tagline.chars().count() <= TAGLINE_LENGTH;
+            if !fits || !matches!(state.rooms.screen, RoomsScreen::Create { sending: false, .. }) {
+                return vec![];
+            }
+            state.rooms.screen = RoomsScreen::Create { sending: true, failure: None };
+            vec![Effect::CreateRoom { name, tagline }]
+        }
+        Msg::RoomCreated(result) => {
+            if !matches!(state.rooms.screen, RoomsScreen::Create { .. }) {
+                return vec![];
+            }
+            match result {
+                Ok(room) => {
+                    let id = room.id.clone();
+                    upsert_listed(state, room);
+                    state.rooms.screen = RoomsScreen::Invite { room: id.clone(), invite: None, loading: true, failure: None, copied: false };
+                    // The person goes into the room they made, if they have a place left.
+                    let mut effects = apply(state, Msg::JoinRoom(id.clone()), now);
+                    effects.extend([Effect::ReadInvites(id), Effect::FetchRooms]);
+                    effects
+                }
+                Err(failure) => {
+                    state.rooms.screen = RoomsScreen::Create { sending: false, failure: Some(failure) };
+                    vec![]
+                }
+            }
+        }
+        Msg::ShowInvite(room) => {
+            if state.rooms.role(&room) != Some(Role::Owner) {
+                return vec![];
+            }
+            state.rooms.screen = RoomsScreen::Invite { room: room.clone(), invite: None, loading: true, failure: None, copied: false };
+            vec![Effect::ReadInvites(room)]
+        }
+        Msg::InvitesRead(room, result) => {
+            let RoomsScreen::Invite { room: shown, invite, loading, failure, .. } = &mut state.rooms.screen else { return vec![] };
+            if *shown != room {
+                return vec![];
+            }
+            match result {
+                // The newest live link, or a first one made at once.
+                Ok(invites) => match invites.into_iter().next() {
+                    Some(newest) => {
+                        *invite = Some(newest);
+                        *loading = false;
+                    }
+                    None => return vec![Effect::MakeInvite { room, replacing: None }],
+                },
+                Err(error) => {
+                    *loading = false;
+                    *failure = Some(error);
+                }
+            }
+            vec![]
+        }
+        Msg::InviteMade(room, result) => {
+            let RoomsScreen::Invite { room: shown, invite, loading, failure, copied } = &mut state.rooms.screen else { return vec![] };
+            if *shown != room {
+                return vec![];
+            }
+            *loading = false;
+            *copied = false;
+            match result {
+                Ok(made) => {
+                    *invite = Some(made);
+                    *failure = None;
+                }
+                Err(error) => *failure = Some(error),
+            }
+            vec![]
+        }
+        Msg::RenewInvite(room) => {
+            let RoomsScreen::Invite { room: shown, invite, loading, failure, .. } = &mut state.rooms.screen else { return vec![] };
+            if *shown != room || *loading {
+                return vec![];
+            }
+            *loading = true;
+            *failure = None;
+            vec![Effect::MakeInvite { room, replacing: invite.as_ref().map(|invite| invite.code.clone()) }]
+        }
+        Msg::DeleteInvite(room) => {
+            let RoomsScreen::Invite { room: shown, invite, loading, .. } = &mut state.rooms.screen else { return vec![] };
+            let Some(code) = invite.as_ref().map(|invite| invite.code.clone()).filter(|_| *shown == room && !*loading) else { return vec![] };
+            *loading = true;
+            vec![Effect::DeleteInvite { room, code }]
+        }
+        Msg::InviteDeleted(room, result) => {
+            let RoomsScreen::Invite { room: shown, invite, loading, failure, copied } = &mut state.rooms.screen else { return vec![] };
+            if *shown != room {
+                return vec![];
+            }
+            *loading = false;
+            *copied = false;
+            match result {
+                Ok(()) => *invite = None,
+                Err(error) => *failure = Some(error),
+            }
+            vec![]
+        }
+        Msg::CopyInviteLink | Msg::CopyInviteCode => {
+            let RoomsScreen::Invite { invite: Some(invite), copied, .. } = &mut state.rooms.screen else { return vec![] };
+            let text = if msg_is_link(&msg) { invite.link() } else { crate::rooms::grouped(&invite.code, '-') };
+            *copied = msg_is_link(&msg);
+            vec![Effect::Copy(text)]
+        }
+        Msg::ShowInviteCode => {
+            state.rooms.screen = RoomsScreen::Code { code: String::new(), checking: false, room: None, failure: None, from_link: false, accepting: false };
+            vec![]
+        }
+        Msg::CheckInvite(text) => {
+            let RoomsScreen::Code { code, checking, room, failure, accepting, .. } = &mut state.rooms.screen else { return vec![] };
+            if *accepting {
+                return vec![];
+            }
+            *room = None;
+            match invite_code(&text) {
+                Some(valid) => {
+                    *code = valid.clone();
+                    *checking = true;
+                    *failure = None;
+                    vec![Effect::CheckInvite(valid)]
+                }
+                None => {
+                    *code = text;
+                    *checking = false;
+                    *failure = Some(RoomError::InviteNotFound);
+                    vec![]
+                }
+            }
+        }
+        Msg::InviteChecked(checked, result) => {
+            let RoomsScreen::Code { code, checking, room, failure, .. } = &mut state.rooms.screen else { return vec![] };
+            if *code != checked {
+                return vec![];
+            }
+            *checking = false;
+            match result {
+                Ok(found) => *room = Some(found),
+                Err(error) => *failure = Some(error),
+            }
+            vec![]
+        }
+        Msg::AcceptInvite => {
+            let RoomsScreen::Code { code, room: Some(_), accepting, .. } = &mut state.rooms.screen else { return vec![] };
+            if *accepting {
+                return vec![];
+            }
+            *accepting = true;
+            vec![Effect::AcceptInvite(code.clone())]
+        }
+        Msg::InviteAccepted(accepted, result) => {
+            let RoomsScreen::Code { code, accepting, failure, .. } = &mut state.rooms.screen else { return vec![] };
+            if *code != accepted {
+                return vec![];
+            }
+            *accepting = false;
+            match result {
+                Ok(room) => {
+                    let id = room.id.clone();
+                    upsert_listed(state, room);
+                    state.rooms.screen = RoomsScreen::List;
+                    let mut effects = apply(state, Msg::JoinRoom(id), now);
+                    effects.push(Effect::FetchRooms);
+                    effects
+                }
+                Err(error) => {
+                    *failure = Some(error);
+                    vec![]
+                }
+            }
+        }
+        Msg::OpenLink(link) => {
+            let Some(code) = invite_from_link(&link) else { return vec![] };
+            let mut effects = open_rooms(state);
+            state.rooms.screen = RoomsScreen::Code { code: code.clone(), checking: true, room: None, failure: None, from_link: true, accepting: false };
+            effects.push(Effect::CheckInvite(code));
+            effects
+        }
+        Msg::AskQuitRoom(room) => {
+            let Some(role) = state.rooms.role(&room) else { return vec![] };
+            let name = state.rooms.name(&room).unwrap_or_default().to_owned();
+            vec![Effect::Confirm(Confirm::QuitRoom { room, name, owner: role == Role::Owner })]
+        }
+        Msg::Confirmed(Confirm::QuitRoom { room, .. }) => {
+            if state.rooms.role(&room).is_none() {
+                return vec![];
+            }
+            close_room(state, &room);
+            state.rooms.list.retain(|listed| listed.id != room);
+            state.rooms.screen = RoomsScreen::List;
+            vec![Effect::QuitRoom(room)]
+        }
+        Msg::RoomQuit(_, _) => vec![Effect::FetchRooms],
+        Msg::AskRemoveMember { room, member, name } => {
+            if state.rooms.role(&room) != Some(Role::Owner) {
+                return vec![];
+            }
+            vec![Effect::Confirm(Confirm::RemoveMember { room, member, name })]
+        }
+        Msg::Confirmed(Confirm::RemoveMember { room, member, .. }) => {
+            if state.rooms.role(&room) != Some(Role::Owner) {
+                return vec![];
+            }
+            // Gone from the room's rows at once; the room's next answer says the same.
+            if let Some(shown) = state.rooms.joined.iter_mut().find(|joined| joined.id == room).and_then(|joined| joined.room.as_mut()) {
+                shown.members.retain(|someone| someone.id != member);
+            }
+            vec![Effect::RemoveMember { room, member }]
+        }
+        Msg::MemberRemoved(room, _) => {
+            if !state.rooms.is_joined(&room) {
+                return vec![];
+            }
+            vec![Effect::SyncRoom { visibility: state.rooms.visibility(&room), room }]
+        }
         Msg::ShowDashboard => {
             state.details_open = false;
             state.avatar_editor_open = false;
@@ -649,12 +945,25 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
 /// rooms the person is in the latest counts.
 fn open_rooms(state: &mut AppState) -> Vec<Effect> {
     state.rooms.open = true;
+    state.rooms.screen = RoomsScreen::List;
     state.details_open = false;
     state.avatar_editor_open = false;
     state.rooms.loading = state.rooms.list.is_empty();
     let mut effects = vec![Effect::FetchRooms];
     effects.extend(sync_rooms(state));
     effects
+}
+
+/// A room the server just told of, in the list at once, ahead of the next read.
+fn upsert_listed(state: &mut AppState, room: RoomSummary) {
+    match state.rooms.list.iter_mut().find(|listed| listed.id == room.id) {
+        Some(listed) => *listed = room,
+        None => state.rooms.list.insert(0, room),
+    }
+}
+
+fn msg_is_link(msg: &Msg) -> bool {
+    matches!(msg, Msg::CopyInviteLink)
 }
 
 /// Takes a room's tab off the dock, folding its people away if they show.

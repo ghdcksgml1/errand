@@ -119,12 +119,12 @@ fn members_read_as_working_resting_or_away() {
 }
 
 fn late_night(members: Vec<Member>) -> Room {
-    Room { id: "late-night".to_owned(), name: "고독한 야근방".to_owned(), tagline: "불 꺼진 사무실".to_owned(), visibility: Visibility::Public, members }
+    Room { id: "late-night".to_owned(), name: "고독한 야근방".to_owned(), tagline: "불 꺼진 사무실".to_owned(), visibility: Visibility::Public, members, role: None }
 }
 
 fn summary(id: &str, name: &str, visibility: Visibility) -> RoomSummary {
     let faces = vec![Face { name: "졸린 수달".to_owned(), avatar: None }, Face { name: "새벽감자".to_owned(), avatar: Some(Avatar::from_seed("새벽감자").code()) }];
-    RoomSummary { id: id.to_owned(), name: name.to_owned(), tagline: String::new(), visibility, members: 7, working: 4, faces }
+    RoomSummary { id: id.to_owned(), name: name.to_owned(), tagline: String::new(), visibility, members: 7, working: 4, faces, role: None }
 }
 
 fn sync(room: &str, visibility: Visibility) -> Effect {
@@ -411,7 +411,7 @@ fn the_rooms_joined_come_back_on_the_next_launch_each_as_visible_as_it_was() {
     assert_eq!(tabs(&state).iter().map(|(private, _, people, open)| (*private, *people, *open)).collect::<Vec<_>>(), [(false, None, false), (true, None, false)]);
 
     // Answers that say nothing new keep the file as it is; learning a room's visibility updates it.
-    let team = Room { id: "team".to_owned(), name: "우리 팀 야근방".to_owned(), tagline: String::new(), visibility: Visibility::Private, members: vec![] };
+    let team = Room { id: "team".to_owned(), name: "우리 팀 야근방".to_owned(), tagline: String::new(), visibility: Visibility::Private, members: vec![], role: None };
     assert!(update(&mut state, Msg::RoomRead("team".to_owned(), Ok(team.clone())), at(NOW)).is_empty());
     assert!(update(&mut state, Msg::SyncRoom, at(NOW)).iter().all(|effect| *effect != Effect::SaveRooms));
     assert_eq!(

@@ -6,7 +6,7 @@
 
 use super::{Api, Endpoint, Origin, Refusal, Service};
 use errand_core::ports::{HttpMethod, HttpRequest, HttpResponse, RoomService};
-use errand_core::rooms::{Face, Identity, Member, PresenceReport, Room, RoomError, RoomSummary, Visibility, room_id};
+use errand_core::rooms::{Face, Identity, Invite, Member, PresenceReport, Role, Room, RoomError, RoomSummary, Visibility, invite_code, room_id};
 use errand_core::sessions::TaskCounts;
 use errand_core::{Language, Timestamp};
 use serde_json::{Map, Value, json};
@@ -201,6 +201,51 @@ impl Endpoint for Leave<'_> {
     }
 }
 
+/// Any other call: its method, path and body, and how its reply reads.
+struct Call<'a, T> {
+    caller: Caller<'a>,
+    method: HttpMethod,
+    path: String,
+    body: Option<Value>,
+    read: Reader<'a, T>,
+}
+
+/// How a call's reply reads.
+type Reader<'a, T> = Box<dyn Fn(&HttpResponse) -> Result<T, RoomError> + 'a>;
+
+impl<'a, T> Call<'a, T> {
+    fn new(caller: Caller<'a>, method: HttpMethod, path: String, body: Option<Value>, read: impl Fn(&HttpResponse) -> Result<T, RoomError> + 'a) -> Call<'a, T> {
+        Call { caller, method, path, body, read: Box::new(read) }
+    }
+}
+
+impl<T> Endpoint for Call<'_, T> {
+    type Answer = T;
+    type Error = RoomError;
+    const SERVICE: Service = Service::Rooms;
+
+    fn request(&self) -> HttpRequest {
+        self.caller.request(self.method, &self.path, self.body.clone())
+    }
+
+    fn answer(&self, response: HttpResponse) -> Result<T, RoomError> {
+        (self.read)(&response)
+    }
+}
+
+/// A reply that is one room as the list shows it.
+fn summary_reply(response: &HttpResponse) -> Result<RoomSummary, RoomError> {
+    summary(&reply(response)?).ok_or(RoomError::Unreachable)
+}
+
+fn invite(invite: &Map<String, Value>) -> Option<Invite> {
+    Some(Invite {
+        code: invite_code(invite.get("code")?.as_str()?)?,
+        expires_at: invite.get("expiresAt")?.as_str()?.parse().ok()?,
+        uses_left: count(invite.get("usesLeft")),
+    })
+}
+
 fn presence(room: &str) -> String {
     format!("/v1/rooms/{room}/presence")
 }
@@ -239,11 +284,14 @@ fn failure(response: &HttpResponse) -> RoomError {
     let code = reply.as_ref().and_then(|reply| reply.get("error")).and_then(Value::as_str);
     let failure = match (response.status, code) {
         (401, _) => RoomError::Unauthorized,
-        (404, Some("room_not_found")) => RoomError::NotFound,
+        (404, Some("room_not_found" | "member_not_found")) => RoomError::NotFound,
+        (404, Some("invite_not_found")) => RoomError::InviteNotFound,
         // An address with no rooms server behind it says 404 too, and that closes no tab.
         (404, _) => RoomError::Unreachable,
         (409, Some("room_full")) => RoomError::Full,
         (409, Some("too_many_rooms")) => RoomError::TooManyRooms,
+        (409, Some("too_many_owned_rooms")) => RoomError::TooManyOwned,
+        (409, Some("too_many_invites")) => RoomError::TooManyInvites,
         (426, _) => RoomError::ClientTooOld,
         (400..=499, _) => RoomError::Rejected,
         _ => RoomError::Unreachable,
@@ -271,6 +319,15 @@ fn visibility(value: Option<&Value>) -> Visibility {
     if value.and_then(Value::as_str) == Some("private") { Visibility::Private } else { Visibility::Public }
 }
 
+/// The person's standing in a private room; anything else is none.
+fn role(value: Option<&Value>) -> Option<Role> {
+    match value?.as_str()? {
+        "owner" => Some(Role::Owner),
+        "member" => Some(Role::Member),
+        _ => None,
+    }
+}
+
 /// A character's code as sent; the view draws only one that names parts.
 fn avatar(value: Option<&Value>) -> Option<String> {
     value?.as_str().filter(|code| code.len() <= LONGEST_CODE).map(str::to_owned)
@@ -287,6 +344,7 @@ fn summary(room: &Map<String, Value>) -> Option<RoomSummary> {
         members: count(room.get("members")),
         working: count(room.get("working")),
         faces: faces.map(|face| Face { name: text(face.get("name")).unwrap_or_default(), avatar: avatar(face.get("avatar")) }).collect(),
+        role: role(room.get("role")),
     })
 }
 
@@ -302,6 +360,7 @@ fn room(reply: &Map<String, Value>, asked: &str, now: Timestamp) -> Option<Room>
         tagline: text(reply.get("tagline")).unwrap_or_default(),
         visibility: visibility(reply.get("visibility")),
         members,
+        role: role(reply.get("role")),
     })
 }
 
@@ -319,6 +378,11 @@ fn member(member: &Map<String, Value>, now: Timestamp) -> Option<Member> {
         joined_at: member.get("joinedAt").and_then(Value::as_str).and_then(|at| at.parse().ok()),
         me: member.get("me").and_then(Value::as_bool).unwrap_or(false),
     })
+}
+
+/// A room id as it may go into an address.
+fn checked_room(room: &str) -> Result<&str, RoomError> {
+    if room_id(room) { Ok(room) } else { Err(RoomError::NotFound) }
 }
 
 /// Work rooms on the rooms server, every call through [`Api`].
@@ -392,5 +456,56 @@ impl RoomService for HttpRooms {
         if room_id(room) {
             let _ = self.call(|caller| Leave { caller, room });
         }
+    }
+
+    fn create_room(&self, name: &str, tagline: &str, _now: Timestamp) -> Result<RoomSummary, RoomError> {
+        let body = json!({"name": name, "tagline": tagline});
+        self.call(|caller| Call::new(caller, HttpMethod::Post, "/v1/rooms".to_owned(), Some(body.clone()), summary_reply))
+    }
+
+    fn invites(&self, room: &str, _now: Timestamp) -> Result<Vec<Invite>, RoomError> {
+        let path = format!("/v1/rooms/{}/invites", checked_room(room)?);
+        self.call(|caller| {
+            Call::new(caller, HttpMethod::Get, path.clone(), None, |response| {
+                let reply = reply(response)?;
+                let invites = reply.get("invites").and_then(Value::as_array).ok_or(RoomError::Unreachable)?;
+                Ok(invites.iter().filter_map(Value::as_object).filter_map(invite).collect())
+            })
+        })
+    }
+
+    fn make_invite(&self, room: &str, _now: Timestamp) -> Result<Invite, RoomError> {
+        let path = format!("/v1/rooms/{}/invites", checked_room(room)?);
+        self.call(|caller| Call::new(caller, HttpMethod::Post, path.clone(), None, |response| invite(&reply(response)?).ok_or(RoomError::Unreachable)))
+    }
+
+    fn delete_invite(&self, room: &str, code: &str) -> Result<(), RoomError> {
+        let path = format!("/v1/rooms/{}/invites/{}", checked_room(room)?, invite_code(code).ok_or(RoomError::InviteNotFound)?);
+        self.call(|caller| Call::new(caller, HttpMethod::Delete, path.clone(), None, succeeded))
+    }
+
+    fn check_invite(&self, code: &str, _now: Timestamp) -> Result<RoomSummary, RoomError> {
+        let path = format!("/v1/invites/{}", invite_code(code).ok_or(RoomError::InviteNotFound)?);
+        self.call(|caller| Call::new(caller, HttpMethod::Get, path.clone(), None, summary_reply))
+    }
+
+    fn accept_invite(&self, code: &str, _now: Timestamp) -> Result<RoomSummary, RoomError> {
+        let path = format!("/v1/invites/{}/accept", invite_code(code).ok_or(RoomError::InviteNotFound)?);
+        self.call(|caller| Call::new(caller, HttpMethod::Post, path.clone(), None, summary_reply))
+    }
+
+    fn quit_room(&self, room: &str) -> Result<(), RoomError> {
+        let path = format!("/v1/rooms/{}/membership", checked_room(room)?);
+        self.call(|caller| Call::new(caller, HttpMethod::Delete, path.clone(), None, succeeded))
+    }
+
+    fn remove_member(&self, room: &str, member: &str) -> Result<(), RoomError> {
+        // A member id is the server's own UUID; nothing else goes into the address.
+        let uuid = member.len() == 36 && member.bytes().all(|byte| byte.is_ascii_hexdigit() || byte == b'-');
+        if !uuid {
+            return Err(RoomError::NotFound);
+        }
+        let path = format!("/v1/rooms/{}/members/{member}", checked_room(room)?);
+        self.call(|caller| Call::new(caller, HttpMethod::Delete, path.clone(), None, succeeded))
     }
 }

@@ -2,8 +2,8 @@
 //! tests use fakes.
 
 use crate::Provider;
-use crate::model::{Alert, AppState, Msg, WidgetPreferences};
-use crate::rooms::{PresenceReport, Room, RoomError, RoomSummary};
+use crate::model::{Alert, AppState, Confirm, Msg, WidgetPreferences};
+use crate::rooms::{Invite, PresenceReport, Room, RoomError, RoomSummary};
 use jiff::{SignedDuration, Timestamp};
 use std::time::Duration;
 
@@ -60,6 +60,10 @@ pub trait Shell {
     /// Fades a task card out, then posts `Msg::CardFaded`.
     fn fade_card(&mut self, key: &str);
     fn alert(&mut self, alert: &Alert);
+    /// Puts the text on the clipboard.
+    fn copy_text(&mut self, text: &str);
+    /// Asks the question, and posts `Msg::Confirmed` with it if the person goes ahead.
+    fn confirm(&mut self, confirm: &Confirm);
     fn show_dashboard(&mut self);
 }
 
@@ -69,6 +73,20 @@ pub trait RoomService: Send + Sync {
     /// Enters the room or tells it the latest counts, and answers with everyone in it.
     fn sync(&self, room: &str, report: &PresenceReport, now: Timestamp) -> Result<Room, RoomError>;
     fn leave(&self, room: &str);
+    /// Makes a private room the person owns.
+    fn create_room(&self, name: &str, tagline: &str, now: Timestamp) -> Result<RoomSummary, RoomError>;
+    /// The live invites of a room the person owns, newest first.
+    fn invites(&self, room: &str, now: Timestamp) -> Result<Vec<Invite>, RoomError>;
+    fn make_invite(&self, room: &str, now: Timestamp) -> Result<Invite, RoomError>;
+    fn delete_invite(&self, room: &str, code: &str) -> Result<(), RoomError>;
+    /// The room a code opens, without using the code up or letting the person in.
+    fn check_invite(&self, code: &str, now: Timestamp) -> Result<RoomSummary, RoomError>;
+    /// Lets the person into the room for good; joining it is a sync like any other.
+    fn accept_invite(&self, code: &str, now: Timestamp) -> Result<RoomSummary, RoomError>;
+    /// Out of a private room for good; for its owner, the room is gone.
+    fn quit_room(&self, room: &str) -> Result<(), RoomError>;
+    /// Turns someone out of a room the person owns, by the member id the room gave them.
+    fn remove_member(&self, room: &str, member: &str) -> Result<(), RoomError>;
     /// The rooms and their people are made up, standing in for the server; the list says so.
     fn sample(&self) -> bool {
         false

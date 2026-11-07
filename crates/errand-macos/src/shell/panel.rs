@@ -4,10 +4,11 @@
 use super::kit::{ns, rect};
 use errand_core::layout::Rect;
 use objc2::rc::Retained;
-use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use std::cell::Cell;
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSBackingStoreType, NSColor, NSFloatingWindowLevel, NSPanel, NSScreen, NSWindow,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSView, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_foundation::{NSRect, NSSize};
 
@@ -31,14 +32,67 @@ define_class!(
     }
 );
 
+define_class!(
+    /// A panel like the others that takes typing only while it holds a form, such as naming a new room. It
+    /// stays non-activating: the app the person was in stays the active one, and gets its typing back with a
+    /// click.
+    #[unsafe(super(NSPanel))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "ErrandTypingPanel"]
+    #[ivars = Cell<bool>]
+    pub struct TypingPanel;
+
+    impl TypingPanel {
+        #[unsafe(method(canBecomeKeyWindow))]
+        fn can_become_key(&self) -> bool {
+            self.ivars().get()
+        }
+
+        #[unsafe(method(canBecomeMainWindow))]
+        fn can_become_main(&self) -> bool {
+            false
+        }
+    }
+);
+
+impl TypingPanel {
+    /// Takes typing, typing into `field`, while a form shows; gives it up with the form.
+    pub fn set_typing(&self, field: Option<&NSView>) {
+        self.ivars().set(field.is_some());
+        if let Some(field) = field {
+            self.makeKeyWindow();
+            self.makeFirstResponder(Some(field));
+        } else if self.isKeyWindow() {
+            self.resignKeyWindow();
+        }
+    }
+}
+
+const STYLE: NSWindowStyleMask = NSWindowStyleMask::Borderless.union(NSWindowStyleMask::NonactivatingPanel);
+
 /// A borderless, transparent, non-activating panel that floats over other apps on every Space.
 pub fn make_panel(mtm: MainThreadMarker, size: NSSize, title: &str) -> Retained<NSPanel> {
-    let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
     let panel: Retained<PassivePanel> = unsafe {
-        msg_send![PassivePanel::alloc(mtm), initWithContentRect: rect(0.0, 0.0, size.width, size.height), styleMask: style,
+        msg_send![PassivePanel::alloc(mtm), initWithContentRect: rect(0.0, 0.0, size.width, size.height), styleMask: STYLE,
                   backing: NSBackingStoreType::Buffered, defer: false]
     };
     let panel = Retained::into_super(panel);
+    configure(&panel, title);
+    panel
+}
+
+/// The same panel, able to take typing while it holds a form.
+pub fn make_typing_panel(mtm: MainThreadMarker, size: NSSize, title: &str) -> Retained<TypingPanel> {
+    let this = TypingPanel::alloc(mtm).set_ivars(Cell::new(false));
+    let panel: Retained<TypingPanel> = unsafe {
+        msg_send![super(this), initWithContentRect: rect(0.0, 0.0, size.width, size.height), styleMask: STYLE,
+                  backing: NSBackingStoreType::Buffered, defer: false]
+    };
+    configure(&panel, title);
+    panel
+}
+
+fn configure(panel: &NSPanel, title: &str) {
     panel.setLevel(NSFloatingWindowLevel);
     panel.setFloatingPanel(true);
     panel.setHidesOnDeactivate(false);
@@ -51,7 +105,6 @@ pub fn make_panel(mtm: MainThreadMarker, size: NSSize, title: &str) -> Retained<
     panel.setCollectionBehavior(NSWindowCollectionBehavior::CanJoinAllSpaces | NSWindowCollectionBehavior::FullScreenAuxiliary);
     panel.setAppearance(NSAppearance::appearanceNamed(unsafe { NSAppearanceNameAqua }).as_deref());
     panel.setTitle(&ns(title));
-    panel
 }
 
 /// The height AppKit's flipped y is measured against: the primary screen's.
