@@ -896,7 +896,7 @@ pub struct InviteVm {
     pub copy_link: &'static str,
     pub copied: bool,
     pub code_caption: &'static str,
-    /// In fours: K7QF·M2XA·9P.
+    /// In fours: K7QF-M2XA-9P.
     pub code: Option<String>,
     pub copy_code: &'static str,
     pub notes: Vec<&'static str>,
@@ -1018,7 +1018,7 @@ fn rooms_screen(state: &AppState, context: &ViewContext) -> RoomsScreenVm {
                 copy_link: language.copy_link(*copied),
                 copied: *copied,
                 code_caption: language.invite_code_caption(),
-                code: invite.as_ref().map(|invite| grouped(&invite.code, '·')),
+                code: invite.as_ref().map(|invite| grouped(&invite.code, '-')),
                 copy_code: language.copy_code(),
                 notes: language.invite_notes().to_vec(),
                 renew: language.renew_invite(),
@@ -1042,8 +1042,8 @@ fn rooms_screen(state: &AppState, context: &ViewContext) -> RoomsScreenVm {
                 subtitle: language.code_subtitle(*from_link),
                 from_link: *from_link,
                 label: language.code_label(),
-                code: invite_code(code).map_or_else(|| code.clone(), |code| grouped(&code, '·')),
-                placeholder: "K7QF·M2XA·9P".to_owned(),
+                code: invite_code(code).map_or_else(|| code.clone(), |code| grouped(&code, '-')),
+                placeholder: "K7QF-M2XA-9P".to_owned(),
                 check: language.check_code(*checking),
                 checking: *checking,
                 failure: failure.map(|failure| language.room_error(failure).to_owned()),

@@ -84,7 +84,7 @@ pub fn invite_code(text: &str) -> Option<String> {
     (code.len() == INVITE_CODE_LENGTH && code.chars().all(|character| CROCKFORD.contains(character))).then_some(code)
 }
 
-/// A code as people read it: in fours, `K7QF·M2XA·9P`, joined by `separator`.
+/// A code as people read and type it: in fours, `K7QF-M2XA-9P`, joined by `separator`.
 pub fn grouped(code: &str, separator: char) -> String {
     let characters: Vec<char> = code.chars().collect();
     characters.chunks(4).map(|chunk| chunk.iter().collect::<String>()).collect::<Vec<_>>().join(&separator.to_string())

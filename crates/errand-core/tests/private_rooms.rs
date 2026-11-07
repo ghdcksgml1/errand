@@ -45,7 +45,7 @@ fn codes_read_however_they_are_typed_and_links_carry_them() {
     assert_eq!(rooms::invite_code("IL00000000").as_deref(), Some("1100000000"));
     assert_eq!(rooms::invite_code("K7QFM2XA9"), None, "nine characters are not a code");
     assert_eq!(rooms::invite_code("K7QFM2XA9U"), None, "U is not in Crockford's alphabet");
-    assert_eq!(rooms::grouped("K7QFM2XA9P", '·'), "K7QF·M2XA·9P");
+    assert_eq!(rooms::grouped("K7QFM2XA9P", '-'), "K7QF-M2XA-9P");
     assert_eq!(invite("K7QFM2XA9P", 7.0, 10).link(), "https://errand-backend.vercel.app/join#K7QF-M2XA-9P", "the code after a #, so no server hears it");
     assert_eq!(rooms::invite_from_link("errand://invite/K7QFM2XA9P").as_deref(), Some("K7QFM2XA9P"));
     assert_eq!(rooms::invite_from_link("errand://invite/k7qf-m2xa-9p/").as_deref(), Some("K7QFM2XA9P"));
@@ -77,7 +77,7 @@ fn a_room_is_made_its_maker_goes_in_and_gets_its_link() {
     assert_eq!(update(&mut state, Msg::InvitesRead("p-team".to_owned(), Ok(vec![])), at(NOW)), [Effect::MakeInvite { room: "p-team".to_owned(), replacing: None }], "no link yet: one is made");
     update(&mut state, Msg::InviteMade("p-team".to_owned(), Ok(invite("K7QFM2XA9P", 7.0, 10))), at(NOW));
     let RoomsScreenVm::Invite(shown) = screen(&state) else { panic!("the link") };
-    assert_eq!((shown.code.as_deref(), shown.left.as_str()), (Some("K7QF·M2XA·9P"), "7일 남음 · 10번 더 쓸 수 있어요"));
+    assert_eq!((shown.code.as_deref(), shown.left.as_str()), (Some("K7QF-M2XA-9P"), "7일 남음 · 10번 더 쓸 수 있어요"));
     assert_eq!(shown.subtitle, "우리 팀 야근방에 들어올 수 있는 링크예요. 친구에게 보내 주세요.");
 
     assert_eq!(update(&mut state, Msg::CopyInviteLink, at(NOW)), [Effect::Copy("https://errand-backend.vercel.app/join#K7QF-M2XA-9P".to_owned())]);
