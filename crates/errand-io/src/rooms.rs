@@ -282,9 +282,10 @@ impl RoomService for SampleRooms {
         Ok(())
     }
 
+    /// As the server does: before coming in, only what the room is and how many are in it.
     fn check_invite(&self, code: &str, now: Timestamp) -> Result<RoomSummary, RoomError> {
         let spot = self.invited(code, now)?;
-        Ok(self.summary(&spot, now))
+        Ok(RoomSummary { working: 0, faces: Vec::new(), ..self.summary(&spot, now) })
     }
 
     /// The sample rooms the person owns are already theirs, so an invite to one lets them in without using it.

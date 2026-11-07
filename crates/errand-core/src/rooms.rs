@@ -22,6 +22,8 @@ pub const NICKNAME_LENGTH: usize = 20;
 pub const MAX_ROOMS: usize = 3;
 /// How many private rooms one install may make, as the server counts them.
 pub const OWNED_ROOMS: usize = 5;
+/// How many people a private room lets in by invite, its owner among them.
+pub const ROOM_MEMBERS: usize = 20;
 /// The longest room name and tagline the server takes, in characters.
 pub const NAME_LENGTH: usize = 30;
 pub const TAGLINE_LENGTH: usize = 60;
@@ -247,12 +249,14 @@ pub enum RoomError {
     TooManyInvites,
     /// No such invite, or one that ran out.
     InviteNotFound,
+    /// The private room already has as many members as it holds.
+    TooManyMembers,
 }
 
 impl RoomError {
     /// The room no longer counts the person, so its last answer no longer says who is there with them.
     pub fn left_out(self) -> bool {
-        !matches!(self, RoomError::Unreachable | RoomError::RateLimited | RoomError::TooManyOwned | RoomError::TooManyInvites | RoomError::InviteNotFound)
+        !matches!(self, RoomError::Unreachable | RoomError::RateLimited | RoomError::TooManyOwned | RoomError::TooManyInvites | RoomError::InviteNotFound | RoomError::TooManyMembers)
     }
 }
 

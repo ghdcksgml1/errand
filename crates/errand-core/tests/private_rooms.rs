@@ -259,3 +259,16 @@ fn a_link_replaced_halfway_no_longer_shows_and_a_failed_quit_says_why() {
     assert_eq!(effects, [Effect::ShowAlert(errand_core::model::Alert::QuitFailed(RoomError::Unreachable)), Effect::FetchRooms]);
     assert_eq!(update(&mut state, Msg::RoomQuit("p-own".to_owned(), Err(RoomError::NotFound)), at(NOW)), [Effect::FetchRooms], "already gone is done");
 }
+
+#[test]
+fn a_full_room_says_so_and_the_code_stays_unused() {
+    let mut state = state();
+    update(&mut state, Msg::ShowInviteCode, at(NOW));
+    update(&mut state, Msg::CheckInvite("K7QF-M2XA-9P".to_owned()), at(NOW));
+    update(&mut state, Msg::InviteChecked("K7QFM2XA9P".to_owned(), Ok(private("p-team", "우리 팀 야근방", None))), at(NOW));
+    update(&mut state, Msg::AcceptInvite, at(NOW));
+    update(&mut state, Msg::InviteAccepted("K7QFM2XA9P".to_owned(), Err(RoomError::TooManyMembers)), at(NOW));
+    let RoomsScreenVm::Code(code) = screen(&state) else { panic!("the code") };
+    assert_eq!((code.failure.as_deref(), code.accepting), (Some("이 방은 20명이 다 찼어요. 방장에게 알려 주세요."), false));
+    assert!(!state.rooms.is_joined("p-team"));
+}

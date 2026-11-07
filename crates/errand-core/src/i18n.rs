@@ -909,6 +909,8 @@ impl Language {
             RoomError::TooManyOwned => self.owned_rooms_full(),
             RoomError::TooManyInvites => self.pick("이 방에 살아 있는 링크가 너무 많아요. 쓰지 않는 링크를 지우세요.", "This room has too many live links. Delete one you don't use."),
             RoomError::InviteNotFound => self.pick("코드가 맞지 않거나 기한이 지났어요.", "That code is wrong or has run out."),
+            // ROOM_MEMBERS is 20.
+            RoomError::TooManyMembers => self.pick("이 방은 20명이 다 찼어요. 방장에게 알려 주세요.", "This room is full at 20 people. Let its owner know."),
         }
     }
 

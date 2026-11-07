@@ -292,6 +292,7 @@ fn failure(response: &HttpResponse) -> RoomError {
         (409, Some("too_many_rooms")) => RoomError::TooManyRooms,
         (409, Some("too_many_owned_rooms")) => RoomError::TooManyOwned,
         (409, Some("too_many_invites")) => RoomError::TooManyInvites,
+        (409, Some("too_many_members")) => RoomError::TooManyMembers,
         (426, _) => RoomError::ClientTooOld,
         (400..=499, _) => RoomError::Rejected,
         _ => RoomError::Unreachable,

@@ -555,3 +555,9 @@ fn nothing_but_a_code_or_the_servers_own_ids_goes_into_an_address() {
     assert_eq!(rooms.quit_room("a/b"), Err(RoomError::NotFound));
     assert!(network.calls().is_empty(), "none of it was sent");
 }
+
+#[test]
+fn a_full_private_room_reads_as_too_many_members() {
+    let network = FakeServer::replying(vec![registered(), reply(409, json!({"error": "too_many_members"}))]);
+    assert_eq!(client(&network).accept_invite("K7QFM2XA9P", now()), Err(RoomError::TooManyMembers));
+}
