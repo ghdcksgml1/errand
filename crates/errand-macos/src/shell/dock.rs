@@ -612,13 +612,19 @@ fn layout_header(header: &PressableView, vm: &HeaderVm, mtm: MainThreadMarker) {
     title.setFrame(rect(33.0, 10.0, fitting_width(&title), 18.0));
     header.addSubview(&title);
     let mut x = title.frame().origin.x + title.frame().size.width + 6.0;
+    let chevron_x = width - 27.0;
+    // Counts that would run under the chevron give way, the least pressing first; the title still counts every
+    // card, and VoiceOver hears every count.
     for pill in &vm.pills {
         let view = count_pill(pill.count, pill.icon, pill.spinning, pill.color, &pill.words, NSPoint::new(x, 10.0), mtm);
+        if x + view.frame().size.width > chevron_x - 4.0 {
+            break;
+        }
         header.addSubview(&view);
         x += view.frame().size.width + 5.0;
     }
     let chevron = tinted_icon(vm.chevron, 13.0, theme::MUTED, mtm);
-    chevron.setFrameOrigin(NSPoint::new(width - 27.0, 12.5));
+    chevron.setFrameOrigin(NSPoint::new(chevron_x, 12.5));
     header.addSubview(&chevron);
     // The word beside the chevron gives way when the counts need the room.
     let toggle = label(vm.toggle, 11.0, Weight::Medium, theme::MUTED, mtm);

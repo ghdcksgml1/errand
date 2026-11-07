@@ -328,7 +328,7 @@ fn member_row(member: &Member, context: &ViewContext) -> MemberRowVm {
         (true, _) => (language.me().to_owned(), None),
         (false, me) => (member.name.clone(), me.then(|| language.me())),
     };
-    let pills = header_pills(member.tasks, language);
+    let pills = header_pills(member.tasks, 0, language);
     // Away comes first; with nothing to count, how they are is all there is to say.
     let mut said: Vec<&str> = vec![&name];
     if presence == Presence::Away {
@@ -355,8 +355,9 @@ fn member_row(member: &Member, context: &ViewContext) -> MemberRowVm {
 
 /// The task header's counts as pills in the cards' own colours and icons, leaving out counts of none: answers
 /// to check, requests running, and answers opened.
-fn header_pills(counts: TaskCounts, language: Language) -> Vec<PillVm> {
-    [(SessionState::New, counts.new), (SessionState::Running, counts.running), (SessionState::Seen, counts.seen)]
+/// Counts as pills, questions waiting on the person first: they hold work up.
+fn header_pills(counts: TaskCounts, asking: usize, language: Language) -> Vec<PillVm> {
+    [(SessionState::Asking, asking), (SessionState::New, counts.new), (SessionState::Running, counts.running), (SessionState::Seen, counts.seen)]
         .into_iter()
         .filter(|(_, count)| *count > 0)
         .map(|(state, count)| PillVm {
@@ -374,7 +375,8 @@ fn header(state: &AppState, language: Language) -> HeaderVm {
     let sessions = &state.sessions;
     let open = sessions.shown.iter().filter(|session| !sessions.pending.contains_key(&session.row.key)).count();
     let collapsed = state.widget.collapsed;
-    let pills = header_pills(sessions.counts(), language);
+    let (counts, asking) = (sessions.counts(), sessions.asking());
+    let pills = header_pills(TaskCounts { new: counts.new - asking, ..counts }, asking, language);
     let spoken: Vec<&str> = pills.iter().map(|pill| pill.words.as_str()).collect();
     HeaderVm {
         title: language.tasks_title(open),
@@ -491,6 +493,16 @@ fn card(session: &VisibleSession, deadline: Option<Timestamp>, compact: bool, he
     let prompt = if prompt_missing { language.prompt_unreadable().to_owned() } else { format!("“{asked}”") };
     let answered = row.finished_at.unwrap_or(row.prompt_at);
     let when = language.card_time(&relative_time(Some(if row.running { row.prompt_at } else { answered }), context.now, &context.zone, language), !row.running);
+    let question = row.question.as_ref().filter(|_| own_state == SessionState::Asking);
+    // What a card waiting on the person asks: its first question, or its plan.
+    let question_line = question.map(|question| match question.questions.first() {
+        Some(first) => language.question_line(&language.recorded(first)),
+        None => language.plan_line().to_owned(),
+    });
+    let when = match question {
+        Some(question) => language.question_time(&relative_time(Some(question.asked_at), context.now, &context.zone, language)),
+        None => when,
+    };
     let countdown = deadline.map(|deadline| {
         let remaining = deadline.duration_since(context.now).max(SignedDuration::ZERO);
         CountdownVm { remaining, fraction: (remaining.as_secs_f64() / COMPLETION_DELAY.as_secs_f64()).min(1.0) }
@@ -521,14 +533,16 @@ fn card(session: &VisibleSession, deadline: Option<Timestamp>, compact: bool, he
     if compact {
         // Folded: the title and the request stay, so "what did I ask" survives a crowded stack.
         let mut lines = vec![format!("{app} · {title}"), prompt];
+        lines.extend(question_line.clone());
         lines.extend(result.as_deref().map(|result| language.result_line(result)));
         lines.extend(action.as_deref().map(|action| language.to_do_line(action)));
         lines.push(format!("{when} · {}", language.click_to_open()));
         vm.tooltip = lines.join("\n");
-        vm.accessibility_label = language.card_label(app, &title, vm.chip, &asked, None);
+        vm.accessibility_label = language.card_label(app, &title, vm.chip, &asked, question_line.as_deref());
         return vm;
     }
     let (text, icon, color) = match own_state {
+        SessionState::Asking => (question_line.clone().unwrap_or_default(), "message-circle-question-mark", theme::ASKING),
         SessionState::Stalled => (language.stalled_line().to_owned(), "circle-alert", theme::STALLED),
         SessionState::Running => (language.working(&elapsed(row.prompt_at, context.now, language)), "timer", theme::RUNNING),
         _ if result.is_some() => (result.clone().unwrap_or_default(), "corner-down-right", theme::MUTED),
@@ -537,6 +551,10 @@ fn card(session: &VisibleSession, deadline: Option<Timestamp>, compact: bool, he
     };
     let mut notes: Vec<String> = result.iter().cloned().collect();
     notes.extend(action.as_deref().map(|action| language.to_do_line(action)));
+    // Every question it asks, where the line has room for the first.
+    if let Some(question) = question.filter(|question| question.questions.len() > 1) {
+        notes = question.questions.iter().map(|text| language.question_line(&language.recorded(text))).collect();
+    }
     vm.accessibility_label = language.card_label(app, &title, vm.chip, &asked, Some(&text));
     vm.detail = Some(DetailLineVm { tooltip: if notes.is_empty() { text.clone() } else { notes.join("\n") }, text, icon, color });
     vm.action = action.filter(|_| action_shown(session));

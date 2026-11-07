@@ -48,6 +48,7 @@ fn card(key: &str, running: bool, stalled: bool, seen: bool) -> VisibleSession {
             stalled,
             parent: None,
             on_screen: false,
+            question: None,
         },
         seen,
     }

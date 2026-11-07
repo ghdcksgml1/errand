@@ -367,6 +367,8 @@ impl Language {
     pub fn pill(self, state: SessionState, count: usize) -> String {
         match (self, state) {
             (Language::Korean, SessionState::Running) => format!("진행 중 {count}개"),
+            (Language::Korean, SessionState::Asking) => format!("답변 필요 {count}개"),
+            (Language::English, SessionState::Asking) => format!("{count} to answer"),
             (Language::Korean, SessionState::Seen) => format!("확인함 {count}개"),
             (Language::Korean, _) => format!("확인할 것 {count}개"),
             (Language::English, SessionState::Running) => format!("{count} running"),
@@ -401,6 +403,7 @@ impl Language {
             SessionState::New => self.pick("새 결과", "New"),
             SessionState::Seen => self.pick("확인함", "Seen"),
             SessionState::Running => self.pick("진행 중", "Running"),
+            SessionState::Asking => self.pick("답변 필요", "Needs answer"),
             SessionState::Stalled => self.pick("응답 없음", "Stalled"),
             SessionState::Aborted => self.pick("중단됨", "Stopped"),
             SessionState::Unknown => self.pick("상태 확인 불가", "Unknown"),
@@ -433,6 +436,27 @@ impl Language {
             (Language::English, false) => format!("asked {when}"),
             (Language::English, true) => format!("answered {when}"),
         }
+    }
+
+    /// "2분 전 질문" while the work waits on the person's answer.
+    pub fn question_time(self, when: &str) -> String {
+        match self {
+            Language::Korean => format!("{when} 질문"),
+            Language::English => format!("asked you {when}"),
+        }
+    }
+
+    /// The line under a card waiting on the person: what it asks.
+    pub fn question_line(self, question: &str) -> String {
+        match self {
+            Language::Korean => format!("질문 · {question}"),
+            Language::English => format!("Question · {question}"),
+        }
+    }
+
+    /// The line under a card waiting for its plan to be approved.
+    pub fn plan_line(self) -> &'static str {
+        self.pick("계획을 확인해 주세요", "Review the plan to go on")
     }
 
     pub fn complete_label(self, title: &str) -> String {

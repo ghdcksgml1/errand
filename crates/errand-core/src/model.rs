@@ -94,15 +94,23 @@ pub struct SessionsState {
 }
 
 impl SessionsState {
-    /// The cards on screen not yet checked off, counted as the task header counts them.
+    /// The cards on screen not yet checked off, counted as rooms hear them: a question waiting on the person
+    /// counts among the answers to check.
     pub fn counts(&self) -> TaskCounts {
         let open = self.shown.iter().filter(|session| !self.pending.contains_key(&session.row.key));
         open.fold(TaskCounts::default(), |counts, session| match SessionState::of(session) {
-            SessionState::New | SessionState::Stalled => TaskCounts { new: counts.new + 1, ..counts },
+            SessionState::New | SessionState::Asking | SessionState::Stalled => TaskCounts { new: counts.new + 1, ..counts },
             SessionState::Running => TaskCounts { running: counts.running + 1, ..counts },
             SessionState::Seen => TaskCounts { seen: counts.seen + 1, ..counts },
             _ => counts,
         })
+    }
+
+    /// The cards on screen not yet checked off whose work waits on the person's answer, which the task header
+    /// counts apart.
+    pub fn asking(&self) -> usize {
+        let open = self.shown.iter().filter(|session| !self.pending.contains_key(&session.row.key));
+        open.filter(|session| SessionState::of(session) == SessionState::Asking).count()
     }
 }
 

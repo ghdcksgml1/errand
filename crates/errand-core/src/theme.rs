@@ -30,6 +30,8 @@ pub const NEW_RESULT: Rgb = rgb(0.04, 0.40, 0.85);
 pub const RUNNING: Rgb = rgb(0.00, 0.45, 0.40);
 pub const RUNNING_BRIGHT: Rgb = rgb(0.00, 0.64, 0.56);
 pub const STALLED: Rgb = rgb(0.80, 0.24, 0.22);
+/// Work waiting on the person's answer.
+pub const ASKING: Rgb = rgb(0.80, 0.42, 0.02);
 /// A checked card waiting to clear.
 pub const DONE: Rgb = rgb(0.15, 0.57, 0.35);
 /// A failed read beside the previous values: macOS's system orange in the light appearance.
@@ -72,15 +74,15 @@ pub struct CardStyle {
     pub signal: Rgb,
 }
 
-/// New results and stalled work are tinted and outlined strongly; running work is outlined but not filled,
-/// so it stands out without outshining new results; a checked card turns green while it waits.
+/// New results, questions waiting on the person and stalled work are tinted and outlined strongly; running work
+/// is outlined but not filled, so it stands out without outshining them; a checked card turns green while it waits.
 pub fn card_style(state: SessionState, hovering: bool) -> CardStyle {
     let signal = session_state(state);
-    let strong = matches!(state, SessionState::New | SessionState::Stalled);
+    let strong = matches!(state, SessionState::New | SessionState::Asking | SessionState::Stalled);
     let tinted = strong || state == SessionState::Done;
     let running = state == SessionState::Running;
-    // New results carry a slightly deeper wash than other tinted cards, so they read first.
-    let wash = if state == SessionState::New { 0.93 } else { 0.965 };
+    // New results and questions carry a slightly deeper wash than other tinted cards, so they read first.
+    let wash = if matches!(state, SessionState::New | SessionState::Asking) { 0.93 } else { 0.965 };
     let mut fill = if tinted { signal.blend(wash, WHITE) } else { WHITE };
     if hovering && state != SessionState::Done {
         fill = fill.blend(0.035, INK);
@@ -127,6 +129,7 @@ pub fn session_state(state: SessionState) -> Rgb {
     match state {
         SessionState::New => NEW_RESULT,
         SessionState::Running => RUNNING,
+        SessionState::Asking => ASKING,
         SessionState::Stalled => STALLED,
         SessionState::Done => DONE,
         SessionState::Seen | SessionState::Aborted | SessionState::Unknown => MUTED,

@@ -8,7 +8,7 @@ use errand_core::format::timestamp_from_seconds;
 use errand_core::model::{Alert, AppState, Attention, COMPLETION_DELAY, Effect, Msg, Notice, OpenError, WidgetPreferences, update};
 use errand_core::reset_history::ResetHistory;
 use errand_core::sessions::text::PICTURE;
-use errand_core::sessions::{SessionRecords, SessionRow, SessionState};
+use errand_core::sessions::{Question, SessionRecords, SessionRow, SessionState};
 use errand_core::usage::{Mood, Reading, Span, UsageError, UsageWindow, WindowName};
 use errand_core::view::{self, MenuAction, MenuEntry, ViewContext};
 use errand_core::{Language, Provider, TimeZone, Timestamp, theme};
@@ -167,6 +167,7 @@ fn row(key: &str, provider: Provider, prompt_ago: f64, finished_ago: Option<f64>
         stalled: false,
         parent: None,
         on_screen: false,
+        question: None,
     }
 }
 
@@ -610,4 +611,45 @@ fn a_line_checks_off_by_itself() {
     update(&mut state, Msg::CardFaded("claude:local_k".to_owned()), at(NOW));
     assert_eq!(keys(&state), ["claude:local_p"]);
     assert!(view::tray(&state, &context(), 560.0).cards[0].sub_tasks.is_empty());
+}
+
+fn asking() -> SessionRow {
+    let question = Question { id: "toolu_q".to_owned(), asked_at: at(NOW - 120.0), questions: vec!["어느 안으로 할까요?".to_owned(), "색은요?".to_owned()] };
+    SessionRow { question: Some(question), ..row("claude:local_q", Provider::Claude, 300.0, None) }
+}
+
+#[test]
+fn a_card_waiting_on_a_question_says_what_it_asks_and_the_header_counts_it_apart() {
+    let mut state = state();
+    scanned(&mut state, vec![asking(), row("codex:t", Provider::Codex, 200.0, Some(100.0)), row("codex:r", Provider::Codex, 100.0, None)]);
+    let tray = view::tray(&state, &context(), 560.0);
+    let card = tray.cards.iter().find(|card| card.key == "claude:local_q").unwrap();
+    assert_eq!((card.state, card.chip, card.when.as_str()), (SessionState::Asking, "답변 필요", "2분 전 질문"));
+    let detail = card.detail.as_ref().unwrap();
+    assert_eq!((detail.text.as_str(), detail.icon, detail.color), ("질문 · 어느 안으로 할까요?", "message-circle-question-mark", theme::ASKING));
+    assert_eq!(detail.tooltip, "질문 · 어느 안으로 할까요?\n질문 · 색은요?", "the tooltip has every question");
+    assert!(card.accessibility_label.contains("답변 필요") && card.accessibility_label.ends_with("질문 · 어느 안으로 할까요?"));
+    assert_eq!(theme::card_style(SessionState::Asking, false).signal, theme::ASKING);
+
+    let header = view::dock(&state, &context()).header.expect("the task header");
+    let pills: Vec<(&str, theme::Rgb)> = header.pills.iter().map(|pill| (pill.words.as_str(), pill.color)).collect();
+    assert_eq!(pills, [("답변 필요 1개", theme::ASKING), ("확인할 것 1개", theme::NEW_RESULT), ("진행 중 1개", theme::RUNNING)], "questions first, apart from the answers");
+    assert_eq!(state.sessions.counts().new, 2, "rooms hear a question among the answers to check");
+
+    let folded = view::tray(&state, &context(), 150.0);
+    let small = folded.cards.iter().find(|card| card.key == "claude:local_q").unwrap();
+    assert!(small.compact && small.tooltip.contains("질문 · 어느 안으로 할까요?") && small.accessibility_label.contains("질문 ·"), "{small:?}");
+    assert!(view::rooms(&state, &context()).list.is_empty());
+}
+
+#[test]
+fn a_plan_waiting_for_approval_says_so() {
+    let mut state = state();
+    let mut plan = asking();
+    plan.question.as_mut().unwrap().questions.clear();
+    scanned(&mut state, vec![plan]);
+    let tray = view::tray(&state, &context(), 560.0);
+    assert_eq!(tray.cards[0].detail.as_ref().unwrap().text, "계획을 확인해 주세요");
+    let english = view::tray(&state, &english(), 560.0);
+    assert_eq!((english.cards[0].chip, english.cards[0].when.as_str()), ("Needs answer", "asked you 2 min ago"));
 }

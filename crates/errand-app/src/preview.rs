@@ -7,7 +7,7 @@ use errand_core::model::{AccountInfo, AppState, Msg, Profile, WidgetPreferences,
 use errand_core::ports::RoomService;
 use errand_core::rooms;
 use errand_core::reset_history::ResetHistory;
-use errand_core::sessions::{SessionRecords, SessionRow, TaskCounts, VisibleSession};
+use errand_core::sessions::{Question, SessionRecords, SessionRow, TaskCounts, VisibleSession};
 use errand_core::update::Release;
 use errand_core::usage::{Reading, UsageError, UsageWindow, claude, codex};
 use errand_core::{Language, PerProvider, Provider, Timestamp};
@@ -129,6 +129,7 @@ fn card(key: &str, provider: Provider, title: &str, prompt: &str, asked: Timesta
             stalled: false,
             parent: None,
             on_screen: false,
+            question: None,
         },
         seen,
     }
@@ -193,6 +194,15 @@ pub fn add_sessions(state: &mut AppState, arguments: &[String], now: Timestamp, 
             session.row.parent = Some("claude:preview-1".to_owned());
         }
         shown.splice(1..1, sub_tasks);
+    }
+    if has("--preview-question") {
+        // Claude asked something and waits for the answer.
+        let asked = say("하위 작업은 얇은 카드 버전으로 쏙 들어가게, 디자인 시안먼저 보여줘", "Tuck sub-tasks in as thin cards, and show mock-ups first");
+        let mut waiting = card("claude:preview-question", Provider::Claude, say("하위 작업 카드 시안", "Sub-task card mock-ups"), asked, ago(200), None, false);
+        waiting.row.folder = "errand-public".to_owned();
+        let question = say("하위 작업 카드를 어떤 시안으로 구현할까요?", "Which mock-up should the sub-task cards follow?");
+        waiting.row.question = Some(Question { id: "toolu_preview".to_owned(), asked_at: ago(120), questions: vec![question.to_owned()] });
+        shown.insert(0, waiting);
     }
     // As a scan would: a hidden service's tasks are left out.
     shown.retain(|session| state.shows(session.row.provider));

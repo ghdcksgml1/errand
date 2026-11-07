@@ -210,6 +210,7 @@ fn row(key: &str, prompt_seconds_ago: f64, finished_seconds_ago: Option<f64>) ->
         stalled: false,
         parent: None,
         on_screen: false,
+        question: None,
     }
 }
 
@@ -311,4 +312,61 @@ fn a_sub_task_leads_a_card_of_its_own_when_nothing_it_came_from_shows() {
 
     let looped = records.visible(vec![sub_task("claude:a", "claude:b", 20.0), sub_task("claude:b", "claude:a", 10.0)]);
     assert_eq!(leaders(&looped), [("claude:b", vec![]), ("claude:a", vec![])], "records that go round in a circle lose no card");
+}
+
+fn claude_asks(seconds_ago: f64, id: &str, tool: &str, input: Value) -> String {
+    line(json!({"type": "assistant", "isSidechain": false, "timestamp": stamp(ago(seconds_ago)), "uuid": id,
+                "message": {"role": "assistant", "stop_reason": "tool_use", "content": [{"type": "tool_use", "id": id, "name": tool, "input": input}]}}))
+}
+
+fn claude_answers(seconds_ago: f64, id: &str) -> String {
+    claude_user(seconds_ago, json!([{"type": "tool_result", "tool_use_id": id, "content": "B안"}]), json!({}))
+}
+
+fn asked() -> String {
+    transcript() + &claude_asks(60.0, "toolu_q", "AskUserQuestion", json!({"questions": [{"question": "어느 안으로 할까요?", "options": []}, {"question": "색은요?"}]}))
+}
+
+#[test]
+fn a_question_holds_the_turn_until_its_answer_comes_back() {
+    let turn = claude_turn(&asked());
+    let question = turn.question.as_ref().expect("a question waiting on the person");
+    assert!(turn.running && question.asked_at == ago(60.0) && question.questions == ["어느 안으로 할까요?", "색은요?"], "{turn:?}");
+    assert!(claude_turn(&(asked() + &claude_answers(30.0, "toolu_other"))).question.is_some(), "another tool's result answers nothing");
+    let answered = claude_turn(&(asked() + &claude_answers(30.0, "toolu_q")));
+    assert!(answered.running && answered.question.is_none(), "the answer, or the question turned down, sends the turn back to work");
+    let stopped = claude_turn(&(asked() + &claude_user(30.0, json!("[Request interrupted by user]"), json!({}))));
+    assert!(stopped.aborted && stopped.question.is_none());
+    let asked_again = claude_turn(&(asked() + &claude_user(30.0, json!("됐어, 다른 거 해줘"), json!({}))));
+    assert!(asked_again.running && asked_again.question.is_none(), "a new request leaves the question behind");
+
+    let plan = claude_turn(&(transcript() + &claude_asks(60.0, "toolu_p", "ExitPlanMode", json!({"plan": "1. 고치기"}))));
+    assert!(plan.question.as_ref().is_some_and(|question| question.questions.is_empty()), "a plan waits for approval, with nothing to quote");
+    assert!(claude_turn(&(transcript() + &claude_asks(60.0, "toolu_b", "Bash", json!({"command": "ls"})))).question.is_none(), "other tools wait on nobody");
+    let side = transcript()
+        + &line(json!({"type": "assistant", "isSidechain": true, "timestamp": stamp(ago(60.0)),
+                       "message": {"role": "assistant", "stop_reason": "tool_use", "content": [{"type": "tool_use", "id": "toolu_s", "name": "AskUserQuestion", "input": {}}]}}));
+    assert!(claude_turn(&side).question.is_none(), "a side chain never asks the person");
+
+    let whole = asked() + &claude_answers(30.0, "toolu_q");
+    // Before the answer, the last line.
+    let split = whole.trim_end().rfind('\n').unwrap() + 1;
+    let mut turn = Turn::default();
+    fold_claude(&mut turn, &whole.as_bytes()[..split]);
+    assert!(turn.question.is_some());
+    fold_claude(&mut turn, &whole.as_bytes()[split..]);
+    assert_eq!(turn, claude_turn(&whole), "a question asked in one chunk is answered in the next");
+}
+
+#[test]
+fn work_waiting_on_a_question_is_asking_and_never_stalled() {
+    let meta = ClaudeMeta::from_json(&json!({"sessionId": "local_q"})).unwrap();
+    let quiet = Some(ago(1500.0));
+    let row = claude_row("local_q", &meta, &claude_turn(&asked()), ago(0.0), quiet, ago(0.0)).unwrap();
+    assert!(!row.stalled && row.question.as_ref().is_some_and(|question| question.questions.len() == 2), "quiet because it waits on the person");
+    assert_eq!(SessionState::of(&VisibleSession { row, seen: false }), SessionState::Asking);
+    let working = claude_row("local_q", &meta, &claude_turn(&transcript()), ago(0.0), quiet, ago(0.0)).unwrap();
+    assert!(working.stalled && working.question.is_none(), "silent work with no question still reads as stalled");
+    let done = claude_row("local_q", &meta, &claude_turn(&(asked() + &claude_assistant(10.0, "끝", "end_turn", "u-9"))), ago(0.0), quiet, ago(0.0)).unwrap();
+    assert!(done.question.is_none() && SessionState::of(&VisibleSession { row: done, seen: false }) == SessionState::New);
 }

@@ -5,12 +5,12 @@ pub mod records;
 pub mod rows;
 pub mod text;
 
-pub use fold::{Turn, fold_claude, fold_codex};
+pub use fold::{Question, Turn, fold_claude, fold_codex};
 pub use records::{Family, SessionRecord, SessionRecords, VisibleSession, families};
 pub use rows::{ClaudeMeta, CodexThread, SessionRow, claude_row, codex_row};
 
-/// What the folded task header counts: answers to check, stalled requests among them, requests running, and
-/// answers opened but not yet checked off.
+/// What the person's cards come to, as rooms hear them: answers to check, with stalled requests and questions
+/// waiting on the person among them, requests running, and answers opened but not yet checked off.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TaskCounts {
     pub new: usize,
@@ -26,6 +26,8 @@ pub enum SessionState {
     /// An answer already opened, here or in the app.
     Seen,
     Running,
+    /// Running, and waiting on the person to answer a question.
+    Asking,
     /// Running, but silent for a long time.
     Stalled,
     Aborted,
@@ -40,6 +42,8 @@ impl SessionState {
         let row = &session.row;
         if row.stalled {
             SessionState::Stalled
+        } else if row.running && row.question.is_some() {
+            SessionState::Asking
         } else if row.running {
             SessionState::Running
         } else if row.aborted {
@@ -59,6 +63,7 @@ impl SessionState {
             SessionState::New => "circle-check",
             SessionState::Seen => "check-check",
             SessionState::Running => "loader-circle",
+            SessionState::Asking => "message-circle-question-mark",
             SessionState::Stalled => "circle-alert",
             SessionState::Aborted => "circle-slash",
             SessionState::Unknown => "circle-question-mark",

@@ -1,6 +1,6 @@
 //! One task card's facts, built from what each app records about a session.
 
-use super::fold::Turn;
+use super::fold::{Question, Turn};
 use super::text::{last_path_component, preview};
 use crate::{Provider, json};
 use jiff::{SignedDuration, Timestamp};
@@ -35,10 +35,13 @@ pub struct SessionRow {
     pub parent: Option<String>,
     /// Of all the app's sessions, the one it put on screen last. The scan says so, comparing them.
     pub on_screen: bool,
+    /// What the work waits on the person to answer.
+    pub question: Option<Question>,
 }
 
+/// Work waiting on the person's answer is quiet for that reason, and is not stalled.
 fn stalled(turn: &Turn, modified: Option<Timestamp>, now: Timestamp) -> bool {
-    turn.running && modified.is_some_and(|modified| now.duration_since(modified) > STALL_INTERVAL)
+    turn.running && turn.question.is_none() && modified.is_some_and(|modified| now.duration_since(modified) > STALL_INTERVAL)
 }
 
 /// A user thread from Codex's state database.
@@ -72,6 +75,7 @@ pub fn codex_row(thread: &CodexThread, turn: &Turn, modified: Option<Timestamp>,
         stalled: stalled(turn, modified, now),
         parent: None,
         on_screen: false,
+        question: None,
     }
 }
 
@@ -161,5 +165,10 @@ pub fn claude_row(
         stalled: stalled(turn, transcript_modified, now),
         parent: meta.parent_session.as_deref().map(|parent| format!("{}{parent}", Provider::Claude.session_key_prefix())),
         on_screen: false,
+        question: turn
+            .question
+            .clone()
+            .filter(|_| turn.running)
+            .map(|question| Question { questions: question.questions.iter().map(|text| preview(text, 200)).collect(), ..question }),
     })
 }

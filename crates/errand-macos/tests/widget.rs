@@ -19,7 +19,7 @@ mod widget {
     use errand_core::reset_history::ResetHistory;
     use errand_core::rooms::{Face, Member, Room, RoomSummary, Visibility};
     use errand_core::sessions::TaskCounts;
-    use errand_core::sessions::{SessionRecords, SessionRow};
+    use errand_core::sessions::{Question, SessionRecords, SessionRow};
     use errand_core::theme;
     use errand_core::usage::{Span, UsageError, UsageWindow, WindowName};
     use errand_core::view::ViewContext;
@@ -420,6 +420,7 @@ mod widget {
             stalled: false,
             parent: None,
             on_screen: false,
+            question: None,
         }
     }
 
@@ -925,6 +926,35 @@ mod widget {
         t.check(
             completed(&h, "claude:local_p") && completed(&h, "claude:local_read") && !completed(&h, "claude:local_run") && card_order(&tray) == ["claude:local_run"],
             &format!("Checking the card clears the lines already read; the rest become cards: {:?}", card_order(&tray)),
+        );
+
+        // Work waiting on the person's answer.
+        let mut waiting = row("claude:local_q", Provider::Claude, "카드 시안", "시안 보여줘", h.ago(200), None);
+        waiting.question = Some(Question { id: "toolu_q".to_owned(), asked_at: h.ago(120), questions: vec!["어느 안으로 할까요?".to_owned()] });
+        h.send(Msg::SessionsScanned(vec![waiting]));
+        let header = first(&dock, "ErrandPressableView").expect("the task header");
+        let pills: Vec<String> = of_class(&header, "ErrandCountPill").iter().map(|pill| tooltip(pill)).collect();
+        let card = h.card("claude:local_q");
+        t.check(
+            card.as_ref().is_some_and(|card| {
+                shows(card, "질문 · 어느 안으로 할까요?") && shows(card, "2분 전 질문") && spoken(card).contains("답변 필요") && first(card, "ErrandSpinningIconView").is_none()
+            }) && pills == ["답변 필요 1개"],
+            &format!("A card waiting on a question says what it asks, and the header counts it apart: {pills:?}"),
+        );
+        let mut waiting = row("claude:local_q", Provider::Claude, "카드 시안", "시안 보여줘", h.ago(200), None);
+        waiting.question = Some(Question { id: "toolu_q".to_owned(), asked_at: h.ago(120), questions: vec!["어느 안으로 할까요?".to_owned()] });
+        let mut answered = row("codex:q-new", Provider::Codex, "새 결과", "고쳐줘", h.ago(300), Some(h.ago(60)));
+        answered.result = Some("고쳤어요".to_owned());
+        let mut read = row("codex:q-seen", Provider::Codex, "확인함", "봐줘", h.ago(400), Some(h.ago(350)));
+        read.seen_in_app = true;
+        h.send(Msg::SessionsScanned(vec![waiting, answered, row("codex:q-run", Provider::Codex, "진행 중", "해줘", h.ago(100), None), read]));
+        let header = first(&dock, "ErrandPressableView").expect("the task header");
+        let shown_pills = of_class(&header, "ErrandCountPill");
+        let pills: Vec<String> = shown_pills.iter().map(|pill| tooltip(pill)).collect();
+        let clear = shown_pills.iter().all(|pill| pill.frame().origin.x + pill.frame().size.width <= header.frame().size.width - 31.0);
+        t.check(
+            clear && pills.starts_with(&["답변 필요 1개".to_owned(), "확인할 것 1개".to_owned(), "진행 중 1개".to_owned()]) && spoken(&header).contains("확인함 1개"),
+            &format!("Counts that would run under the chevron give way, the least pressing first, and VoiceOver still hears them: {pills:?}"),
         );
 
         let crowd: Vec<SessionRow> = (0..5)
