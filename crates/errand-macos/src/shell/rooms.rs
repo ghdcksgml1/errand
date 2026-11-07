@@ -774,10 +774,23 @@ fn room_card(vm: &RoomCardVm, width: f64, poster: Arc<dyn Poster>, mtm: MainThre
     for (index, member) in vm.faces.iter().enumerate() {
         card.addSubview(&avatar(member, rect(16.0 + index as f64 * step, 63.0, face, face), true, mtm));
     }
-    let faces = if vm.faces.is_empty() { 0.0 } else { face + step * (vm.faces.len() - 1) as f64 + 8.0 };
-    let pill = count_pill(vm.working.count, vm.working.icon, vm.working.spinning, vm.working.color, &vm.working.words, NSPoint::new(16.0 + faces, 65.0), mtm);
-    let after = pill.frame().origin.x + pill.frame().size.width + 6.0;
-    card.addSubview(&pill);
+    // More at work than the faces show: how many more, on one more face at the stack's end.
+    let more = vm.working.count.saturating_sub(vm.faces.len());
+    let mut shown = vm.faces.len();
+    if more > 0 && shown > 0 {
+        let rest = FaceVm { avatar: None, initial: format!("+{more}") };
+        card.addSubview(&avatar(&rest, rect(16.0 + shown as f64 * step, 63.0, face, face), true, mtm));
+        shown += 1;
+    }
+    let mut after = 16.0;
+    if shown > 0 {
+        let width = face + step * (shown - 1) as f64;
+        // The faces are the people at work, which their tooltip says.
+        let faces = NSView::initWithFrame(NSView::alloc(mtm), rect(16.0, 61.0, width, 26.0));
+        faces.setToolTip(Some(&ns(&vm.working.words)));
+        card.addSubview(&faces);
+        after += width + 8.0;
+    }
     let people = label(&vm.people, 11.0, Weight::Medium, theme::MUTED, mtm);
     people.setFrame(rect(after, 66.0, 80.0, 16.0));
     card.addSubview(&people);
