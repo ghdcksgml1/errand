@@ -5,7 +5,7 @@
 use crate::avatar::Avatar;
 use crate::provider::{PerProvider, Provider};
 use crate::reset_history::ResetHistory;
-use crate::rooms::{Joined, Room, RoomError, RoomSummary, RoomsState, SHOWN_SYNC_INTERVAL, STEPPED_AWAY_AFTER, SYNC_INTERVAL, Visibility, room_id};
+use crate::rooms::{self, Joined, Room, RoomError, RoomSummary, RoomsState, SHOWN_SYNC_INTERVAL, STEPPED_AWAY_AFTER, SYNC_INTERVAL, Visibility, room_id};
 use crate::sessions::{SessionRecords, SessionRow, SessionState, TaskCounts, VisibleSession, families};
 use crate::update::{self, Release, UpdateState};
 use crate::usage::{self, Mood, Reading, UsageError, UsageWindow};
@@ -223,6 +223,9 @@ pub enum Msg {
     CheckAccounts,
     AccountsRead(PerProvider<AccountInfo>),
     ProfileRead(Profile),
+    /// The nickname typed in the editor: the person's name from now on. An empty one goes back to the name
+    /// Errand finds for them.
+    RenameProfile(String),
     /// A click on the person's character: the editor opens beside the dock, or closes.
     ToggleAvatarEditor,
     CloseAvatarEditor,
@@ -297,6 +300,8 @@ pub enum Effect {
     NewAvatarSeed,
     /// Keep the character someone picked, written as `Avatar::code`, in place of the last.
     SaveAvatar(String),
+    /// Keep the nickname the person gave themselves, or forget it for `None`; `ReadProfile` follows.
+    SaveNickname(Option<String>),
     ReadAccounts,
     /// Scan with this snapshot of the tray's records, then send `SessionsScanned`.
     ScanSessions(SessionRecords),
@@ -355,8 +360,22 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             vec![]
         }
         Msg::ProfileRead(profile) => {
+            let renamed = profile.name != state.profile.name;
             state.profile = profile;
-            vec![]
+            if !renamed {
+                return vec![];
+            }
+            // Private rooms show the nickname, so they hear a new one now rather than at their next round.
+            let private: Vec<String> =
+                state.rooms.joined.iter().map(|joined| joined.id.clone()).filter(|room| state.rooms.visibility(room) == Visibility::Private).collect();
+            private.iter().map(|room| sync(state, room, now)).collect()
+        }
+        Msg::RenameProfile(name) => {
+            let name = rooms::nickname(&name);
+            if name == state.profile.name {
+                return vec![];
+            }
+            vec![Effect::SaveNickname((!name.is_empty()).then_some(name)), Effect::ReadProfile]
         }
         Msg::ToggleAvatarEditor => {
             state.avatar_editor_open = !state.avatar_editor_open;

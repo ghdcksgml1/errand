@@ -676,10 +676,12 @@ pub struct ClothesVm {
     pub avatar: Avatar,
 }
 
-/// The character editor beside the dock: the character, a row of arrows per part and the clothes' colours,
-/// under a title and over a shuffle for a whole new one.
+/// The profile editor beside the dock: the nickname, then the character, a row of arrows per part and the
+/// clothes' colours, under a title and over a shuffle for a whole new one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AvatarEditorVm {
+    /// The name the dock shows, to change in place.
+    pub nickname: String,
     pub avatar: Avatar,
     pub parts: Vec<AvatarPartVm>,
     pub clothes: Vec<ClothesVm>,
@@ -703,7 +705,7 @@ pub fn avatar_editor(state: &AppState, language: Language) -> AvatarEditorVm {
         .enumerate()
         .map(|(index, colour)| ClothesVm { colour, label: language.clothes_colour(index), chosen: avatar.clothes == colour, avatar: Avatar { clothes: colour, ..avatar } })
         .collect();
-    AvatarEditorVm { avatar, parts, clothes }
+    AvatarEditorVm { nickname: state.profile.name.clone(), avatar, parts, clothes }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

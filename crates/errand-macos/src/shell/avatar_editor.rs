@@ -1,9 +1,10 @@
-//! The character editor beside the dock: the person's character, arrows either side of each part, the
-//! clothes' colours, and a shuffle for a whole new one. Every pick is kept as soon as it is made.
+//! The profile editor beside the dock: the person's nickname, their character, arrows either side of each part,
+//! the clothes' colours, and a shuffle for a whole new one. Every pick is kept as soon as it is made, and the
+//! nickname once Return is pressed or the editor closes.
 
 use super::details::{PopoverView, button};
 use super::dock::AvatarView;
-use super::kit::{Action, FlippedView, Weight, color, icon_image, label, ns, rect};
+use super::kit::{Action, FlippedView, Weight, color, fitting_width, font, icon_image, label, ns, rect};
 use block2::RcBlock;
 use errand_core::Language;
 use errand_core::avatar::{Avatar, CLOTHES, PARTS};
@@ -15,20 +16,23 @@ use errand_core::view::AvatarEditorVm;
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSAccessibility, NSBezierPath, NSButton, NSCellImagePosition, NSImage, NSTextAlignment, NSTextField};
+use objc2_app_kit::{NSAccessibility, NSBezierPath, NSButton, NSCellImagePosition, NSImage, NSTextAlignment, NSTextField, NSTextFieldBezelStyle};
 use objc2_foundation::{NSRect, NSSize};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+/// The nickname's row, under the title.
+const NICKNAME_TOP: f64 = 50.0;
 /// The parts' rows, beside the character.
-const ROWS_TOP: f64 = 48.0;
+const ROWS_TOP: f64 = 86.0;
 const ROW: f64 = 28.0;
 const SWATCH: f64 = 22.0;
 
 pub struct AvatarEditor {
     pub view: Retained<PopoverView>,
     body: Retained<FlippedView>,
+    nickname: Retained<NSTextField>,
     preview: Retained<AvatarView>,
     names: Vec<Retained<NSTextField>>,
     choices: Vec<Retained<NSTextField>>,
@@ -48,6 +52,27 @@ impl AvatarEditor {
         let heading = label(language.avatar_editor_title(), 20.0, Weight::Semibold, theme::INK, mtm);
         heading.setFrame(rect(20.0, 15.0, size.width - 40.0, 30.0));
         body.addSubview(&heading);
+        let nickname_label = label(language.nickname_label(), 12.0, Weight::Regular, theme::MUTED, mtm);
+        let label_width = fitting_width(&nickname_label);
+        nickname_label.setFrame(rect(20.0, NICKNAME_TOP + 4.0, label_width, 18.0));
+        body.addSubview(&nickname_label);
+        let nickname = NSTextField::textFieldWithString(&ns(""), mtm);
+        nickname.setFont(Some(&font(12.5, Weight::Regular)));
+        nickname.setTextColor(Some(&color(theme::INK)));
+        nickname.setBezelStyle(NSTextFieldBezelStyle::RoundedBezel);
+        nickname.setPlaceholderString(Some(&ns(language.nickname_placeholder())));
+        nickname.setAccessibilityLabel(Some(&ns(language.nickname_label())));
+        nickname.setUsesSingleLineMode(true);
+        let field_x = 20.0 + label_width + 6.0;
+        nickname.setFrame(rect(field_x, NICKNAME_TOP, size.width - field_x - 20.0, 24.0));
+        // Return keeps the name, and so does leaving the field, which closing the editor does.
+        if let Some(cell) = nickname.cell() {
+            cell.setSendsActionOnEndEditing(true);
+        }
+        let (field, rename_poster) = (nickname.clone(), poster.clone());
+        let rename = Action::new(mtm, move || rename_poster.post(Msg::RenameProfile(field.stringValue().to_string())));
+        rename.attach(&nickname);
+        body.addSubview(&nickname);
         let rows_height = PARTS.len() as f64 * ROW;
         let preview = AvatarView::new(mtm, rect(16.0, ROWS_TOP + (rows_height - 88.0) / 2.0, 88.0, 88.0), None);
         body.addSubview(&preview);
@@ -62,7 +87,7 @@ impl AvatarEditor {
                 }
             }
         };
-        let mut actions = Vec::new();
+        let mut actions = vec![rename];
         let (mut names, mut choices, mut arrows) = (Vec::new(), Vec::new(), Vec::new());
         for index in 0..PARTS.len() {
             let y = ROWS_TOP + index as f64 * ROW;
@@ -104,10 +129,14 @@ impl AvatarEditor {
         let (close, close_action) = button(language.close(), "x", false, rect(size.width - 95.0, size.height - 40.0, 79.0, 28.0), move || poster.post(Msg::CloseAvatarEditor), mtm);
         body.addSubview(&close);
         actions.extend([shuffle_action, close_action]);
-        AvatarEditor { view, body, preview, names, choices, arrows, swatches, shown, _actions: actions }
+        AvatarEditor { view, body, nickname, preview, names, choices, arrows, swatches, shown, _actions: actions }
     }
 
     pub fn render(&mut self, vm: &AvatarEditorVm) {
+        // The field shows the name whenever the person is not typing in it, trimmed as it was kept.
+        if self.nickname.currentEditor().is_none() && self.nickname.stringValue().to_string() != vm.nickname {
+            self.nickname.setStringValue(&ns(&vm.nickname));
+        }
         if self.shown.borrow().as_ref() == Some(vm) {
             return;
         }

@@ -8,7 +8,7 @@ use super::rooms::Rooms;
 use super::dock::{Dock, DockEvents};
 use super::tray::Tray;
 use super::kit::ns;
-use super::panel::{make_panel, primary_height, screen_frame, to_cocoa, to_core, visible_frames};
+use super::panel::{make_panel, make_typing_panel, primary_height, screen_frame, to_cocoa, to_core, visible_frames};
 use errand_core::Language;
 use errand_core::layout::{self, DockShape, Rect, STACK_WIDTH};
 use errand_core::model::{AppState, Msg};
@@ -96,7 +96,7 @@ impl Widget {
             let details_panel = make_panel(mtm, details.view.frame().size, language.details_title());
             details_panel.setContentView(Some(&details.view));
             let avatar_editor = AvatarEditor::new(mtm, poster.clone(), language);
-            let avatar_editor_panel = make_panel(mtm, avatar_editor.view.frame().size, language.avatar_editor_title());
+            let avatar_editor_panel = make_typing_panel(mtm, avatar_editor.view.frame().size, language.avatar_editor_title());
             avatar_editor_panel.setContentView(Some(&avatar_editor.view));
             let tray = Tray::new(mtm, poster.clone(), language);
             let tray_panel = make_panel(mtm, NSSize::new(STACK_WIDTH, 120.0), language.tray_window_title());
@@ -199,6 +199,14 @@ impl Widget {
     }
 
     /// The character editor beside the dock, the tail aimed at the person's character.
+    /// Puts the editor away; a nickname still being typed is kept as it stands, as if Return were pressed.
+    fn close_avatar_editor(&self) {
+        if self.avatar_editor_panel.isVisible() {
+            self.avatar_editor_panel.makeFirstResponder(None);
+            self.avatar_editor_panel.orderOut(None);
+        }
+    }
+
     fn place_avatar_editor(&self) {
         let placement = layout::avatar_editor_placement(self.dock_frame(), self.main_screen(), &visible_frames(self.mtm), self.dock.shape());
         self.avatar_editor_panel.setFrame_display(to_cocoa(placement.frame, primary_height(self.mtm)), true);
@@ -241,7 +249,7 @@ impl Widget {
         if state.widget.hidden {
             self.panel.orderOut(None);
             self.details_panel.orderOut(None);
-            self.avatar_editor_panel.orderOut(None);
+            self.close_avatar_editor();
             self.tray_panel.orderOut(None);
             self.rooms_panel.orderOut(None);
             return;
@@ -266,7 +274,7 @@ impl Widget {
                 self.avatar_editor_panel.orderFrontRegardless();
             }
         } else {
-            self.avatar_editor_panel.orderOut(None);
+            self.close_avatar_editor();
         }
         if state.rooms.open {
             self.rooms.render(&view::rooms(state, context), self.mtm);

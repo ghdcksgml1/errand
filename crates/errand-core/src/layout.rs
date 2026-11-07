@@ -19,7 +19,7 @@ pub const DETAIL_HEIGHT: f64 = 356.0;
 pub const POPOVER_TAIL: f64 = 12.0;
 /// The character editor's body, without its tail.
 pub const AVATAR_EDITOR_WIDTH: f64 = 300.0;
-pub const AVATAR_EDITOR_HEIGHT: f64 = 310.0;
+pub const AVATAR_EDITOR_HEIGHT: f64 = 348.0;
 /// About four cards plus a peek of the next; the rest scroll instead of covering the desktop.
 pub const TRAY_MAX_HEIGHT: f64 = 560.0;
 pub const CARD_HEIGHT: f64 = 118.0;

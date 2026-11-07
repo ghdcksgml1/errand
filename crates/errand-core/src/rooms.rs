@@ -70,7 +70,9 @@ pub fn presence_report(state: &AppState, visibility: Visibility) -> PresenceRepo
     PresenceReport { identity, avatar: Avatar::named(&state.profile.avatar), tasks: state.sessions.counts() }
 }
 
-fn nickname(name: &str) -> String {
+/// `name` as a nickname: without control characters or spaces at either end, and at most [`NICKNAME_LENGTH`]
+/// long. The person's own nickname is kept this way, so the dock shows what a private room hears.
+pub fn nickname(name: &str) -> String {
     let kept: String = name.chars().filter(|character| !character.is_control()).collect();
     kept.trim().chars().take(NICKNAME_LENGTH).collect::<String>().trim_end().to_owned()
 }

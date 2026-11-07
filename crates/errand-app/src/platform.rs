@@ -55,10 +55,10 @@ pub fn claude_report() -> PathBuf {
 }
 
 impl Platform {
-    /// The nickname given to Claude, else the Codex account's name, else the computer user's, and the character
-    /// this computer drew for the person.
+    /// The nickname the person gave themselves in Errand, else the one given to Claude, else the Codex account's
+    /// name, else the computer user's, and the character this computer drew for the person.
     pub fn profile(&self) -> Profile {
-        let name = [claude::account(&self.home).nickname, codex::account(&self.codex.home).name, Some(self.full_user_name())]
+        let name = [self.nickname(), claude::account(&self.home).nickname, codex::account(&self.codex.home).name, Some(self.full_user_name())]
             .into_iter()
             .flatten()
             .map(|name| name.trim().to_owned())
@@ -134,6 +134,15 @@ impl Platform {
 
     pub fn keep_avatar(&self, avatar: &str) {
         errand_macos::profile::keep_avatar(avatar)
+    }
+
+    /// The nickname the person typed in the editor, if they kept one.
+    pub fn nickname(&self) -> Option<String> {
+        errand_macos::profile::nickname()
+    }
+
+    pub fn keep_nickname(&self, name: Option<&str>) {
+        errand_macos::profile::keep_nickname(name)
     }
 
     /// Makes this install's random ID the first time Errand runs. Only the rooms server ever hears it, so it is

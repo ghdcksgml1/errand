@@ -1,4 +1,4 @@
-//! Floating panels that never take the person's typing focus, and the conversion between AppKit's screen
+//! Floating panels that never take the person's typing focus unless they click into a text field, and the conversion between AppKit's screen
 //! coordinates (origin bottom left, y up) and the core's (origin top left, y down).
 
 use super::kit::{ns, rect};
@@ -31,14 +31,48 @@ define_class!(
     }
 );
 
+define_class!(
+    // Takes typing only once a click lands in one of its text fields, and even then Errand does not become the
+    // active app: the app the person was in stays in front, and gets the keys back when the panel goes.
+    #[unsafe(super(NSPanel))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "ErrandTypingPanel"]
+    pub struct TypingPanel;
+
+    impl TypingPanel {
+        #[unsafe(method(canBecomeKeyWindow))]
+        fn can_become_key(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(canBecomeMainWindow))]
+        fn can_become_main(&self) -> bool {
+            false
+        }
+    }
+);
+
+const STYLE: NSWindowStyleMask = NSWindowStyleMask::Borderless.union(NSWindowStyleMask::NonactivatingPanel);
+
 /// A borderless, transparent, non-activating panel that floats over other apps on every Space.
 pub fn make_panel(mtm: MainThreadMarker, size: NSSize, title: &str) -> Retained<NSPanel> {
-    let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
     let panel: Retained<PassivePanel> = unsafe {
-        msg_send![PassivePanel::alloc(mtm), initWithContentRect: rect(0.0, 0.0, size.width, size.height), styleMask: style,
+        msg_send![PassivePanel::alloc(mtm), initWithContentRect: rect(0.0, 0.0, size.width, size.height), styleMask: STYLE,
                   backing: NSBackingStoreType::Buffered, defer: false]
     };
-    let panel = Retained::into_super(panel);
+    floating(Retained::into_super(panel), title)
+}
+
+/// The same panel, for one with a text field to type in.
+pub fn make_typing_panel(mtm: MainThreadMarker, size: NSSize, title: &str) -> Retained<NSPanel> {
+    let panel: Retained<TypingPanel> = unsafe {
+        msg_send![TypingPanel::alloc(mtm), initWithContentRect: rect(0.0, 0.0, size.width, size.height), styleMask: STYLE,
+                  backing: NSBackingStoreType::Buffered, defer: false]
+    };
+    floating(Retained::into_super(panel), title)
+}
+
+fn floating(panel: Retained<NSPanel>, title: &str) -> Retained<NSPanel> {
     panel.setLevel(NSFloatingWindowLevel);
     panel.setFloatingPanel(true);
     panel.setHidesOnDeactivate(false);

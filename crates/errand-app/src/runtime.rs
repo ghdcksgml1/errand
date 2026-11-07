@@ -117,6 +117,10 @@ impl Runtime {
                 self.platform.keep_avatar(&avatar);
                 None
             }
+            Effect::SaveNickname(name) => {
+                self.platform.keep_nickname(name.as_deref());
+                None
+            }
             Effect::ReadAccounts => Some(Msg::AccountsRead(self.read_accounts())),
             Effect::ScanSessions(records) => {
                 let _ = self.scans.send(records);

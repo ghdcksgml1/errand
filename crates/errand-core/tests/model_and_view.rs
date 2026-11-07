@@ -5,7 +5,8 @@
 
 use errand_core::avatar::{Avatar, Part};
 use errand_core::format::timestamp_from_seconds;
-use errand_core::model::{Alert, AppState, Attention, COMPLETION_DELAY, Effect, Msg, Notice, OpenError, WidgetPreferences, update};
+use errand_core::model::{Alert, AppState, Attention, COMPLETION_DELAY, Effect, Msg, Notice, OpenError, Profile, WidgetPreferences, update};
+use errand_core::rooms::Visibility;
 use errand_core::reset_history::ResetHistory;
 use errand_core::sessions::text::PICTURE;
 use errand_core::sessions::{Question, SessionRecords, SessionRow, SessionState};
@@ -392,6 +393,32 @@ fn a_part_picked_in_the_editor_is_kept_and_shown() {
     assert_eq!(editor.clothes.iter().filter(|clothes| clothes.chosen).map(|clothes| clothes.colour).collect::<Vec<_>>(), [picked.clothes]);
     assert!(editor.clothes.iter().all(|clothes| clothes.avatar == Avatar { clothes: clothes.colour, ..picked }));
     assert_eq!(view::avatar_editor(&state, Language::English).parts[0].next_label, "Next body");
+}
+
+#[test]
+fn a_nickname_typed_in_the_editor_is_kept_and_an_empty_one_brings_back_the_usual_name() {
+    let mut state = state();
+    state.profile = Profile { name: "한결".to_owned(), avatar: "한결".to_owned() };
+    assert_eq!(view::avatar_editor(&state, Language::Korean).nickname, "한결", "the editor shows the name the dock does");
+    assert_eq!(
+        update(&mut state, Msg::RenameProfile("  야근\u{7}요정 다람쥐 아저씨 김한결입니다요오 ".to_owned()), at(NOW)),
+        [Effect::SaveNickname(Some("야근요정 다람쥐 아저씨 김한결입니다요".to_owned())), Effect::ReadProfile],
+        "kept as a private room would hear it: no control characters or outer spaces, twenty at most"
+    );
+    assert_eq!(state.profile.name, "한결", "the dock shows it once the profile is read again with it");
+    assert!(update(&mut state, Msg::RenameProfile(" 한결 ".to_owned()), at(NOW)).is_empty(), "the same name again keeps nothing");
+    assert_eq!(update(&mut state, Msg::RenameProfile("  ".to_owned()), at(NOW)), [Effect::SaveNickname(None), Effect::ReadProfile]);
+}
+
+#[test]
+fn a_new_nickname_reaches_the_private_rooms_at_once() {
+    let mut state = state();
+    state.profile = Profile { name: "한결".to_owned(), avatar: "한결".to_owned() };
+    update(&mut state, Msg::RoomsRemembered(vec![("late-night".to_owned(), Visibility::Public), ("team".to_owned(), Visibility::Private)]), at(NOW));
+    let renamed = update(&mut state, Msg::ProfileRead(Profile { name: "다람쥐".to_owned(), avatar: "한결".to_owned() }), at(NOW + 1.0));
+    assert_eq!(renamed, [Effect::SyncRoom { room: "team".to_owned(), visibility: Visibility::Private }], "a public room never hears the name");
+    let same = state.profile.clone();
+    assert!(update(&mut state, Msg::ProfileRead(same), at(NOW + 2.0)).is_empty(), "the same profile read again sends nothing");
 }
 
 #[test]

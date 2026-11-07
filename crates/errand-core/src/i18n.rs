@@ -227,15 +227,25 @@ impl Language {
 
     /// The person's character on the dock, as VoiceOver names it.
     pub fn edit_avatar(self) -> &'static str {
-        self.pick("캐릭터 꾸미기", "Edit character")
+        self.pick("프로필 꾸미기", "Edit profile")
     }
 
     pub fn avatar_tooltip(self) -> &'static str {
-        self.pick("클릭해서 캐릭터 꾸미기", "Click to edit your character")
+        self.pick("클릭해서 캐릭터와 닉네임 바꾸기", "Click to change your character and nickname")
     }
 
     pub fn avatar_editor_title(self) -> &'static str {
-        self.pick("내 캐릭터", "My character")
+        self.pick("내 프로필", "My profile")
+    }
+
+    /// The label before the editor's nickname field.
+    pub fn nickname_label(self) -> &'static str {
+        self.pick("닉네임", "Nickname")
+    }
+
+    /// What the empty nickname field says: emptied, the name comes from Claude, Codex or the Mac again.
+    pub fn nickname_placeholder(self) -> &'static str {
+        self.pick("비우면 원래 이름으로", "Empty for the usual name")
     }
 
     /// The editor's button that draws a whole new character.

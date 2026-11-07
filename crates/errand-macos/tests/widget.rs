@@ -544,6 +544,21 @@ mod widget {
         }
         h.pump();
         t.check(h.performed(|effect| *effect == Effect::NewAvatarSeed) == 1, "무작위 asks for a whole new character");
+        let field = labels(&editor).into_iter().find(|field| field.isEditable());
+        t.check(
+            field.as_ref().is_some_and(|field| field.stringValue().to_string() == "한결" && spoken(field) == "닉네임")
+                && editor_panel.canBecomeKeyWindow() && !editor_panel.canBecomeMainWindow(),
+            "The editor's nickname field shows the dock's name, and its panel takes typing without becoming Errand's main window",
+        );
+        if let Some(field) = &field {
+            field.setStringValue(&ns(" 야근 요정 "));
+            unsafe { field.sendAction_to(field.action(), field.target().as_deref()) };
+        }
+        h.pump();
+        t.check(
+            h.performed(|effect| *effect == Effect::SaveNickname(Some("야근 요정".to_owned()))) == 1,
+            "Return in the nickname field keeps the name, trimmed",
+        );
         if let Some(close) = titled(&editor, "닫기") {
             unsafe { close.performClick(None) };
         }
