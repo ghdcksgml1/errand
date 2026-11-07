@@ -27,6 +27,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 const ROOM_CARD_HEIGHT: f64 = 100.0;
+/// A heading over the rooms the person is in, or over the rest: its line and the space under it.
+const HEADING_HEIGHT: f64 = 24.0;
+const HEADING_INSET: f64 = 6.0;
+/// Between the last joined room and the heading over the rest, past the gap between cards.
+const SECTION_GAP: f64 = 6.0;
+/// Between a joined room's name and its mark.
+const BADGE_GAP: f64 = 6.0;
 /// An open tab and its room's panel share this fill, so they read as one.
 const OPEN_FILL: Paint = theme::INK.alpha(0.055);
 const TAB_GAP: f64 = 6.0;
@@ -98,8 +105,8 @@ define_class!(
 );
 
 impl RoomCard {
-    fn new(mtm: MainThreadMarker, frame: NSRect, style: SessionState, chip: Option<Chip>) -> Retained<RoomCard> {
-        let this = RoomCard::alloc(mtm).set_ivars(CardIvars { style: theme::card_style(style, false), chip });
+    fn new(mtm: MainThreadMarker, frame: NSRect, chip: Option<Chip>) -> Retained<RoomCard> {
+        let this = RoomCard::alloc(mtm).set_ivars(CardIvars { style: theme::card_style(SessionState::Seen, false), chip });
         let card: Retained<RoomCard> = unsafe { msg_send![super(this), initWithFrame: frame] };
         // A chip whose work is under way turns its spinner where the icon would be.
         if let Some(chip) = &card.ivars().chip
@@ -703,7 +710,20 @@ impl Rooms {
         let card_width = area.size.width;
         let mut y = 0.0;
         let document = FlippedView::new(mtm, rect(0.0, 0.0, card_width, 0.0));
-        for room in &vm.list {
+        let heading = |words: &str, y: &mut f64| {
+            let line = label(words, 11.5, Weight::Semibold, theme::MUTED, mtm);
+            line.setFrame(rect(HEADING_INSET, *y + 2.0, card_width - 2.0 * HEADING_INSET, 16.0));
+            document.addSubview(&line);
+            *y += HEADING_HEIGHT;
+        };
+        for (index, room) in vm.list.iter().enumerate() {
+            let first_other = !room.joined && vm.list.get(index.wrapping_sub(1)).is_none_or(|before| before.joined);
+            if let Some(words) = vm.joined_heading.as_deref().filter(|_| index == 0 && room.joined) {
+                heading(words, &mut y);
+            } else if let Some(words) = vm.others_heading.filter(|_| first_other) {
+                y += SECTION_GAP;
+                heading(words, &mut y);
+            }
             let (card, action) = room_card(room, card_width, self.poster.clone(), mtm);
             card.setFrameOrigin(NSPoint::new(0.0, y));
             y += card.frame().size.height + layout::CARD_GAP;
@@ -728,14 +748,24 @@ impl Rooms {
 }
 
 /// A room on offer: its name and what it is like, how people show up there, who is at work, and a way in,
-/// or out of a room the person is in, whose card is edged as work under way is.
+/// or out of a room the person is in, whose name is marked so. Every card is drawn alike: the heading over the
+/// list and the mark say which rooms the person is in, rather than a colour that elsewhere means work under way.
 fn room_card(vm: &RoomCardVm, width: f64, poster: Arc<dyn Poster>, mtm: MainThreadMarker) -> (Retained<RoomCard>, Retained<Action>) {
-    let style = if vm.joined { SessionState::Running } else { SessionState::Seen };
-    let card = RoomCard::new(mtm, rect(0.0, 0.0, width, ROOM_CARD_HEIGHT), style, Some(Chip::from(&vm.visibility)));
+    let card = RoomCard::new(mtm, rect(0.0, 0.0, width, ROOM_CARD_HEIGHT), Some(Chip::from(&vm.visibility)));
     let name = label(&vm.name, 13.5, Weight::Semibold, theme::INK, mtm);
     name.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-    name.setFrame(rect(16.0, 11.0, card.chip_left() - 8.0 - 16.0, 19.0));
+    let badge = vm.badge.map(|words| (tinted_icon("circle-check", CHIP_ICON, theme::INK, mtm), label(words, 11.0, Weight::Semibold, theme::INK, mtm)));
+    let badge_width = badge.as_ref().map_or(0.0, |(_, words)| BADGE_GAP + CHIP_ICON + 3.0 + fitting_width(words));
+    let name_width = fitting_width(&name).min(card.chip_left() - 8.0 - 16.0 - badge_width);
+    name.setFrame(rect(16.0, 11.0, name_width, 19.0));
     card.addSubview(&name);
+    if let Some((check, words)) = badge {
+        let x = 16.0 + name_width + BADGE_GAP;
+        check.setFrameOrigin(NSPoint::new(x, 11.0 + (19.0 - CHIP_ICON) / 2.0 + 0.5));
+        words.setFrame(rect(x + CHIP_ICON + 3.0, 13.0, fitting_width(&words), 16.0));
+        card.addSubview(&check);
+        card.addSubview(&words);
+    }
     let tagline = label(&vm.tagline, 11.0, Weight::Regular, theme::MUTED, mtm);
     tagline.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
     tagline.setFrame(rect(16.0, 33.0, width - 32.0, 16.0));

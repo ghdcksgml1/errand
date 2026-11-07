@@ -798,8 +798,9 @@ pub struct RoomCardVm {
     pub faces: Vec<FaceVm>,
     pub working: CountVm,
     pub people: String,
-    /// The person is in it, so its button leaves.
+    /// The person is in it, so its button leaves and its name is marked.
     pub joined: bool,
+    pub badge: Option<&'static str>,
     pub button: &'static str,
     /// Why its button cannot be pressed, for a room the person cannot join yet.
     pub shut: Option<String>,
@@ -811,7 +812,12 @@ pub struct RoomsVm {
     pub title: &'static str,
     /// What rooms are, or why no more can be joined.
     pub subtitle: String,
+    /// The rooms the person is in first, then the rest.
     pub list: Vec<RoomCardVm>,
+    /// Over the rooms the person is in and over the rest, once they are in one; a list with none joined has no
+    /// headings.
+    pub joined_heading: Option<String>,
+    pub others_heading: Option<&'static str>,
     /// Loading or a failure, while there is no list to show.
     pub status: Option<String>,
     pub footer: &'static str,
@@ -827,7 +833,7 @@ pub fn rooms(state: &AppState, context: &ViewContext) -> RoomsVm {
         Some(failure) => Some(language.room_error(failure).to_owned()),
         None => rooms.loading.then(|| language.rooms_loading().to_owned()),
     };
-    let list = rooms
+    let mut list: Vec<RoomCardVm> = rooms
         .list
         .iter()
         .map(|room| {
@@ -841,13 +847,18 @@ pub fn rooms(state: &AppState, context: &ViewContext) -> RoomsVm {
                 working: CountVm { count: room.working, icon: "loader-circle", spinning: true, color: theme::RUNNING, words: language.working_words(room.working) },
                 people: language.room_people(room.members),
                 joined,
+                badge: joined.then(|| language.joined_badge()),
                 button: if joined { language.leave_room() } else { language.join_room() },
                 shut: (rooms.at_limit() && !joined).then(|| language.rooms_full()),
             }
         })
         .collect();
+    list.sort_by_key(|card| !card.joined);
+    let any_joined = list.iter().any(|card| card.joined);
+    let joined_heading = any_joined.then(|| language.joined_rooms(rooms.joined.len()));
+    let others_heading = (any_joined && list.iter().any(|card| !card.joined)).then(|| language.other_rooms());
     let subtitle = if rooms.at_limit() { language.rooms_full() } else { language.rooms_subtitle().to_owned() };
-    RoomsVm { title: language.rooms_title(), subtitle, list, status, footer: language.rooms_footer(rooms.sample), close: language.close() }
+    RoomsVm { title: language.rooms_title(), subtitle, list, joined_heading, others_heading, status, footer: language.rooms_footer(rooms.sample), close: language.close() }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

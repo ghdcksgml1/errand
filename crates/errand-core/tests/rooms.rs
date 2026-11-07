@@ -154,6 +154,7 @@ fn several_rooms_at_once_each_a_tab_under_the_profile() {
     assert!(view::dock(&state, &context()).rooms.is_none(), "no tabs before joining a room");
     update(&mut state, Msg::RoomsRead(Ok(vec![summary("late-night", "고독한 야근방", Visibility::Public), summary("team", "우리 팀 야근방", Visibility::Private)])), at(NOW));
     let list = view::rooms(&state, &context());
+    assert_eq!((list.joined_heading, list.others_heading), (None, None), "no headings before joining a room");
     let card = &list.list[0];
     assert_eq!((list.title, card.people.as_str(), card.working.count, card.visibility.text.as_str()), ("작업방", "7명", 4, "익명 참여"));
     assert_eq!((list.list[1].visibility.text.as_str(), card.button, card.joined), ("프로필 공개", "들어가기", false));
@@ -166,8 +167,11 @@ fn several_rooms_at_once_each_a_tab_under_the_profile() {
     assert_eq!(tabs(&state), [(false, "고독한 야근방".to_owned(), None, true)], "a room just joined opens its tab, named from the list");
     let joining = view::dock(&state, &context()).rooms.unwrap();
     assert_eq!((joining.status.as_deref(), joining.rows()), (Some("들어가는 중…"), 1));
-    let card = &view::rooms(&state, &context()).list[0];
-    assert_eq!((card.joined, card.button), (true, "나가기"), "the list offers a way out of a room the person is in");
+    let list = view::rooms(&state, &context());
+    let card = &list.list[0];
+    assert_eq!((card.joined, card.button, card.badge), (true, "나가기", Some("참여 중")), "the list offers a way out of a room the person is in");
+    assert_eq!((list.joined_heading.as_deref(), list.others_heading), (Some("참여 중  1/3"), Some("다른 방")));
+    assert_eq!(list.list[1].badge, None);
 
     let room = late_night(vec![
         member("커밋요정", tasks(0, 0, 3), 30.0, false),

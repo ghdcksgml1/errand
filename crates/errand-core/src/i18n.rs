@@ -802,6 +802,24 @@ impl Language {
         }
     }
 
+    /// Over the rooms the person is in, with how many of the most they can be in.
+    pub fn joined_rooms(self, joined: usize) -> String {
+        match self {
+            Language::Korean => format!("참여 중  {joined}/{MAX_ROOMS}"),
+            Language::English => format!("Joined  {joined}/{MAX_ROOMS}"),
+        }
+    }
+
+    /// Over the rooms the person is not in.
+    pub fn other_rooms(self) -> &'static str {
+        self.pick("다른 방", "Other rooms")
+    }
+
+    /// Beside a joined room's name.
+    pub fn joined_badge(self) -> &'static str {
+        self.pick("참여 중", "Joined")
+    }
+
     pub fn join_room(self) -> &'static str {
         self.pick("들어가기", "Join")
     }
