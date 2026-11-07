@@ -32,6 +32,9 @@ use std::time::{Duration, Instant, SystemTime};
 const RATE_LIMIT_PAUSE: Duration = Duration::from_secs(60);
 /// The longest a rate limit holds calls back, whatever it asks.
 const LONGEST_RATE_LIMIT_PAUSE: Duration = Duration::from_secs(15 * 60);
+/// A record Claude Code's status line made this recently is fresh without asking: a terminal session reports on
+/// every turn.
+const RECENT_REPORT: jiff::SignedDuration = jiff::SignedDuration::from_mins(5);
 
 /// A service Errand calls over HTTPS.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -155,14 +158,17 @@ impl Api {
     }
 
     /// Claude's usage after asking Claude Code itself, for when the person presses refresh and for nothing else.
-    /// Limits already on record are shown when Claude Code gives none, as an older one cannot answer; its silence
-    /// only counts as a failure when there is nothing else to show.
+    /// When Claude Code gives no answer, the press failed and says so, unless a status line spoke just now: then
+    /// the record is as fresh as an answer, and a Claude Code too old for `/usage` does not get in the way. A
+    /// failure keeps the limits already on screen, so silence never passes for an update that did not happen.
     pub fn ask_claude_code(&self) -> Result<Reading, UsageError> {
         let answered = (self.claude_code)()
             .and_then(|executable| claude::usage_text(&executable, claude::ANSWER_TIMEOUT))
             .is_some_and(|text| crate::claude::keep_usage_text(&self.claude_report, &text, crate::now()).unwrap_or(false));
+        let now = crate::now();
         match self.usage(Provider::Claude) {
-            Ok(reading) if answered || !reading.windows.is_empty() => Ok(reading),
+            Ok(reading) if answered => Ok(reading),
+            Ok(reading) if !reading.windows.is_empty() && reading.reported_at.is_some_and(|at| now.duration_since(at) < RECENT_REPORT) => Ok(reading),
             _ => Err(UsageError::ClaudeAskFailed),
         }
     }

@@ -75,7 +75,7 @@ fn asking_runs_claude_code_as_no_session_and_keeps_what_it_says() {
 }
 
 #[test]
-fn silence_shows_what_is_on_record_and_only_fails_with_nothing_to_show() {
+fn silence_fails_unless_the_status_line_just_spoke() {
     let folder = tempfile::tempdir().unwrap();
     let silent = stand_in(folder.path(), &reply("Unknown skill: usage"));
     assert_eq!(api(folder.path(), Some(silent.clone())).ask_claude_code(), Err(UsageError::ClaudeAskFailed), "no record, no answer");
@@ -89,9 +89,30 @@ fn silence_shows_what_is_on_record_and_only_fails_with_nothing_to_show() {
     let later = format::seconds(now).floor() + 3600.0;
     let input = json!({"rate_limits": {"five_hour": {"used_percentage": 2, "resets_at": later}}});
     claude::keep_status_line(&report, input.to_string().as_bytes(), now).unwrap();
-    let reading = api(folder.path(), Some(silent)).ask_claude_code().unwrap();
+    let reading = api(folder.path(), Some(silent.clone())).ask_claude_code().unwrap();
     assert_eq!(reading.reported_at, Some(now), "a Claude Code too old for `/usage` does not get in the way of the status line");
     assert_eq!(reading.windows.len(), 1);
+
+    // The status line went quiet an hour ago: what is on record is that old, and a press that heard nothing new
+    // says so instead of passing for an update.
+    let hour_ago = now - jiff::SignedDuration::from_hours(1);
+    claude::keep_status_line(&report, input.to_string().as_bytes(), hour_ago).unwrap();
+    assert_eq!(api(folder.path(), Some(silent)).ask_claude_code(), Err(UsageError::ClaudeAskFailed), "an old record with no answer");
+    assert_eq!(api(folder.path(), None).ask_claude_code(), Err(UsageError::ClaudeAskFailed), "an old record with no Claude Code to ask");
+    assert_eq!(api(folder.path(), None).usage(Provider::Claude).unwrap().windows.len(), 1, "the limits on record stay for the timer");
+}
+
+#[test]
+fn an_answer_after_an_old_record_brings_it_up_to_date() {
+    let folder = tempfile::tempdir().unwrap();
+    let report = folder.path().join("claude-usage.plist");
+    let hour_ago = errand_io::now() - jiff::SignedDuration::from_hours(1);
+    let old = json!({"rate_limits": {"seven_day": {"used_percentage": 10, "resets_at": 4_102_444_800.0}}});
+    claude::keep_status_line(&report, old.to_string().as_bytes(), hour_ago).unwrap();
+    let before = errand_io::now();
+    let reading = api(folder.path(), Some(stand_in(folder.path(), &reply(ANSWER)))).ask_claude_code().unwrap();
+    assert!(reading.reported_at.is_some_and(|at| at >= before), "the press is what the card dates");
+    assert!(reading.windows.iter().any(|window| window.identifier == "limits/Fable"), "and it heard the new answer");
 }
 
 #[test]
