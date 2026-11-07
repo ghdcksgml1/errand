@@ -17,7 +17,7 @@ mod widget {
     use errand_core::model::{AppState, Effect, Msg, Profile, WidgetPreferences, update};
     use errand_core::ports::Poster;
     use errand_core::reset_history::ResetHistory;
-    use errand_core::rooms::{Face, Member, Room, RoomSummary, Visibility};
+    use errand_core::rooms::{Face, Member, Role, Room, RoomSummary, Visibility};
     use errand_core::sessions::TaskCounts;
     use errand_core::sessions::{SessionRecords, SessionRow};
     use errand_core::theme;
@@ -450,6 +450,7 @@ mod widget {
         english(&mut t, mtm, defaults);
         hiding(&mut t, mtm, defaults);
         rooms(&mut t, mtm, defaults);
+        private_rooms(&mut t, mtm, defaults);
         room_tabs(&mut t, mtm, defaults);
         identity(&mut t, defaults);
         t
@@ -1184,6 +1185,116 @@ mod widget {
 
     /// More rooms than the dock is wide: the tabs keep their whole names and move along beside the plus, which stays
     /// where it is. Past three rooms the list shuts its ways in, and rooms an older Errand joined stay.
+    fn private_rooms(t: &mut Checks, mtm: MainThreadMarker, defaults: &Retained<NSUserDefaults>) {
+        let mut h = Harness::new(mtm, defaults, Language::Korean);
+        let rooms_panel = h.widget.borrow().rooms_panel.clone();
+        h.send(Msg::SetWidgetHidden(false));
+        h.send(Msg::ProfileRead(Profile { name: "한결".to_owned(), avatar: "한결".to_owned() }));
+        h.send(Msg::ShowRooms);
+        let owned = RoomSummary {
+            id: "p-own".to_owned(),
+            name: "내 방".to_owned(),
+            tagline: String::new(),
+            visibility: Visibility::Private,
+            members: 2,
+            working: 0,
+            faces: Vec::new(),
+            role: Some(Role::Owner),
+        };
+        h.send(Msg::RoomsRead(Ok(vec![owned])));
+        let content = || rooms_panel.contentView().expect("the rooms' view");
+        let spoken_button = |words: &str| buttons(&content()).into_iter().find(|button| spoken(button) == words);
+
+        // The form's own buttons keep working after the part under its fields is laid out again.
+        h.send(Msg::ShowCreateRoom);
+        let field = every(&content())
+            .into_iter()
+            .filter_map(|view| view.downcast::<NSTextField>().ok())
+            .find(|field| field.isEditable() && field.placeholderString().is_some_and(|words| words.to_string() == "예: 우리 팀 야근방"))
+            .expect("the name's field");
+        let submit = || titled(&content(), "만들고 초대 링크 받기").expect("the form's button");
+        t.check(!submit().isEnabled(), "Without a name the form's button waits");
+        // As typing would: the text changes and the field tells its delegate.
+        field.setStringValue(&ns("우리 팀"));
+        unsafe {
+            objc2_foundation::NSNotificationCenter::defaultCenter().postNotificationName_object(objc2_app_kit::NSControlTextDidChangeNotification, Some(&field))
+        };
+        t.check(submit().isEnabled() && label(&content(), "4/30").is_some(), "Typing a name counts it and turns the button on");
+        unsafe { submit().performClick(None) };
+        h.pump();
+        t.check(h.performed(|effect| matches!(effect, Effect::CreateRoom { name, .. } if name == "우리 팀")) == 1, "The form sends what was typed");
+        h.send(Msg::RoomCreated(Err(errand_core::rooms::RoomError::Unreachable)));
+        t.check(label(&content(), "작업방 서버에 연결하지 못했어요.").is_some(), "Why it failed shows under the fields");
+        unsafe { spoken_button("뒤로").expect("a way back").performClick(None) };
+        h.pump();
+        t.check(h.state.rooms.screen == errand_core::rooms::RoomsScreen::List, "Back still goes back once the form has changed");
+        h.send(Msg::ShowInviteCode);
+        h.send(Msg::CheckInvite("K7QF".to_owned()));
+        unsafe { spoken_button("닫기").expect("a way to close").performClick(None) };
+        h.pump();
+        t.check(!h.state.rooms.open && !rooms_panel.isVisible(), "Close still closes once the code's form has changed");
+
+        // The owner's right-click on someone's row opens a menu that turns them out, though the dock takes clicks.
+        h.send(Msg::JoinRoom("p-own".to_owned()));
+        let someone = |name: &str, me: bool| Member {
+            id: format!("id-{name}"),
+            name: name.to_owned(),
+            avatar: None,
+            tasks: TaskCounts::default(),
+            last_active: h.now,
+            joined_at: None,
+            me,
+        };
+        let room = Room {
+            id: "p-own".to_owned(),
+            name: "내 방".to_owned(),
+            tagline: String::new(),
+            visibility: Visibility::Private,
+            members: vec![someone("한결", true), someone("민지", false)],
+            role: Some(Role::Owner),
+        };
+        h.send(Msg::RoomRead("p-own".to_owned(), Ok(room)));
+        let dock = h.dock();
+        let rows: Vec<Retained<NSView>> = of_class(&dock, "ErrandMemberRow").into_iter().filter(|row| !row.isHiddenOrHasHiddenAncestor()).collect();
+        let menu_at = |row: &NSView| -> Option<Retained<objc2_app_kit::NSMenu>> {
+            let window = row.window().expect("the row is in a window");
+            let at = row.convertPoint_toView(NSPoint::new(row.bounds().size.width / 2.0, row.bounds().size.height / 2.0), None);
+            let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+                NSEventType::RightMouseDown,
+                at,
+                NSEventModifierFlags::empty(),
+                0.0,
+                window.windowNumber(),
+                None,
+                1,
+                1,
+                1.0,
+            )
+            .expect("a right-click");
+            let target = hit(&window, at).expect("something under the click");
+            unsafe { msg_send![&*target, menuForEvent: &*event] }
+        };
+        t.check(rows.len() == 2 && menu_at(&rows[0]).is_none(), "The owner's own row has no menu");
+        let menu = menu_at(&rows[1]);
+        t.check(
+            menu.as_ref().is_some_and(|menu| menu.itemAtIndex(0).is_some_and(|item| item.title().to_string() == "내보내기")),
+            "Someone else's row offers to turn them out",
+        );
+        if let Some(menu) = menu {
+            menu.performActionForItemAtIndex(0);
+            h.pump();
+        }
+        t.check(
+            h.performed(|effect| matches!(effect, Effect::Confirm(errand_core::model::Confirm::RemoveMember { name, .. }) if name == "민지")) == 1,
+            "Turning someone out asks first",
+        );
+
+        // A link brings a hidden widget back on the room it invites to.
+        h.send(Msg::SetWidgetHidden(true));
+        h.send(Msg::OpenLink("errand://invite/K7QF-M2XA-9P".to_owned()));
+        t.check(!h.state.widget.hidden && rooms_panel.isVisible(), "An invite link shows the widget and the room");
+    }
+
     fn room_tabs(t: &mut Checks, mtm: MainThreadMarker, defaults: &Retained<NSUserDefaults>) {
         let mut h = Harness::new(mtm, defaults, Language::Korean);
         let (panel, rooms_panel) = {

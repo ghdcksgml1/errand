@@ -79,6 +79,8 @@ pub enum Alert {
     OpenFailed(OpenError),
     /// The Dual Codex folder could not move to Errand's, with the system's reason.
     MigrationFailed(String),
+    /// Leaving a private room for good, or deleting one, did not go through.
+    QuitFailed(RoomError),
 }
 
 /// A question the person answers before Errand goes on, asked in a dialog with a button that does it and one
@@ -298,6 +300,8 @@ pub enum Msg {
     /// A room's live invites, newest first.
     InvitesRead(String, Result<Vec<Invite>, RoomError>),
     InviteMade(String, Result<Invite, RoomError>),
+    /// The link shown was deleted on the way to a new one.
+    InviteReplaced(String),
     /// A new link in place of the one shown, which stops working.
     RenewInvite(String),
     /// The link shown stops working, and none takes its place until asked for.
@@ -724,8 +728,11 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             vec![Effect::CreateRoom { name, tagline }]
         }
         Msg::RoomCreated(result) => {
+            // Made after the person moved on: the room is theirs all the same, in the list.
             if !matches!(state.rooms.screen, RoomsScreen::Create { .. }) {
-                return vec![];
+                let Ok(room) = result else { return vec![] };
+                upsert_listed(state, room);
+                return vec![Effect::FetchRooms];
             }
             match result {
                 Ok(room) => {
@@ -768,6 +775,16 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
                     *loading = false;
                     *failure = Some(error);
                 }
+            }
+            vec![]
+        }
+        Msg::InviteReplaced(room) => {
+            // The link shown no longer works, whatever comes next.
+            if let RoomsScreen::Invite { room: shown, invite, copied, .. } = &mut state.rooms.screen
+                && *shown == room
+            {
+                *invite = None;
+                *copied = false;
             }
             vec![]
         }
@@ -827,8 +844,12 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
         }
         Msg::CheckInvite(text) => {
             let RoomsScreen::Code { code, checking, room, failure, accepting, .. } = &mut state.rooms.screen else { return vec![] };
-            if *accepting {
+            if *accepting || *checking {
                 return vec![];
+            }
+            // The code already checked, its room on screen: Return goes in.
+            if room.is_some() && invite_code(&text).as_deref() == Some(code.as_str()) {
+                return apply(state, Msg::AcceptInvite, now);
             }
             *room = None;
             match invite_code(&text) {
@@ -867,10 +888,14 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             vec![Effect::AcceptInvite(code.clone())]
         }
         Msg::InviteAccepted(accepted, result) => {
-            let RoomsScreen::Code { code, accepting, failure, .. } = &mut state.rooms.screen else { return vec![] };
-            if *code != accepted {
-                return vec![];
+            let current = matches!(&state.rooms.screen, RoomsScreen::Code { code, .. } if *code == accepted);
+            // Accepted after the person moved on: they are in the room's list all the same.
+            if !current {
+                let Ok(room) = result else { return vec![] };
+                upsert_listed(state, room);
+                return vec![Effect::FetchRooms];
             }
+            let RoomsScreen::Code { accepting, failure, .. } = &mut state.rooms.screen else { return vec![] };
             *accepting = false;
             match result {
                 Ok(room) => {
@@ -889,7 +914,14 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
         }
         Msg::OpenLink(link) => {
             let Some(code) = invite_from_link(&link) else { return vec![] };
-            let mut effects = open_rooms(state);
+            // The person clicked a link to see a room: the widget shows again if it was hidden.
+            let mut effects = if state.widget.hidden {
+                state.widget.hidden = false;
+                vec![Effect::SaveWidgetPreferences]
+            } else {
+                vec![]
+            };
+            effects.extend(open_rooms(state));
             state.rooms.screen = RoomsScreen::Code { code: code.clone(), checking: true, room: None, failure: None, from_link: true, accepting: false };
             effects.push(Effect::CheckInvite(code));
             effects
@@ -908,7 +940,11 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             state.rooms.screen = RoomsScreen::List;
             vec![Effect::QuitRoom(room)]
         }
-        Msg::RoomQuit(_, _) => vec![Effect::FetchRooms],
+        Msg::RoomQuit(_, result) => match result {
+            // Already gone is what was asked for.
+            Ok(()) | Err(RoomError::NotFound) => vec![Effect::FetchRooms],
+            Err(failure) => vec![Effect::ShowAlert(Alert::QuitFailed(failure)), Effect::FetchRooms],
+        },
         Msg::AskRemoveMember { room, member, name } => {
             if state.rooms.role(&room) != Some(Role::Owner) {
                 return vec![];

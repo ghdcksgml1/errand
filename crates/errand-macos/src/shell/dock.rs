@@ -4,7 +4,7 @@
 //! one on the person's character opens its editor, a click on the rooms is theirs, and a click anywhere else
 //! opens the usage details.
 
-use super::rooms::{DockRooms, RoomTab, TabStrip};
+use super::rooms::{DockRooms, MemberRow, RoomTab, TabStrip};
 use super::battery::{BatteryView, dock_battery_width};
 use super::kit::{self, Action, CHIP_ICON, FlippedView, PressableView, Weight, color, digits_font, fitting_width, grey, icon_image, label, ns, rect};
 use super::spinner::SpinningIconView;
@@ -17,7 +17,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{AnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAccessibility, NSAccessibilityButtonRole, NSAccessibilityGroupRole, NSBezierPath, NSButton, NSCellImagePosition, NSEvent, NSImageView,
+    NSAccessibility, NSAccessibilityButtonRole, NSAccessibilityGroupRole, NSBezierPath, NSButton, NSCellImagePosition, NSEvent, NSImageView, NSMenu,
     NSTextAlignment, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect};
@@ -282,6 +282,12 @@ define_class!(
             true
         }
 
+        /// The dock takes clicks for itself, so a right-click on a room member's row opens that row's menu here.
+        #[unsafe(method_id(menuForEvent:))]
+        fn menu_for_event(&self, event: &NSEvent) -> Option<Retained<NSMenu>> {
+            self.row_menu(event)
+        }
+
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, _event: &NSEvent) {
             self.ivars().drag_start.set(NSEvent::mouseLocation());
@@ -357,6 +363,22 @@ define_class!(
         }
     }
 );
+
+impl DockView {
+    /// The menu of the room member's row under the pointer, if it has one.
+    fn row_menu(&self, event: &NSEvent) -> Option<Retained<NSMenu>> {
+        let point = self.convertPoint_fromView(event.locationInWindow(), None);
+        let mut view = self.subviews().iter().find_map(|view| view.hitTest(point));
+        while let Some(current) = view {
+            if let Some(row) = current.downcast_ref::<MemberRow>() {
+                return row.menu();
+            }
+            view = unsafe { current.superview() };
+        }
+        None
+    }
+}
+
 
 impl DockView {
     fn drag_delta(&self) -> NSPoint {

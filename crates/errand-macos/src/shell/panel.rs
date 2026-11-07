@@ -4,11 +4,12 @@
 use super::kit::{ns, rect};
 use errand_core::layout::Rect;
 use objc2::rc::Retained;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::runtime::Bool;
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use std::cell::Cell;
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSBackingStoreType, NSColor, NSFloatingWindowLevel, NSPanel, NSScreen, NSWindow,
-    NSView, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSApplication, NSEvent, NSEventModifierFlags, NSView, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_foundation::{NSRect, NSSize};
 
@@ -52,6 +53,30 @@ define_class!(
         fn can_become_main(&self) -> bool {
             false
         }
+
+        /// Errand's menu bar has no Edit menu, and is not there at all while another app is in front, so the
+        /// form's ⌘X ⌘C ⌘V ⌘A ⌘Z go to its field from here.
+        #[unsafe(method(performKeyEquivalent:))]
+        fn perform_key_equivalent(&self, event: &NSEvent) -> Bool {
+            let command = event.modifierFlags().contains(NSEventModifierFlags::Command);
+            let key = event.charactersIgnoringModifiers().map(|key| key.to_string().to_lowercase()).unwrap_or_default();
+            let action = match key.as_str() {
+                "x" => Some(sel!(cut:)),
+                "c" => Some(sel!(copy:)),
+                "v" => Some(sel!(paste:)),
+                "a" => Some(sel!(selectAll:)),
+                "z" if event.modifierFlags().contains(NSEventModifierFlags::Shift) => Some(sel!(redo:)),
+                "z" => Some(sel!(undo:)),
+                _ => None,
+            };
+            if let Some(action) = action.filter(|_| command && self.ivars().get()) {
+                let app = NSApplication::sharedApplication(self.mtm());
+                if unsafe { app.sendAction_to_from(action, None, Some(self)) } {
+                    return Bool::YES;
+                }
+            }
+            unsafe { msg_send![super(self), performKeyEquivalent: event] }
+        }
     }
 );
 
@@ -63,7 +88,9 @@ impl TypingPanel {
             self.makeKeyWindow();
             self.makeFirstResponder(Some(field));
         } else if self.isKeyWindow() {
-            self.resignKeyWindow();
+            // AppKit hands key status on when a key window goes; brought straight back, it shows as before.
+            self.orderOut(None);
+            self.orderFrontRegardless();
         }
     }
 }

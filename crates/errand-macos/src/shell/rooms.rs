@@ -421,7 +421,7 @@ define_class!(
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "ErrandMemberRow"]
-    #[ivars = RefCell<Option<(Retained<NSMenu>, Retained<Action>)>>]
+    #[ivars = RefCell<Option<Retained<NSMenu>>>]
     pub struct MemberRow;
 
     impl MemberRow {
@@ -432,10 +432,17 @@ define_class!(
 
         #[unsafe(method_id(menuForEvent:))]
         fn menu_for_event(&self, _event: &NSEvent) -> Option<Retained<NSMenu>> {
-            self.ivars().borrow().as_ref().map(|(menu, _)| menu.clone())
+            self.menu()
         }
     }
 );
+
+impl MemberRow {
+    /// For the room's owner: the menu that turns this person out.
+    pub fn menu(&self) -> Option<Retained<NSMenu>> {
+        self.ivars().borrow().clone()
+    }
+}
 
 /// The width of the room's column of times, right-aligned at the rows' ends: the widest time among them, so the
 /// pills line up from row to row. Digits are all one width, so it changes only when a time grows a digit.
@@ -456,8 +463,10 @@ fn member_row(vm: &MemberRowVm, width: f64, clock: f64, remove_member: &RemoveMe
         let menu = NSMenu::new(mtm);
         let item = unsafe { NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &ns(remove.words), Some(objc2::sel!(perform:)), &ns("")) };
         unsafe { item.setTarget(Some(&action)) };
+        // The item holds its action, so it still works if the rows are laid out again while the menu is open.
+        unsafe { item.setRepresentedObject(Some(&action)) };
         menu.addItem(&item);
-        *row.ivars().borrow_mut() = Some((menu, action));
+        *row.ivars().borrow_mut() = Some(menu);
     }
     row.addSubview(&avatar(&vm.face, rect(8.0, (MEMBER_ROW_HEIGHT - FACE) / 2.0, FACE, FACE), false, mtm));
     // The time's text ends where the pills would, its label's inset past it.
@@ -729,6 +738,8 @@ pub struct Rooms {
     actions: Vec<Retained<Action>>,
     /// The form's own, kept with it.
     form_actions: Vec<Retained<Action>>,
+    /// What lays out under a form's fields, or a link's room: rebuilt on their own.
+    below_actions: Vec<Retained<Action>>,
     scroll: Option<Retained<NSScrollView>>,
     shown: Option<RoomsVm>,
     form: Option<Form>,
@@ -742,7 +753,7 @@ impl Rooms {
         let view = PopoverView::new(mtm, NSSize::new(width, height));
         let body = FlippedView::new(mtm, rect(0.0, 0.0, width, height));
         view.addSubview(&body);
-        Rooms { view, body, poster, actions: Vec::new(), form_actions: Vec::new(), scroll: None, shown: None, form: None, focus: None }
+        Rooms { view, body, poster, actions: Vec::new(), form_actions: Vec::new(), below_actions: Vec::new(), scroll: None, shown: None, form: None, focus: None }
     }
 
     /// Turns the tail toward the dock, level with what opens the list.
@@ -782,6 +793,7 @@ impl Rooms {
         kit::clear(&self.body);
         self.actions.clear();
         self.form_actions.clear();
+        self.below_actions.clear();
         self.scroll = None;
         self.form = None;
         self.focus = None;
@@ -991,7 +1003,7 @@ impl Rooms {
         let fields = form.fields.clone();
         let beside = form.beside.clone();
         kit::clear(&below);
-        self.actions.retain(|_| false);
+        self.below_actions.clear();
         let width = layout::ROOMS_WIDTH;
         let bottom = below.frame().size.height;
         match &vm.screen {
@@ -1010,8 +1022,12 @@ impl Rooms {
                 let tagline = errand_core::rooms::clean_text(&fields[1].stringValue().to_string()).chars().count();
                 go.setEnabled(!create.sending && (1..=create.name_limit).contains(&name) && tagline <= create.tagline_limit);
                 below.addSubview(&go);
-                self.actions.push(action);
+                self.below_actions.push(action);
                 for field in &fields {
+                    // Sending, the typing stops where it is.
+                    if create.sending {
+                        field.abortEditing();
+                    }
                     field.setEditable(!create.sending);
                 }
             }
@@ -1046,8 +1062,16 @@ impl Rooms {
         let (card, actions) = room_card(room, width - 24.0, &[accept], mtm);
         card.setFrameOrigin(NSPoint::new(12.0, y));
         into.addSubview(&card);
-        self.actions.extend(actions);
+        self.below_actions.extend(actions);
         y += ROOM_CARD_HEIGHT + 12.0;
+        // Already in as many rooms as Errand joins: coming in by the code still works, and the room waits in
+        // the list until another is left.
+        if let Some(shut) = &room.shut {
+            let words = wrapped(shut, 11.0, Weight::Medium, theme::MUTED, width - 40.0, mtm);
+            words.setFrameOrigin(NSPoint::new(20.0, y));
+            y += words.frame().size.height + 6.0;
+            into.addSubview(&words);
+        }
         for note in &code.notes {
             let words = wrapped(note, 11.0, Weight::Regular, theme::MUTED, width - 40.0, mtm);
             words.setFrameOrigin(NSPoint::new(20.0, y));
@@ -1069,14 +1093,21 @@ impl Rooms {
                 words.setFrame(rect(20.0, 4.0, width - 40.0, 18.0));
                 below.addSubview(&words);
             }
+            let mut y = 0.0;
             if let Some(failure) = &code.failure {
-                below.addSubview(&failure_line(failure, 0.0, mtm));
-                let (by_hand, action) = button(vm.enter_code, "", false, rect(14.0, 30.0, width - 28.0, BUTTON_HEIGHT), self.post(|| Msg::ShowInviteCode), mtm);
-                below.addSubview(&by_hand);
-                self.actions.push(action);
+                below.addSubview(&failure_line(failure, y, mtm));
+                y += 26.0;
             }
-            if let Some(room) = &code.room {
-                self.lay_invited(&below, room, code, 0.0, mtm);
+            match &code.room {
+                Some(room) => {
+                    self.lay_invited(&below, room, code, y, mtm);
+                }
+                None if code.failure.is_some() => {
+                    let (by_hand, action) = button(vm.enter_code, "", false, rect(14.0, y + 4.0, width - 28.0, BUTTON_HEIGHT), self.post(|| Msg::ShowInviteCode), mtm);
+                    below.addSubview(&by_hand);
+                    self.actions.push(action);
+                }
+                None => {}
             }
             return;
         }
@@ -1089,7 +1120,6 @@ impl Rooms {
         };
         let run = check.clone();
         let (go, action) = button(code.check, "", false, rect(width - 18.0 - 72.0, SCREEN_TOP + 23.0, 72.0, BUTTON_HEIGHT), move || run(), mtm);
-        go.setKeyEquivalent(&ns("\r"));
         self.body.addSubview(&go);
         self.form_actions.push(action);
         let run = check.clone();

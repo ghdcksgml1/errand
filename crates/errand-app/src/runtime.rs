@@ -198,15 +198,22 @@ impl Runtime {
                 None
             }
             Effect::MakeInvite { room, replacing } => {
-                self.in_background(move |rooms| {
-                    // The link it replaces stops working first; if that fails, no second link is made.
-                    let replaced = replacing.map_or(Ok(()), |code| rooms.delete_invite(&room, &code));
-                    Msg::InviteMade(room.clone(), replaced.and_then(|()| rooms.make_invite(&room, errand_io::now())))
+                let (rooms, poster) = (self.platform.rooms.clone(), self.poster.clone());
+                thread::spawn(move || {
+                    // The link it replaces stops working first; if that fails, it still works, and no second
+                    // link is made. Gone already is as good as deleted.
+                    if let Some(code) = replacing {
+                        match gone(rooms.delete_invite(&room, &code)) {
+                            Ok(()) => poster.post(Msg::InviteReplaced(room.clone())),
+                            Err(failure) => return poster.post(Msg::InviteMade(room, Err(failure))),
+                        }
+                    }
+                    poster.post(Msg::InviteMade(room.clone(), rooms.make_invite(&room, errand_io::now())));
                 });
                 None
             }
             Effect::DeleteInvite { room, code } => {
-                self.in_background(move |rooms| Msg::InviteDeleted(room.clone(), rooms.delete_invite(&room, &code)));
+                self.in_background(move |rooms| Msg::InviteDeleted(room.clone(), gone(rooms.delete_invite(&room, &code))));
                 None
             }
             Effect::CheckInvite(code) => {
@@ -250,5 +257,13 @@ impl Runtime {
             },
             running: self.platform.running(provider).is_some(),
         })
+    }
+}
+
+/// An invite deleted, or one already gone, which is the same to the person.
+fn gone(result: Result<(), errand_core::rooms::RoomError>) -> Result<(), errand_core::rooms::RoomError> {
+    match result {
+        Err(errand_core::rooms::RoomError::InviteNotFound) => Ok(()),
+        other => other,
     }
 }

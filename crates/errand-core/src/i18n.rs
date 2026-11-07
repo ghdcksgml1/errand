@@ -753,6 +753,7 @@ impl Language {
         match alert {
             Alert::OpenFailed(error) => (self.pick("계정 창을 열지 못했습니다", "Couldn't open the app").to_owned(), self.open_error(error)),
             Alert::MigrationFailed(reason) => (self.pick("Dual Codex 기록을 옮기지 못했습니다", "Couldn't move the Dual Codex records").to_owned(), reason.clone()),
+            Alert::QuitFailed(error) => (self.pick("방에서 빠지지 못했어요", "Couldn't leave the room").to_owned(), self.room_error(*error).to_owned()),
         }
     }
 

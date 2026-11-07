@@ -205,3 +205,57 @@ fn leaving_for_good_and_turning_people_out_ask_first() {
     update(&mut state, Msg::RoomRead("p-own".to_owned(), Ok(Room { role: Some(Role::Member), ..room })), at(NOW));
     assert!(view::dock(&state, &context()).rooms.unwrap().members.iter().all(|row| row.remove.is_none()), "a member turns no one out");
 }
+
+#[test]
+fn a_link_brings_back_a_hidden_widget() {
+    let mut state = AppState::new(ResetHistory::new(), SessionRecords::new(at(NOW)), WidgetPreferences::default(), "한결".to_owned());
+    update(&mut state, Msg::SetWidgetHidden(true), at(NOW));
+    let effects = update(&mut state, Msg::OpenLink("errand://invite/K7QFM2XA9P".to_owned()), at(NOW));
+    assert!(!state.widget.hidden && state.rooms.open, "the room it invites to shows");
+    assert!(effects.contains(&Effect::SaveWidgetPreferences));
+}
+
+#[test]
+fn return_on_a_checked_code_goes_in_and_a_new_code_checks_again() {
+    let mut state = state();
+    update(&mut state, Msg::ShowInviteCode, at(NOW));
+    update(&mut state, Msg::CheckInvite("K7QF-M2XA-9P".to_owned()), at(NOW));
+    assert!(update(&mut state, Msg::CheckInvite("K7QF-M2XA-9P".to_owned()), at(NOW)).is_empty(), "not again while checking");
+    update(&mut state, Msg::InviteChecked("K7QFM2XA9P".to_owned(), Ok(private("p-team", "우리 팀 야근방", None))), at(NOW));
+    assert_eq!(update(&mut state, Msg::CheckInvite("k7qf m2xa 9p".to_owned()), at(NOW)), [Effect::AcceptInvite("K7QFM2XA9P".to_owned())]);
+    let mut state = self::state();
+    update(&mut state, Msg::ShowInviteCode, at(NOW));
+    update(&mut state, Msg::CheckInvite("K7QF-M2XA-9P".to_owned()), at(NOW));
+    update(&mut state, Msg::InviteChecked("K7QFM2XA9P".to_owned(), Ok(private("p-team", "우리 팀 야근방", None))), at(NOW));
+    assert_eq!(update(&mut state, Msg::CheckInvite("ABCD-EFGH-JK".to_owned()), at(NOW)), [Effect::CheckInvite("ABCDEFGHJK".to_owned())], "another code is checked first");
+}
+
+#[test]
+fn answers_after_the_person_moved_on_still_reach_the_list() {
+    let mut state = state();
+    update(&mut state, Msg::ShowCreateRoom, at(NOW));
+    update(&mut state, Msg::CreateRoom { name: "우리 팀".to_owned(), tagline: String::new() }, at(NOW));
+    update(&mut state, Msg::ShowRoomsList, at(NOW));
+    assert_eq!(update(&mut state, Msg::RoomCreated(Ok(private("p-team", "우리 팀", Some(Role::Owner)))), at(NOW)), [Effect::FetchRooms]);
+    assert!(state.rooms.list.iter().any(|room| room.id == "p-team") && state.rooms.screen == RoomsScreen::List);
+    assert_eq!(update(&mut state, Msg::InviteAccepted("K7QFM2XA9P".to_owned(), Ok(private("p-friend", "친구 방", Some(Role::Member)))), at(NOW)), [Effect::FetchRooms]);
+    assert!(state.rooms.list.iter().any(|room| room.id == "p-friend"));
+}
+
+#[test]
+fn a_link_replaced_halfway_no_longer_shows_and_a_failed_quit_says_why() {
+    let mut state = state();
+    update(&mut state, Msg::RoomsRead(Ok(vec![private("p-own", "내 방", Some(Role::Owner))])), at(NOW));
+    update(&mut state, Msg::ShowInvite("p-own".to_owned()), at(NOW));
+    update(&mut state, Msg::InvitesRead("p-own".to_owned(), Ok(vec![invite("K7QFM2XA9P", 7.0, 10)])), at(NOW));
+    update(&mut state, Msg::RenewInvite("p-own".to_owned()), at(NOW));
+    update(&mut state, Msg::InviteReplaced("p-own".to_owned()), at(NOW));
+    update(&mut state, Msg::InviteMade("p-own".to_owned(), Err(RoomError::Unreachable)), at(NOW));
+    let RoomsScreenVm::Invite(shown) = screen(&state) else { panic!("the link") };
+    assert_eq!((shown.link, shown.busy, shown.left.as_str()), (None, false, "지금 쓸 수 있는 링크가 없어요."), "the deleted link is not offered");
+    assert_eq!(update(&mut state, Msg::RenewInvite("p-own".to_owned()), at(NOW)), [Effect::MakeInvite { room: "p-own".to_owned(), replacing: None }], "a new one is still a press away");
+
+    let effects = update(&mut state, Msg::RoomQuit("p-own".to_owned(), Err(RoomError::Unreachable)), at(NOW));
+    assert_eq!(effects, [Effect::ShowAlert(errand_core::model::Alert::QuitFailed(RoomError::Unreachable)), Effect::FetchRooms]);
+    assert_eq!(update(&mut state, Msg::RoomQuit("p-own".to_owned(), Err(RoomError::NotFound)), at(NOW)), [Effect::FetchRooms], "already gone is done");
+}

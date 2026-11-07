@@ -304,7 +304,7 @@ fn dock_rooms(state: &AppState, context: &ViewContext) -> Option<DockRoomsVm> {
             members.sort_by_key(|member| (!member.me, member.presence(context.now), std::cmp::Reverse(member.tasks.running), member.name.clone()));
             let fit = if members.len() > MEMBER_ROWS { MEMBER_ROWS - 1 } else { members.len() };
             vm.more = (members.len() > fit).then(|| language.more_members(members.len() - fit));
-            let owner = room.role == Some(Role::Owner);
+            let owner = room.role.or_else(|| rooms.role(&room.id)) == Some(Role::Owner);
             vm.members = members[..fit]
                 .iter()
                 .map(|member| {

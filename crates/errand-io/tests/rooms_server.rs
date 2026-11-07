@@ -530,18 +530,20 @@ fn private_rooms_are_made_invited_to_and_left_on_the_server() {
             (HttpMethod::Post, "/v1/rooms".to_owned()),
             (HttpMethod::Get, "/v1/rooms/p-0123456789ab/invites".to_owned()),
             (HttpMethod::Post, "/v1/rooms/p-0123456789ab/invites".to_owned()),
-            (HttpMethod::Delete, "/v1/rooms/p-0123456789ab/invites/K7QFM2XA9P".to_owned()),
-            (HttpMethod::Get, "/v1/invites/K7QFM2XA9P".to_owned()),
-            (HttpMethod::Post, "/v1/invites/K7QFM2XA9P/accept".to_owned()),
+            (HttpMethod::Post, "/v1/rooms/p-0123456789ab/invites/revoke".to_owned()),
+            (HttpMethod::Post, "/v1/invites/preview".to_owned()),
+            (HttpMethod::Post, "/v1/invites/accept".to_owned()),
             (HttpMethod::Delete, "/v1/rooms/p-0123456789ab/membership".to_owned()),
             (HttpMethod::Delete, "/v1/rooms/p-0123456789ab/members/6f9b1c2d-3e4f-4a5b-8c7d-9e0f1a2b3c4d".to_owned()),
-            (HttpMethod::Get, "/v1/invites/K7QFM2XA9P".to_owned()),
+            (HttpMethod::Post, "/v1/invites/preview".to_owned()),
             (HttpMethod::Post, "/v1/rooms".to_owned()),
             (HttpMethod::Post, "/v1/rooms/p-0123456789ab/invites".to_owned()),
         ]
     );
-    let body: Value = serde_json::from_slice(network.requests()[1].body.as_deref().unwrap()).unwrap();
-    assert_eq!(body, json!({"name": "우리 팀", "tagline": ""}));
+    let body = |index: usize| serde_json::from_slice::<Value>(network.requests()[index].body.as_deref().unwrap()).unwrap();
+    assert_eq!(body(1), json!({"name": "우리 팀", "tagline": ""}));
+    assert_eq!([body(4), body(5), body(6)], [json!({"code": "K7QFM2XA9P"}), json!({"code": "K7QFM2XA9P"}), json!({"code": "K7QFM2XA9P"})]);
+    assert!(network.calls().iter().all(|(_, url)| !url.contains("K7QF")), "no code is ever in an address, which servers log");
 }
 
 #[test]

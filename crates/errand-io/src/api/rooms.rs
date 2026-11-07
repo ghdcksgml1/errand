@@ -479,19 +479,21 @@ impl RoomService for HttpRooms {
         self.call(|caller| Call::new(caller, HttpMethod::Post, path.clone(), None, |response| invite(&reply(response)?).ok_or(RoomError::Unreachable)))
     }
 
+    /// Invite codes go in the body, never the address, which servers write to their logs.
     fn delete_invite(&self, room: &str, code: &str) -> Result<(), RoomError> {
-        let path = format!("/v1/rooms/{}/invites/{}", checked_room(room)?, invite_code(code).ok_or(RoomError::InviteNotFound)?);
-        self.call(|caller| Call::new(caller, HttpMethod::Delete, path.clone(), None, succeeded))
+        let path = format!("/v1/rooms/{}/invites/revoke", checked_room(room)?);
+        let body = json!({"code": invite_code(code).ok_or(RoomError::InviteNotFound)?});
+        self.call(|caller| Call::new(caller, HttpMethod::Post, path.clone(), Some(body.clone()), succeeded))
     }
 
     fn check_invite(&self, code: &str, _now: Timestamp) -> Result<RoomSummary, RoomError> {
-        let path = format!("/v1/invites/{}", invite_code(code).ok_or(RoomError::InviteNotFound)?);
-        self.call(|caller| Call::new(caller, HttpMethod::Get, path.clone(), None, summary_reply))
+        let body = json!({"code": invite_code(code).ok_or(RoomError::InviteNotFound)?});
+        self.call(|caller| Call::new(caller, HttpMethod::Post, "/v1/invites/preview".to_owned(), Some(body.clone()), summary_reply))
     }
 
     fn accept_invite(&self, code: &str, _now: Timestamp) -> Result<RoomSummary, RoomError> {
-        let path = format!("/v1/invites/{}/accept", invite_code(code).ok_or(RoomError::InviteNotFound)?);
-        self.call(|caller| Call::new(caller, HttpMethod::Post, path.clone(), None, summary_reply))
+        let body = json!({"code": invite_code(code).ok_or(RoomError::InviteNotFound)?});
+        self.call(|caller| Call::new(caller, HttpMethod::Post, "/v1/invites/accept".to_owned(), Some(body.clone()), summary_reply))
     }
 
     fn quit_room(&self, room: &str) -> Result<(), RoomError> {
