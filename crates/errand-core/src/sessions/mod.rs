@@ -6,7 +6,7 @@ pub mod rows;
 pub mod text;
 
 pub use fold::{Turn, fold_claude, fold_codex};
-pub use records::{SessionRecord, SessionRecords, VisibleSession};
+pub use records::{Family, SessionRecord, SessionRecords, VisibleSession, families};
 pub use rows::{ClaudeMeta, CodexThread, SessionRow, claude_row, codex_row};
 
 /// What the folded task header counts: answers to check, stalled requests among them, requests running, and

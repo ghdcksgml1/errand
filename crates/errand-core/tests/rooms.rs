@@ -46,6 +46,8 @@ fn card(key: &str, running: bool, stalled: bool, seen: bool) -> VisibleSession {
             url: String::new(),
             seen_in_app: false,
             stalled,
+            parent: None,
+            on_screen: false,
         },
         seen,
     }
@@ -236,6 +238,61 @@ fn several_rooms_at_once_each_a_tab_under_the_profile() {
     assert_eq!(view::rooms(&state, &context()).status, None, "a list once read stays up");
     state.rooms.list.clear();
     assert_eq!(view::rooms(&state, &context()).status.as_deref(), Some("작업방 서버에 연결하지 못했어요."));
+}
+
+#[test]
+fn the_dock_opens_the_list_of_rooms_and_closes_it_again() {
+    let mut state = state();
+    update(&mut state, Msg::JoinRoom("late-night".to_owned()), at(NOW));
+    update(&mut state, Msg::ToggleDetails, at(NOW));
+    assert_eq!(
+        update(&mut state, Msg::ToggleRooms, at(NOW)),
+        [Effect::FetchRooms, sync("late-night", Visibility::Public)],
+        "opening reads the list afresh and tells the room the latest counts"
+    );
+    assert!(state.rooms.open && !state.details_open, "the list takes the details' place");
+    assert!(view::dock(&state, &context()).rooms_listed, "the way to the rooms knows its list is open");
+    assert_eq!(update(&mut state, Msg::ToggleRooms, at(NOW)), [], "the same press closes it, with nothing to ask");
+    assert!(!state.rooms.open && !view::dock(&state, &context()).rooms_listed);
+}
+
+#[test]
+fn a_fourth_room_waits_until_the_person_leaves_one() {
+    let mut state = state();
+    let list = ["late-night", "team", "dawn", "deadline"].map(|room| summary(room, room, Visibility::Public));
+    update(&mut state, Msg::RoomsRead(Ok(list.to_vec())), at(NOW));
+    let shut = |state: &AppState| view::rooms(state, &context()).list.into_iter().map(|card| card.shut).collect::<Vec<_>>();
+    update(&mut state, Msg::JoinRoom("late-night".to_owned()), at(NOW));
+    update(&mut state, Msg::JoinRoom("team".to_owned()), at(NOW));
+    assert_eq!(shut(&state), [None, None, None, None], "under the limit every way in is open");
+    assert_eq!(view::rooms(&state, &context()).subtitle, Language::Korean.rooms_subtitle());
+
+    assert_eq!(update(&mut state, Msg::JoinRoom("dawn".to_owned()), at(NOW)), [sync("dawn", Visibility::Public), Effect::SaveRooms]);
+    let full = "방은 3개까지 들어갈 수 있어요. 다른 방을 나가면 들어가요.";
+    assert_eq!(view::rooms(&state, &context()).subtitle, full, "the list says why no more rooms open");
+    assert_eq!(shut(&state), [None, None, None, Some(full.to_owned())], "the rooms the person is in can still be left");
+
+    assert_eq!(update(&mut state, Msg::JoinRoom("deadline".to_owned()), at(NOW)), [], "the fourth room is not asked");
+    assert_eq!((state.rooms.joined.len(), state.rooms.expanded.as_deref()), (3, Some("dawn")), "and what was open stays open");
+    assert!(update(&mut state, Msg::SyncRoom, at(NOW)).len() == 3, "the three rooms carry on as before");
+
+    update(&mut state, Msg::LeaveRoom("team".to_owned()), at(NOW));
+    assert_eq!(shut(&state), [None, None, None, None]);
+    assert_eq!(update(&mut state, Msg::JoinRoom("deadline".to_owned()), at(NOW)), [sync("deadline", Visibility::Public), Effect::SaveRooms], "leaving one makes way");
+}
+
+#[test]
+fn rooms_an_older_errand_joined_past_the_limit_stay_until_left() {
+    let mut state = state();
+    let rooms = ["late-night", "team", "dawn", "deadline", "quiet"].map(|room| (room.to_owned(), Visibility::Public));
+    update(&mut state, Msg::RoomsRemembered(rooms.to_vec()), at(NOW));
+    assert_eq!(tabs(&state).len(), 5, "nobody is put out of a room on updating");
+    assert_eq!(update(&mut state, Msg::JoinRoom("sixth".to_owned()), at(NOW)), []);
+    update(&mut state, Msg::LeaveRoom("quiet".to_owned()), at(NOW));
+    update(&mut state, Msg::LeaveRoom("deadline".to_owned()), at(NOW));
+    assert_eq!(update(&mut state, Msg::JoinRoom("sixth".to_owned()), at(NOW)), [], "three is still as many as Errand joins");
+    update(&mut state, Msg::LeaveRoom("dawn".to_owned()), at(NOW));
+    assert_eq!(update(&mut state, Msg::JoinRoom("sixth".to_owned()), at(NOW)), [sync("sixth", Visibility::Public), Effect::SaveRooms]);
 }
 
 #[test]
@@ -454,4 +511,5 @@ fn rooms_read_in_english() {
     update(&mut state, Msg::RoomsRead(Ok(vec![summary("late-night", "고독한 야근방", Visibility::Public)])), at(NOW));
     let list = view::rooms(&state, &english);
     assert_eq!((list.title, list.list[0].visibility.text.as_str(), list.list[0].button), ("Work rooms", "Anonymous", "Leave"));
+    assert_eq!(Language::English.rooms_full(), "You can be in 3 rooms at once. Leave one to join another.");
 }

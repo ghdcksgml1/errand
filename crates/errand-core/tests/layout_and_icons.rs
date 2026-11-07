@@ -81,28 +81,55 @@ fn details_open_on_the_side_with_room_and_point_at_the_batteries() {
 }
 
 #[test]
+fn the_list_of_rooms_points_at_what_opens_it() {
+    let screen = Rect::new(0.0, 25.0, 1440.0, 875.0);
+    let aim = |shape: DockShape| {
+        let dock = layout::default_dock_frame(screen, shape);
+        let placement = layout::rooms_placement(dock, screen, &[screen], shape);
+        placement.frame.y + placement.tail_y - dock.y
+    };
+    assert_eq!(aim(BARE), layout::profile_top(BARE) + layout::PROFILE_HEIGHT / 2.0, "outside a room, the capsule on the profile row");
+    let in_rooms = DockShape { tabs: true, rows: 3, ..BARE };
+    assert_eq!(aim(in_rooms), layout::tabs_top(in_rooms) + layout::ROOM_TAB_HEIGHT / 2.0, "in one, the plus after the tabs");
+}
+
+#[test]
 fn crowded_cards_fold_oldest_first_then_show_whole_cards_only() {
-    let roomy = layout::fold_cards(&[118.0, 136.0], 560.0);
+    let roomy = layout::fold_cards(&[118.0, 136.0], &[0, 0], 560.0);
     assert_eq!((roomy.content_height, roomy.viewport_height, roomy.more_bar), (262.0, 262.0, false));
     assert!(!roomy.compact(0) && !roomy.compact(1));
 
     let heights = [118.0; 5];
-    let folded = layout::fold_cards(&heights, 500.0);
+    let folded = layout::fold_cards(&heights, &[0; 5], 500.0);
     assert_eq!(folded.heights, [118.0, 118.0, COMPACT_HEIGHT, COMPACT_HEIGHT, COMPACT_HEIGHT], "the oldest requests fold first");
     assert!(!folded.more_bar && folded.total_height() <= 500.0);
 
-    let many = layout::fold_cards(&[118.0; 10], 560.0);
+    let many = layout::fold_cards(&[118.0; 10], &[0; 10], 560.0);
     assert!(many.more_bar && many.heights.iter().all(|height| *height == COMPACT_HEIGHT));
     assert!(many.total_height() <= 560.0, "{many:?}");
     let shown = (many.viewport_height + layout::CARD_GAP) / (COMPACT_HEIGHT + layout::CARD_GAP);
     assert_eq!(shown.fract(), 0.0, "no card is sliced at the edge: {many:?}");
-    assert!(layout::fold_cards(&[], 560.0).total_height() == 0.0);
+    assert!(layout::fold_cards(&[], &[], 560.0).total_height() == 0.0);
+}
+
+#[test]
+fn sub_tasks_stay_when_their_card_folds() {
+    assert_eq!((layout::sub_tasks_height(0), layout::sub_tasks_height(3)), (0.0, 100.0));
+    let folded = layout::fold_cards(&[118.0, 118.0], &[0, 3], 300.0);
+    assert_eq!(folded.heights, [118.0, COMPACT_HEIGHT], "the lines count, and the card over them folds as any other");
+    assert_eq!((folded.content_height, folded.more_bar), (118.0 + 8.0 + COMPACT_HEIGHT + 100.0, false));
+    assert!(!folded.compact(0) && folded.compact(1));
+
+    let crowded = layout::fold_cards(&[118.0, 118.0, 118.0], &[3, 3, 3], 300.0);
+    assert_eq!(crowded.viewport_height, COMPACT_HEIGHT + 100.0, "only whole cards show, lines and all");
+    let alone = layout::fold_cards(&[118.0], &[20], 300.0);
+    assert!(alone.more_bar && alone.total_height() <= 300.0, "a card too tall for the room by itself scrolls: {alone:?}");
 }
 
 #[test]
 fn every_icon_draws_inside_lucides_grid() {
     let names: Vec<&str> = icons::names().collect();
-    assert_eq!(names.len(), 26);
+    assert_eq!(names.len(), 27);
     for name in names {
         let outline = icons::outline(name).unwrap();
         let (low, high) = path::bounds(&outline).unwrap();

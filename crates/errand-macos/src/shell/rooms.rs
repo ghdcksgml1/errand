@@ -1,26 +1,28 @@
-//! Work rooms, drawn as the rest of the widget is. Under the dock's profile, a tab per room the person is in
-//! and, under the open tab, its people in thin rows saying no more than the folded task header; beside the
-//! dock, a bubble like the usage details listing the rooms on cards like the task cards.
+//! Work rooms, drawn as the rest of the widget is. Under the dock's profile, a tab per room the person is in,
+//! which keep their width and move along when they do not all fit, a plus after them for the list of rooms and,
+//! under the open tab, its people in thin rows saying no more than the folded task header; beside the dock, a
+//! bubble like the usage details listing the rooms on cards like the task cards.
 
 use super::details::{PopoverView, button};
 use super::dock::{AvatarView, count_pill, replace_tracking_area, tinted_icon};
-use super::kit::{self, Action, CHIP_ICON, FlippedView, Weight, digits_font, fitting_width, grey, label, ns, rect, text_width};
+use super::kit::{self, Action, CHIP_ICON, FlippedView, Weight, color, digits_font, fitting_width, grey, label, ns, rect, text_width};
 use super::spinner::SpinningIconView;
 use super::tray::{ChipMark, chip_icon_frame, chip_rect, draw_card, draw_chip};
 use errand_core::layout::{self, DOCK_PADDING, DockShape, MEMBER_ROW_HEIGHT, MEMBERS_INSET, ROOM_TAB_HEIGHT, STACK_WIDTH};
+use errand_core::Language;
 use errand_core::model::Msg;
 use errand_core::ports::Poster;
 use errand_core::sessions::SessionState;
 use errand_core::theme::{self, CardStyle, Paint};
 use errand_core::view::{ChipVm, DockRoomsVm, FaceVm, MemberRowVm, RoomCardVm, RoomTabVm, RoomsVm};
 use objc2::rc::Retained;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAccessibility, NSBezierPath, NSBox, NSBoxType, NSButton, NSEvent, NSImageView, NSLineBreakMode, NSScrollElasticity, NSScrollView,
+    NSAccessibility, NSBezierPath, NSBox, NSBoxType, NSButton, NSEvent, NSGradient, NSImageView, NSLineBreakMode, NSScrollElasticity, NSScrollView,
     NSScrollerStyle, NSTextAlignment, NSTextField, NSView,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -28,6 +30,10 @@ const ROOM_CARD_HEIGHT: f64 = 100.0;
 /// An open tab and its room's panel share this fill, so they read as one.
 const OPEN_FILL: Paint = theme::INK.alpha(0.055);
 const TAB_GAP: f64 = 6.0;
+/// How wide the white closes over tabs that run on past the strip's end.
+const FADE: f64 = 18.0;
+/// How far one line of a notched wheel moves the tabs, which count in lines where a trackpad counts in points.
+const WHEEL_LINE: f64 = 16.0;
 const FACE: f64 = 18.0;
 /// Where a row's name starts, past its face.
 const NAME_X: f64 = 8.0 + FACE + 8.0;
@@ -197,6 +203,151 @@ impl RoomTab {
         tab.setTitle(&ns(""));
         tab
     }
+
+    /// The way to the rooms beside the nickname: a capsule like a tab, holding only its word.
+    pub fn rooms_button(mtm: MainThreadMarker, words: &str, tooltip: &str) -> Retained<RoomTab> {
+        let text = label(words, 11.5, Weight::Semibold, theme::MUTED, mtm);
+        let width = fitting_width(&text);
+        let button = RoomTab::new(mtm, rect(0.0, 0.0, 8.0 + width + 7.0, ROOM_TAB_HEIGHT), false);
+        text.setFrame(rect(8.0, 3.0, width, 16.0));
+        button.addSubview(&text);
+        button.setToolTip(Some(&ns(tooltip)));
+        button.setAccessibilityLabel(Some(&ns(words)));
+        button
+    }
+
+    /// The way to the rooms after the tabs: a round tab holding a plus.
+    fn rooms_plus(mtm: MainThreadMarker, words: &str, tooltip: &str) -> Retained<RoomTab> {
+        let button = RoomTab::new(mtm, rect(0.0, 0.0, ROOM_TAB_HEIGHT, ROOM_TAB_HEIGHT), false);
+        let plus = tinted_icon("plus", CHIP_ICON, theme::MUTED, mtm);
+        plus.setFrameOrigin(NSPoint::new((ROOM_TAB_HEIGHT - CHIP_ICON) / 2.0, (ROOM_TAB_HEIGHT - CHIP_ICON) / 2.0));
+        button.addSubview(&plus);
+        button.setToolTip(Some(&ns(tooltip)));
+        button.setAccessibilityLabel(Some(&ns(words)));
+        button
+    }
+
+    /// Fills the capsule and darkens what it holds while what it opens is open.
+    pub fn set_open(&self, open: bool) {
+        if self.ivars().open.replace(open) == open {
+            return;
+        }
+        let ink = color(if open { theme::INK } else { theme::MUTED });
+        for view in self.subviews().iter() {
+            if let Some(words) = view.downcast_ref::<NSTextField>() {
+                words.setTextColor(Some(&ink));
+            } else if let Some(icon) = view.downcast_ref::<NSImageView>() {
+                icon.setContentTintColor(Some(&ink));
+            }
+        }
+        self.setAccessibilitySelected(open);
+        NSView::setNeedsDisplay(self, true);
+    }
+}
+
+define_class!(
+    /// The dock's white closing over tabs that run on past the strip's end, so a tab cut short reads as going on
+    /// rather than broken. Clicks go through to the tab under it.
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "ErrandTabFade"]
+    #[ivars = bool]
+    struct TabFade;
+
+    impl TabFade {
+        #[unsafe(method(hitTest:))]
+        fn hit_test(&self, _point: NSPoint) -> *mut NSView {
+            std::ptr::null_mut()
+        }
+
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {
+            let (clear, white) = (kit::paint(theme::WHITE.alpha(0.0)), color(theme::WHITE));
+            let (from, to) = if *self.ivars() { (&clear, &white) } else { (&white, &clear) };
+            if let Some(gradient) = NSGradient::initWithStartingColor_endingColor(NSGradient::alloc(), from, to) {
+                gradient.drawInRect_angle(self.bounds(), 0.0);
+            }
+        }
+    }
+);
+
+impl TabFade {
+    /// Fades toward the strip's right end, or toward its left.
+    fn new(mtm: MainThreadMarker, rightward: bool) -> Retained<TabFade> {
+        let this = TabFade::alloc(mtm).set_ivars(rightward);
+        let fade: Retained<TabFade> = unsafe { msg_send![super(this), initWithFrame: rect(0.0, 0.0, FADE, ROOM_TAB_HEIGHT)] };
+        fade.setHidden(true);
+        fade
+    }
+}
+
+pub struct StripIvars {
+    /// Over the left and right ends, while tabs run on that way.
+    fades: RefCell<Option<(Retained<TabFade>, Retained<TabFade>)>>,
+}
+
+define_class!(
+    /// The room tabs: when they do not all fit they keep their width and move along under the pointer. No scroller
+    /// shows, and a scroll view takes no swipes without one, so they are moved here. A wheel turns only up and
+    /// down, so those move the tabs along as well.
+    #[unsafe(super(NSScrollView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "ErrandRoomTabStrip"]
+    #[ivars = StripIvars]
+    pub struct TabStrip;
+
+    impl TabStrip {
+        #[unsafe(method(scrollWheel:))]
+        fn scroll_wheel(&self, event: &NSEvent) {
+            let (across, down) = (event.scrollingDeltaX(), event.scrollingDeltaY());
+            let delta = if across.abs() > down.abs() { across } else { down };
+            let step = if event.hasPreciseScrollingDeltas() { delta } else { delta * WHEEL_LINE };
+            self.move_to(self.offset() - step);
+        }
+    }
+);
+
+impl TabStrip {
+    fn new(mtm: MainThreadMarker, document: &NSView) -> Retained<TabStrip> {
+        let this = TabStrip::alloc(mtm).set_ivars(StripIvars { fades: RefCell::new(None) });
+        let strip: Retained<TabStrip> = unsafe { msg_send![super(this), initWithFrame: document.frame()] };
+        strip.setDrawsBackground(false);
+        strip.setDocumentView(Some(document));
+        let fades = (TabFade::new(mtm, false), TabFade::new(mtm, true));
+        strip.addSubview(&fades.0);
+        strip.addSubview(&fades.1);
+        *strip.ivars().fades.borrow_mut() = Some(fades);
+        strip
+    }
+
+    /// How far along the tabs have moved.
+    pub fn offset(&self) -> f64 {
+        self.contentView().bounds().origin.x
+    }
+
+    /// Moves the tabs along, as far as they go, and fades the ends where tabs run on.
+    fn move_to(&self, offset: f64) {
+        let clip = self.contentView();
+        let shown = clip.bounds().size.width;
+        let reach = self.documentView().map_or(0.0, |tabs| (tabs.frame().size.width - shown).max(0.0));
+        let offset = offset.clamp(0.0, reach);
+        clip.scrollToPoint(NSPoint::new(offset, 0.0));
+        self.reflectScrolledClipView(&clip);
+        if let Some((left, right)) = self.ivars().fades.borrow().as_ref() {
+            left.setHidden(offset < 0.5);
+            right.setHidden(offset > reach - 0.5);
+            right.setFrameOrigin(NSPoint::new(shown - FADE, 0.0));
+        }
+    }
+
+    /// Moves along no further than it takes to show this tab clear of the fades, its start first if it is wider
+    /// than the strip.
+    fn reveal(&self, tab: NSRect) {
+        let shown = self.contentView().bounds().size.width;
+        let end = tab.origin.x + tab.size.width + FADE;
+        let offset = self.offset().max(end - shown);
+        self.move_to(offset.min(tab.origin.x - FADE));
+    }
 }
 
 /// A room's tab before it is placed: its views, and how wide it is around its name.
@@ -233,22 +384,6 @@ fn tab_parts(vm: &RoomTabVm, mtm: MainThreadMarker) -> TabParts {
     tab.setAccessibilityLabel(Some(&ns(&vm.accessibility_label)));
     tab.setAccessibilitySelected(vm.open);
     TabParts { name_width: fitting_width(&name), tab, lock, name, people, chrome }
-}
-
-/// The widest the names may be for every tab to fit in `budget`: names narrower than an even share keep
-/// their width and leave the rest to the wider ones.
-fn name_limit(widths: &[f64], budget: f64) -> f64 {
-    let mut sorted = widths.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    let mut left = budget;
-    for (index, width) in sorted.iter().enumerate() {
-        let share = left / (sorted.len() - index) as f64;
-        if *width > share {
-            return share.max(24.0);
-        }
-        left -= width;
-    }
-    f64::INFINITY
 }
 
 define_class!(
@@ -344,13 +479,22 @@ fn without_times(vm: &DockRoomsVm) -> DockRoomsVm {
     DockRoomsVm { members: members.collect(), ..vm.clone() }
 }
 
-/// The rooms under the dock's profile: a tab per room the person is in and, under the open one, its people.
+/// The rooms under the dock's profile: a tab per room the person is in, the plus and, under the open tab, its
+/// people.
 pub struct DockRooms {
+    /// The row: the strip of tabs, then the plus.
     pub tabs: Retained<FlippedView>,
+    pub strip: Retained<TabStrip>,
+    /// What the strip moves along, holding the tabs.
+    document: Retained<FlippedView>,
+    plus: Retained<RoomTab>,
     pub members: Retained<MembersView>,
     expand: Rc<dyn Fn(String)>,
     /// Tabs hold their targets weakly.
     actions: Vec<Retained<Action>>,
+    _plus_action: Retained<Action>,
+    /// The tab last seen open, and whether its room had answered, which widens it: a change brings it into view.
+    opened: Option<(String, bool)>,
     /// Each row as drawn, with its time, and the width of the column of times.
     rows: Vec<(Retained<MemberRow>, Option<Retained<NSTextField>>)>,
     clock: f64,
@@ -358,13 +502,25 @@ pub struct DockRooms {
 }
 
 impl DockRooms {
-    pub fn new(mtm: MainThreadMarker, expand: Rc<dyn Fn(String)>) -> DockRooms {
+    pub fn new(mtm: MainThreadMarker, expand: Rc<dyn Fn(String)>, show_rooms: Rc<dyn Fn()>, language: Language) -> DockRooms {
         let width = STACK_WIDTH - 2.0 * DOCK_PADDING;
         let tabs = FlippedView::new(mtm, rect(DOCK_PADDING, 0.0, width, ROOM_TAB_HEIGHT));
         tabs.setHidden(true);
+        let document = FlippedView::new(mtm, rect(0.0, 0.0, 0.0, ROOM_TAB_HEIGHT));
+        let strip = TabStrip::new(mtm, &document);
+        tabs.addSubview(&strip);
+        let plus = RoomTab::rooms_plus(mtm, language.rooms_button(), language.rooms_plus_tooltip());
+        let plus_action = Action::new(mtm, move || show_rooms());
+        plus_action.attach(&plus);
+        tabs.addSubview(&plus);
         let members: Retained<MembersView> = unsafe { msg_send![MembersView::alloc(mtm), initWithFrame: rect(DOCK_PADDING, 0.0, width, 0.0)] };
         members.setHidden(true);
-        DockRooms { tabs, members, expand, actions: Vec::new(), rows: Vec::new(), clock: 0.0, shown: None }
+        DockRooms { tabs, strip, document, plus, members, expand, actions: Vec::new(), _plus_action: plus_action, opened: None, rows: Vec::new(), clock: 0.0, shown: None }
+    }
+
+    /// The plus reads as pressed while the list of rooms is open.
+    pub fn set_listed(&self, listed: bool) {
+        self.plus.set_open(listed);
     }
 
     /// Puts the tabs and the open room's panel where the dock's shape has them.
@@ -395,11 +551,14 @@ impl DockRooms {
             return;
         }
         self.shown = vm.cloned();
-        kit::clear(&self.tabs);
+        kit::clear(&self.document);
         kit::clear(&self.members);
         self.actions.clear();
         self.rows.clear();
-        let Some(vm) = vm else { return };
+        let Some(vm) = vm else {
+            self.opened = None;
+            return;
+        };
         self.lay_tabs(&vm.tabs, mtm);
         let width = self.members.frame().size.width;
         self.clock = clock_column(&vm.members);
@@ -419,16 +578,16 @@ impl DockRooms {
         }
     }
 
-    /// The tabs from the left, their names shortened when they would not all fit.
+    /// The tabs from the left at their own widths, the plus after the last or, when they do not all fit, at the
+    /// row's end, where it stays while the tabs move along beside it. Where they have moved to outlasts this, but a
+    /// tab just opened is brought into view.
     fn lay_tabs(&mut self, tabs: &[RoomTabVm], mtm: MainThreadMarker) {
-        let parts: Vec<TabParts> = tabs.iter().map(|tab| tab_parts(tab, mtm)).collect();
-        let gaps = TAB_GAP * parts.len().saturating_sub(1) as f64;
-        let budget = self.tabs.frame().size.width - gaps - parts.iter().map(|part| part.chrome).sum::<f64>();
-        let limit = name_limit(&parts.iter().map(|part| part.name_width).collect::<Vec<_>>(), budget);
         let mut x = 0.0;
         let icon_y = (ROOM_TAB_HEIGHT - CHIP_ICON) / 2.0;
-        for (part, vm) in parts.into_iter().zip(tabs) {
-            let name_width = part.name_width.min(limit);
+        let mut open = None;
+        for vm in tabs {
+            let part = tab_parts(vm, mtm);
+            let name_width = part.name_width;
             let mut inside = 8.0;
             if let Some(lock) = &part.lock {
                 lock.setFrameOrigin(NSPoint::new(inside, icon_y));
@@ -449,10 +608,24 @@ impl DockRooms {
             let (expand, room) = (self.expand.clone(), vm.id.clone());
             let action = Action::new(mtm, move || expand(room.clone()));
             action.attach(&part.tab);
-            self.tabs.addSubview(&part.tab);
+            self.document.addSubview(&part.tab);
             self.actions.push(action);
+            if vm.open {
+                open = Some(((vm.id.clone(), vm.people.is_some()), part.tab.frame()));
+            }
             x += width + TAB_GAP;
         }
+        let width = (x - TAB_GAP).max(0.0);
+        let shown = width.min(self.tabs.frame().size.width - ROOM_TAB_HEIGHT - TAB_GAP);
+        self.document.setFrameSize(NSSize::new(width, ROOM_TAB_HEIGHT));
+        self.strip.setFrameSize(NSSize::new(shown, ROOM_TAB_HEIGHT));
+        self.plus.setFrameOrigin(NSPoint::new(shown + TAB_GAP, 0.0));
+        self.strip.move_to(self.strip.offset());
+        let opened = open.as_ref().map(|(room, _)| room.clone());
+        if let Some((_, tab)) = open.filter(|_| opened != self.opened) {
+            self.strip.reveal(tab);
+        }
+        self.opened = opened;
     }
 }
 
@@ -476,7 +649,7 @@ impl Rooms {
         Rooms { view, body, poster, actions: Vec::new(), scroll: None, shown: None }
     }
 
-    /// Turns the tail toward the dock, level with its profile row.
+    /// Turns the tail toward the dock, level with what opens the list.
     pub fn point(&self, tail_on_right: bool, tail_y: f64) {
         self.view.point(&self.body, tail_on_right, tail_y);
     }
@@ -502,7 +675,7 @@ impl Rooms {
         let title = label(vm.title, 18.0, Weight::Semibold, theme::INK, mtm);
         title.setFrame(rect(18.0, 15.0, width - 16.0 - 34.0 - 8.0 - 18.0, 25.0));
         body.addSubview(&title);
-        let subtitle = label(vm.subtitle, 11.0, Weight::Regular, theme::MUTED, mtm);
+        let subtitle = label(&vm.subtitle, 11.0, Weight::Regular, theme::MUTED, mtm);
         subtitle.setMaximumNumberOfLines(2);
         subtitle.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
         subtitle.setFrame(rect(18.0, 44.0, width - 36.0, 30.0));
@@ -585,20 +758,12 @@ fn room_card(vm: &RoomCardVm, width: f64, poster: Arc<dyn Poster>, mtm: MainThre
     } else {
         button(vm.button, "circle-arrow-right", true, frame, move || poster.post(Msg::JoinRoom(room.clone())), mtm)
     };
+    if let Some(reason) = &vm.shut {
+        button.setEnabled(false);
+        button.setToolTip(Some(&ns(reason)));
+    }
     card.addSubview(&button);
     card.setAccessibilityElement(true);
     card.setAccessibilityLabel(Some(&ns(&format!("{}, {}, {}, {}", vm.name, vm.visibility.text, vm.people, vm.working.words))));
     (card, action)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::name_limit;
-
-    #[test]
-    fn names_that_fit_keep_their_width_and_the_wide_ones_share_the_rest() {
-        assert_eq!(name_limit(&[40.0, 60.0], 200.0), f64::INFINITY);
-        assert_eq!(name_limit(&[40.0, 120.0, 140.0], 200.0), 80.0, "the short name keeps 40, the other two split 160");
-        assert_eq!(name_limit(&[90.0, 90.0, 90.0, 90.0, 90.0], 60.0), 24.0, "never shorter than a few letters");
-    }
 }

@@ -26,6 +26,10 @@ pub const CARD_HEIGHT: f64 = 118.0;
 /// Added when a finished card shows what to do next.
 pub const ACTION_HEIGHT: f64 = 18.0;
 pub const COMPACT_HEIGHT: f64 = 62.0;
+/// A sub-task's line, inside the card it came from.
+pub const SUB_TASK_HEIGHT: f64 = 32.0;
+/// Under a card's last sub-task.
+pub const SUB_TASKS_FOOT: f64 = 4.0;
 pub const CARD_GAP: f64 = 8.0;
 pub const MORE_BAR_HEIGHT: f64 = 30.0;
 /// From the default position, how far the dock sits from the screen's right and bottom edges.
@@ -204,9 +208,10 @@ pub fn detail_placement(dock: Rect, screen: Rect, visible: &[Rect], shape: DockS
 pub const ROOMS_WIDTH: f64 = 340.0;
 pub const ROOMS_HEIGHT: f64 = 500.0;
 
-/// The list of work rooms, its tail at the profile row.
+/// The list of work rooms, its tail at what opens it: the tabs' row in a room, the profile row outside one.
 pub fn rooms_placement(dock: Rect, screen: Rect, visible: &[Rect], shape: DockShape) -> DetailPlacement {
-    popover_placement(dock, screen, visible, ROOMS_WIDTH + POPOVER_TAIL, ROOMS_HEIGHT, profile_top(shape) + PROFILE_HEIGHT / 2.0)
+    let aim = if shape.tabs { tabs_top(shape) + ROOM_TAB_HEIGHT / 2.0 } else { profile_top(shape) + PROFILE_HEIGHT / 2.0 };
+    popover_placement(dock, screen, visible, ROOMS_WIDTH + POPOVER_TAIL, ROOMS_HEIGHT, aim)
 }
 
 /// The character editor, its tail at the person's character.
@@ -220,10 +225,15 @@ pub fn card_height(action_shown: bool) -> f64 {
     CARD_HEIGHT + if action_shown { ACTION_HEIGHT } else { 0.0 }
 }
 
+/// What a card's sub-tasks add under it.
+pub fn sub_tasks_height(count: usize) -> f64 {
+    if count == 0 { 0.0 } else { count as f64 * SUB_TASK_HEIGHT + SUB_TASKS_FOOT }
+}
+
 /// How the cards fit in the room they have.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrayFold {
-    /// Each card's height after folding; folded cards are `COMPACT_HEIGHT`.
+    /// Each card's own height after folding, without its sub-tasks; folded cards are `COMPACT_HEIGHT`.
     pub heights: Vec<f64>,
     /// All cards stacked.
     pub content_height: f64,
@@ -244,13 +254,15 @@ impl TrayFold {
 
 /// From the oldest request up, cards fold to their title and request until the stack fits. Folding goes by
 /// position, never by state, so opening or finishing a card does not resize it under the pointer. If that
-/// is still too tall, only whole cards show, since a card sliced at the edge reads as broken.
-pub fn fold_cards(full_heights: &[f64], max_height: f64) -> TrayFold {
+/// is still too tall, only whole cards show, since a card sliced at the edge reads as broken. `sub_tasks` says how
+/// many lines each card holds; they stay when it folds. Only a card too tall for the room by itself is sliced.
+pub fn fold_cards(full_heights: &[f64], sub_tasks: &[usize], max_height: f64) -> TrayFold {
     let mut heights = full_heights.to_vec();
     if heights.is_empty() {
         return TrayFold { heights, content_height: 0.0, viewport_height: 0.0, more_bar: false };
     }
-    let mut full: f64 = heights.iter().sum::<f64>() + CARD_GAP * (heights.len() - 1) as f64;
+    let lines: Vec<f64> = sub_tasks.iter().copied().map(sub_tasks_height).collect();
+    let mut full: f64 = heights.iter().sum::<f64>() + lines.iter().sum::<f64>() + CARD_GAP * (heights.len() - 1) as f64;
     for height in heights.iter_mut().rev() {
         if full <= max_height {
             break;
@@ -262,12 +274,13 @@ pub fn fold_cards(full_heights: &[f64], max_height: f64) -> TrayFold {
         return TrayFold { heights, content_height: full, viewport_height: full, more_bar: false };
     }
     let room = max_height - (MORE_BAR_HEIGHT + CARD_GAP);
-    let mut viewport = heights[0];
-    for height in &heights[1..] {
+    let whole: Vec<f64> = heights.iter().zip(&lines).map(|(height, lines)| height + lines).collect();
+    let mut viewport = whole[0];
+    for height in &whole[1..] {
         if viewport + CARD_GAP + height > room {
             break;
         }
         viewport += CARD_GAP + height;
     }
-    TrayFold { heights, content_height: full, viewport_height: viewport, more_bar: true }
+    TrayFold { heights, content_height: full, viewport_height: viewport.min(room), more_bar: true }
 }

@@ -56,6 +56,7 @@ impl Widget {
                 toggle_tray: post(|| Msg::ToggleTray),
                 refresh: post(|| Msg::AskUsage),
                 update: post(|| Msg::InstallUpdate),
+                show_rooms: post(|| Msg::ToggleRooms),
                 expand_room: {
                     let poster = poster.clone();
                     Rc::new(move |room: String| poster.post(Msg::ExpandRoom(room)))
@@ -204,7 +205,7 @@ impl Widget {
         self.avatar_editor.point(placement.tail_on_right, placement.tail_y);
     }
 
-    /// The list of rooms beside the dock, the tail aimed at the profile row.
+    /// The list of rooms beside the dock, the tail aimed at what opens it.
     fn place_rooms(&self) {
         let placement = layout::rooms_placement(self.dock_frame(), self.main_screen(), &visible_frames(self.mtm), self.dock.shape());
         self.rooms_panel.setFrame_display(to_cocoa(placement.frame, primary_height(self.mtm)), true);

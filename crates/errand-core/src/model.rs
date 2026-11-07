@@ -6,7 +6,7 @@ use crate::avatar::Avatar;
 use crate::provider::{PerProvider, Provider};
 use crate::reset_history::ResetHistory;
 use crate::rooms::{Joined, Room, RoomError, RoomSummary, RoomsState, Visibility, room_id};
-use crate::sessions::{SessionRecords, SessionRow, SessionState, TaskCounts, VisibleSession};
+use crate::sessions::{SessionRecords, SessionRow, SessionState, TaskCounts, VisibleSession, families};
 use crate::update::{self, Release, UpdateState};
 use crate::usage::{self, Mood, Reading, UsageError, UsageWindow};
 use jiff::{SignedDuration, Timestamp};
@@ -104,6 +104,15 @@ impl SessionsState {
             _ => counts,
         })
     }
+}
+
+/// Where the person is, as far as the computer can tell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Attention {
+    /// The service whose app is in front, if either is.
+    pub front: Option<Provider>,
+    /// How long since the person last pressed a key or moved the pointer.
+    pub idle: SignedDuration,
 }
 
 /// What the person chose about what Errand shows; it survives relaunch.
@@ -227,6 +236,8 @@ pub enum Msg {
     UsageRead { provider: Provider, result: Result<Reading, UsageError> },
     ScanSessions,
     SessionsScanned(Vec<SessionRow>),
+    /// Asked for while the session on screen has an unread answer.
+    AttentionRead(Attention),
     OpenSession(String),
     /// A card's checkbox or its 되돌리기.
     ToggleComplete(String),
@@ -247,6 +258,8 @@ pub enum Msg {
     Redraw,
     /// The menu: opens the list of rooms beside the dock.
     ShowRooms,
+    /// The dock's way to the rooms: opens the list, or closes it.
+    ToggleRooms,
     CloseRooms,
     RoomsRead(Result<Vec<RoomSummary>, RoomError>),
     JoinRoom(String),
@@ -279,6 +292,8 @@ pub enum Effect {
     ReadAccounts,
     /// Scan with this snapshot of the tray's records, then send `SessionsScanned`.
     ScanSessions(SessionRecords),
+    /// See where the person is, then send `AttentionRead`.
+    ReadAttention,
     SaveResetHistory,
     SaveSessionRecords,
     SaveWidgetPreferences,
@@ -412,7 +427,19 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             state.sessions.scanning = false;
             state.sessions.scan = rows;
             apply_sessions(state);
-            vec![]
+            if unread_on_screen(&state.sessions).is_some() { vec![Effect::ReadAttention] } else { vec![] }
+        }
+        Msg::AttentionRead(attention) => {
+            let Some(row) = unread_on_screen(&state.sessions) else { return vec![] };
+            let Some(finished) = row.finished_at else { return vec![] };
+            // Being in front is not enough: the person may have walked away with the app open.
+            if attention.front != Some(row.provider) || attention.idle > now.duration_since(finished) {
+                return vec![];
+            }
+            let key = row.key.clone();
+            state.sessions.records.mark_seen(&key, now);
+            apply_sessions(state);
+            vec![Effect::SaveSessionRecords]
         }
         Msg::OpenSession(key) => {
             let Some(url) = state.sessions.scan.iter().find(|row| row.key == key).map(|row| row.url.clone()) else { return vec![] };
@@ -439,6 +466,10 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             // 되돌리기 during the fade wins.
             if state.sessions.pending.remove(&key).is_none() {
                 return vec![];
+            }
+            for sub_task in read_sub_tasks(&state.sessions, &key) {
+                state.sessions.pending.remove(&sub_task);
+                state.sessions.records.complete(&sub_task, now);
             }
             state.sessions.records.complete(&key, now);
             apply_sessions(state);
@@ -523,6 +554,13 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
         }
         Msg::Redraw => vec![],
         Msg::ShowRooms => open_rooms(state),
+        Msg::ToggleRooms => {
+            if state.rooms.open {
+                state.rooms.open = false;
+                return vec![];
+            }
+            open_rooms(state)
+        }
         Msg::CloseRooms => {
             state.rooms.open = false;
             vec![]
@@ -539,7 +577,7 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             vec![]
         }
         Msg::JoinRoom(room) => {
-            if state.rooms.is_joined(&room) {
+            if state.rooms.is_joined(&room) || state.rooms.at_limit() {
                 return vec![];
             }
             let visibility = state.rooms.visibility(&room);
@@ -642,6 +680,20 @@ fn refresh_usage(state: &mut AppState) -> Vec<Effect> {
     let mut effects = vec![Effect::ReadProfile];
     effects.extend(shown.into_iter().map(Effect::FetchUsage));
     effects
+}
+
+/// The session the app has on screen, while its latest answer is finished and not yet counted as read. The app
+/// marks a session read when it comes on screen, not when an answer lands in one already there.
+fn unread_on_screen(sessions: &SessionsState) -> Option<&SessionRow> {
+    sessions.scan.iter().find(|row| row.on_screen && row.finished_at.is_some() && !row.running && !sessions.records.seen(row))
+}
+
+/// The sub-tasks in this card with nothing left to look at, which clear with it. The rest stay, as cards of their own.
+fn read_sub_tasks(sessions: &SessionsState, card: &str) -> Vec<String> {
+    let cards = families(&sessions.shown);
+    let family = cards.iter().find(|family| family.head.row.key == card);
+    let read = family.iter().flat_map(|family| &family.sub_tasks).filter(|session| SessionState::of(session) == SessionState::Seen);
+    read.map(|session| session.row.key.clone()).collect()
 }
 
 /// Puts the latest scan on screen. While the pointer rests on the stack, cards already shown update in

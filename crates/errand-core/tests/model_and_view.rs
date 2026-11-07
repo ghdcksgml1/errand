@@ -5,7 +5,7 @@
 
 use errand_core::avatar::{Avatar, Part};
 use errand_core::format::timestamp_from_seconds;
-use errand_core::model::{Alert, AppState, COMPLETION_DELAY, Effect, Msg, Notice, OpenError, WidgetPreferences, update};
+use errand_core::model::{Alert, AppState, Attention, COMPLETION_DELAY, Effect, Msg, Notice, OpenError, WidgetPreferences, update};
 use errand_core::reset_history::ResetHistory;
 use errand_core::sessions::text::PICTURE;
 use errand_core::sessions::{SessionRecords, SessionRow, SessionState};
@@ -165,6 +165,8 @@ fn row(key: &str, provider: Provider, prompt_ago: f64, finished_ago: Option<f64>
         url: format!("app://{key}"),
         seen_in_app: false,
         stalled: false,
+        parent: None,
+        on_screen: false,
     }
 }
 
@@ -506,4 +508,106 @@ fn a_hidden_service_drops_out_everywhere_but_one_always_stays() {
     );
     assert_eq!(keys(&state), ["codex:t-1", "claude:local_1"], "and its tasks come back");
     assert_eq!(view::dashboard(&state, &english()).title, "Codex and Claude usage");
+}
+
+fn on_screen(prompt_ago: f64, finished_ago: Option<f64>) -> SessionRow {
+    SessionRow { on_screen: true, ..row("claude:local_1", Provider::Claude, prompt_ago, finished_ago) }
+}
+
+fn read_session(state: &mut AppState, front: Option<Provider>, idle_seconds: i64) -> Vec<Effect> {
+    update(state, Msg::AttentionRead(Attention { front, idle: SignedDuration::from_secs(idle_seconds) }), at(NOW))
+}
+
+#[test]
+fn an_answer_in_the_session_on_screen_is_read_once_the_person_acts_with_the_app_in_front() {
+    let mut state = state();
+    let other = row("claude:local_2", Provider::Claude, 90.0, Some(50.0));
+    let scan = vec![on_screen(100.0, Some(60.0)), other.clone()];
+    assert_eq!(update(&mut state, Msg::SessionsScanned(scan.clone()), at(NOW)), [Effect::ReadAttention], "an unread answer on screen asks where the person is");
+
+    assert!(read_session(&mut state, Some(Provider::Codex), 5).is_empty(), "another app is in front");
+    assert!(read_session(&mut state, None, 5).is_empty());
+    assert!(read_session(&mut state, Some(Provider::Claude), 61).is_empty(), "nothing touched since the answer: the person may have walked away");
+    assert_eq!(SessionState::of(&state.sessions.shown[1]), SessionState::New);
+
+    assert_eq!(read_session(&mut state, Some(Provider::Claude), 59), [Effect::SaveSessionRecords]);
+    let by_key = |state: &AppState, key: &str| state.sessions.shown.iter().find(|session| session.row.key == key).map(SessionState::of);
+    assert_eq!(by_key(&state, "claude:local_1"), Some(SessionState::Seen));
+    assert_eq!(by_key(&state, "claude:local_2"), Some(SessionState::New), "only the session on screen");
+
+    assert!(update(&mut state, Msg::SessionsScanned(scan), at(NOW)).is_empty(), "read, it asks no more");
+    let left = vec![row("claude:local_1", Provider::Claude, 100.0, Some(60.0)), SessionRow { on_screen: true, ..other }];
+    assert_eq!(update(&mut state, Msg::SessionsScanned(left), at(NOW)), [Effect::ReadAttention]);
+    assert_eq!(by_key(&state, "claude:local_1"), Some(SessionState::Seen), "it stays read after the person moves on");
+    assert!(read_session(&mut state, Some(Provider::Claude), 0).len() == 1);
+
+    let next = vec![on_screen(100.0, Some(-10.0))];
+    assert_eq!(update(&mut state, Msg::SessionsScanned(next), at(NOW)), [Effect::ReadAttention], "a later answer is new again");
+    assert_eq!(by_key(&state, "claude:local_1"), Some(SessionState::New));
+}
+
+#[test]
+fn nothing_is_asked_while_the_session_on_screen_has_nothing_unread() {
+    let mut state = state();
+    assert!(update(&mut state, Msg::SessionsScanned(vec![on_screen(100.0, None)]), at(NOW)).is_empty(), "still running");
+    let read = SessionRow { seen_in_app: true, ..on_screen(100.0, Some(60.0)) };
+    assert!(update(&mut state, Msg::SessionsScanned(vec![read]), at(NOW)).is_empty(), "already read in the app");
+    let unread = row("claude:local_1", Provider::Claude, 100.0, Some(60.0));
+    assert!(update(&mut state, Msg::SessionsScanned(vec![unread]), at(NOW)).is_empty(), "not on screen");
+    assert!(read_session(&mut state, Some(Provider::Claude), 0).is_empty(), "an answer to an old question changes nothing");
+}
+
+fn side(key: &str, prompt_ago: f64, finished_ago: Option<f64>) -> SessionRow {
+    SessionRow { parent: Some("claude:local_p".to_owned()), ..row(key, Provider::Claude, prompt_ago, finished_ago) }
+}
+
+#[test]
+fn sub_tasks_are_lines_in_their_card_and_stay_when_it_folds() {
+    let mut state = state();
+    scanned(&mut state, vec![row("claude:local_p", Provider::Claude, 900.0, Some(800.0)), side("claude:local_k", 300.0, None), row("codex:t", Provider::Codex, 600.0, None)]);
+    assert_eq!(state.sessions.counts().running, 2, "the task header still counts each session");
+    let tray = view::tray(&state, &context(), 560.0);
+    let keys: Vec<&str> = tray.cards.iter().map(|card| card.key.as_str()).collect();
+    assert_eq!(keys, ["claude:local_p", "codex:t"], "a sub-task has no card of its own, and its request places its card");
+    let (card, line) = (&tray.cards[0], &tray.cards[0].sub_tasks[0]);
+    assert_eq!((line.key.as_str(), line.chip, line.height), ("claude:local_k", "진행 중", 32.0));
+    assert_eq!(line.accessibility_label, "하위 작업, Claude, claude:local_k 작업, 진행 중, 요청: README 정리하고 커밋해줘");
+    assert_eq!((card.height, card.total_height()), (118.0, 154.0));
+    assert_eq!(tray.fold.content_height, 154.0 + 8.0 + 118.0);
+
+    let tight = view::tray(&state, &context(), 200.0);
+    assert!(tight.cards[0].compact && tight.cards[1].compact, "{:?}", tight.fold);
+    assert_eq!((tight.cards[0].sub_tasks.len(), tight.cards[0].total_height()), (1, 98.0), "a folded card keeps its lines");
+}
+
+#[test]
+fn checking_a_card_clears_the_lines_already_read_and_the_others_become_cards() {
+    let mut state = state();
+    let read = SessionRow { seen_in_app: true, ..side("claude:local_read", 300.0, Some(200.0)) };
+    let rows = vec![row("claude:local_p", Provider::Claude, 900.0, Some(800.0)), read, side("claude:local_new", 250.0, Some(100.0)), side("claude:local_run", 200.0, None)];
+    scanned(&mut state, rows.clone());
+    update(&mut state, Msg::ToggleComplete("claude:local_p".to_owned()), at(NOW));
+    assert_eq!(view::tray(&state, &context(), 560.0).cards.len(), 1, "the lines stay in the card until it clears");
+    let effects = update(&mut state, Msg::CardFaded("claude:local_p".to_owned()), at(NOW));
+    assert_eq!(effects, [Effect::SaveSessionRecords]);
+    assert_eq!(keys(&state), ["claude:local_run", "claude:local_new"], "what is left to look at stands alone");
+    update(&mut state, Msg::SessionsScanned(rows), at(NOW));
+    assert_eq!(keys(&state), ["claude:local_run", "claude:local_new"], "the next scan brings neither the card nor the read line back");
+    let tray = view::tray(&state, &context(), 560.0);
+    assert!(tray.cards.len() == 2 && tray.cards.iter().all(|card| card.sub_tasks.is_empty()));
+}
+
+#[test]
+fn a_line_checks_off_by_itself() {
+    let mut state = state();
+    scanned(&mut state, vec![row("claude:local_p", Provider::Claude, 900.0, Some(800.0)), side("claude:local_k", 300.0, Some(200.0))]);
+    let effects = update(&mut state, Msg::ToggleComplete("claude:local_k".to_owned()), at(NOW));
+    assert_eq!(effects, [Effect::ScheduleCompletion { key: "claude:local_k".to_owned(), after: COMPLETION_DELAY }]);
+    let tray = view::tray(&state, &context(), 560.0);
+    let (card, line) = (&tray.cards[0], &tray.cards[0].sub_tasks[0]);
+    assert!(card.countdown.is_none() && line.countdown.is_some() && line.state == SessionState::Done);
+    assert_eq!(update(&mut state, Msg::CompletionDue("claude:local_k".to_owned()), at(NOW) + COMPLETION_DELAY), [Effect::FadeCard("claude:local_k".to_owned())]);
+    update(&mut state, Msg::CardFaded("claude:local_k".to_owned()), at(NOW));
+    assert_eq!(keys(&state), ["claude:local_p"]);
+    assert!(view::tray(&state, &context(), 560.0).cards[0].sub_tasks.is_empty());
 }

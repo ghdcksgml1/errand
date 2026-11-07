@@ -13,6 +13,7 @@ fn main() {
 #[cfg(target_os = "macos")]
 mod widget {
     use errand_core::avatar::{Avatar, CLOTHES, Part};
+    use errand_core::layout::{DOCK_PADDING, STACK_WIDTH};
     use errand_core::model::{AppState, Effect, Msg, Profile, WidgetPreferences, update};
     use errand_core::ports::Poster;
     use errand_core::reset_history::ResetHistory;
@@ -29,11 +30,12 @@ mod widget {
     use jiff::SignedDuration;
     use objc2::rc::Retained;
     use objc2::runtime::AnyObject;
-    use objc2::{AnyThread, MainThreadMarker, Message};
+    use objc2::{AnyThread, MainThreadMarker, Message, msg_send};
     use objc2_app_kit::{
         NSAccessibility, NSApplication, NSApplicationActivationPolicy, NSButton, NSColor, NSEvent, NSEventModifierFlags, NSEventType, NSFloatingWindowLevel,
         NSImageView, NSScrollView, NSTextField, NSUserInterfaceItemIdentification, NSView, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
     };
+    use objc2_core_graphics::{CGEvent, CGEventFlags, CGScrollEventUnit};
     use objc2_foundation::{NSDate, NSNumber, NSObjectProtocol, NSPoint, NSRect, NSRunLoop, NSUUID, NSUserDefaults};
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -190,6 +192,10 @@ mod widget {
             self.widget.borrow().tray.card(key).map(Retained::into_super)
         }
 
+        fn line(&self, key: &str) -> Option<Retained<NSView>> {
+            self.widget.borrow().tray.sub_task(key).map(Retained::into_super)
+        }
+
         fn details(&self) -> Retained<NSView> {
             self.widget.borrow().details_panel.contentView().expect("the details' view")
         }
@@ -307,6 +313,20 @@ mod widget {
         content.hitTest(frame.convertPoint_fromView(point, None))
     }
 
+    /// A swipe, or a wheel turned, at a point of `view`, delivered to whatever the window finds there.
+    fn swipe(view: &NSView, point: NSPoint, unit: CGScrollEventUnit, down: i32, across: i32, mtm: MainThreadMarker) {
+        let window = view.window().expect("the view is in a window");
+        let at = view.convertPoint_toView(point, None);
+        let event = CGEvent::new_scroll_wheel_event2(None, unit, 2, down, across, 0).expect("a scroll event");
+        // Core Graphics counts down from the top of the primary screen. Made with no window, the event keeps this
+        // as its place in the window it is given later, and nothing public gives it one.
+        CGEvent::set_location(Some(&event), NSPoint::new(at.x, primary_height(mtm) - at.y));
+        CGEvent::set_flags(Some(&event), CGEventFlags(0));
+        let event = NSEvent::eventWithCGEvent(&event).expect("a scroll event");
+        let _: () = unsafe { msg_send![&*event, setValue: &*window, forKey: &*ns("_window")] };
+        window.sendEvent(&event);
+    }
+
     /// A press and release at a point of `view`, delivered to whatever the window finds there.
     fn click(view: &NSView, point: NSPoint) {
         let window = view.window().expect("the view is in a window");
@@ -331,10 +351,14 @@ mod widget {
     }
 
     fn pointer(kind: NSEventType, window: &NSWindow) -> Retained<NSEvent> {
+        pointer_at(kind, window, NSPoint::ZERO)
+    }
+
+    fn pointer_at(kind: NSEventType, window: &NSWindow, location: NSPoint) -> Retained<NSEvent> {
         unsafe {
             NSEvent::enterExitEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_trackingNumber_userData(
                 kind,
-                NSPoint::ZERO,
+                location,
                 NSEventModifierFlags::empty(),
                 0.0,
                 window.windowNumber(),
@@ -394,6 +418,8 @@ mod widget {
             url: format!("errand-test://{key}"),
             seen_in_app: false,
             stalled: false,
+            parent: None,
+            on_screen: false,
         }
     }
 
@@ -424,6 +450,7 @@ mod widget {
         english(&mut t, mtm, defaults);
         hiding(&mut t, mtm, defaults);
         rooms(&mut t, mtm, defaults);
+        room_tabs(&mut t, mtm, defaults);
         identity(&mut t, defaults);
         t
     }
@@ -816,6 +843,90 @@ mod widget {
         h.spin(0.5);
         let hidden_after = more.as_ref().map(|more| labels(more).iter().map(|label| label.stringValue().to_string()).collect::<Vec<_>>());
         t.check(none_sliced(&tray) && hidden_after != hidden_before, "The more bar scrolls the next card fully into view and counts what is left");
+
+        // A session with work it started: one card, a line for each.
+        let side = |mut session: SessionRow| {
+            session.parent = Some("claude:local_p".to_owned());
+            session
+        };
+        let mut parent = row("claude:local_p", Provider::Claude, "작업방 버튼 배치", "버튼 옮겨줘", h.ago(900), Some(h.ago(800)));
+        parent.seen_in_app = true;
+        let mut read = side(row("claude:local_read", Provider::Claude, "설명서 고치기", "설명서 고쳐줘", h.ago(700), Some(h.ago(600))));
+        read.seen_in_app = true;
+        let new = side(row("claude:local_new", Provider::Claude, "탭 스크롤 구현", "탭 스크롤 넣어줘", h.ago(500), Some(h.ago(60))));
+        let running = side(row("claude:local_run", Provider::Claude, "탭 넘침 고치기", "넘침 고쳐줘", h.ago(300), None));
+        h.send(Msg::SessionsScanned(vec![parent, read, new, running]));
+        let family = h.card("claude:local_p").expect("the card over the sub-tasks");
+        let lines: Vec<String> = of_class(&family, "ErrandSubTaskRow").iter().filter_map(|line| line.identifier()).map(|key| key.to_string()).collect();
+        t.check(
+            card_order(&tray) == ["claude:local_p"] && lines == ["claude:local_run", "claude:local_new", "claude:local_read"] && shows(&dock, "내가 시킨 작업 4"),
+            &format!("Sub-tasks are lines in the card they came from, newest first, and the header counts them all: {:?} {lines:?}", card_order(&tray)),
+        );
+        let line = h.line("claude:local_run").expect("a sub-task's line");
+        t.check(
+            family.frame().size.height == 118.0 + 3.0 * 32.0 + 4.0 && line.frame().origin.y == 118.0 && line.frame().size.height == 32.0,
+            "The card grows by its lines, which start under its own part",
+        );
+        t.check(
+            shows(&line, "탭 넘침 고치기") && first(&line, "ErrandSpinningIconView").is_some() && icons(&line).contains(&"corner-down-right".to_owned()),
+            "A line shows the sub-task's title and state beside an arrow from the card",
+        );
+        t.check(
+            spoken(&line).starts_with("하위 작업, Claude, 탭 넘침 고치기, 진행 중") && line.isAccessibilityElement() && tooltip(&line).contains("클릭해서 열기"),
+            "VoiceOver reads a line as a sub-task, and hovering says it opens",
+        );
+
+        let hint_hidden = |card: &NSView| label(card, "열기").is_none_or(|words| words.isHiddenOrHasHiddenAncestor());
+        let own_part = family.convertPoint_toView(NSPoint::new(120.0, 50.0), None);
+        family.mouseEntered(&pointer_at(NSEventType::MouseEntered, &tray_panel, own_part));
+        t.check(!hint_hidden(&family), "The pointer on the card's own part shows its 열기 hint");
+        line.mouseEntered(&pointer(NSEventType::MouseEntered, &tray_panel));
+        t.check(hint_hidden(&family), "On a line, only the line lights up, not the card around it");
+        line.mouseExited(&pointer(NSEventType::MouseExited, &tray_panel));
+        family.mouseExited(&pointer(NSEventType::MouseExited, &tray_panel));
+        let on_line = family.convertPoint_toView(NSPoint::new(120.0, 130.0), None);
+        family.mouseEntered(&pointer_at(NSEventType::MouseEntered, &tray_panel, on_line));
+        t.check(hint_hidden(&family), "Coming onto the card at a line lights up the line alone");
+        family.mouseExited(&pointer(NSEventType::MouseExited, &tray_panel));
+
+        let opens = |h: &Harness, key: &str| h.performed(|effect| *effect == Effect::OpenUrl(format!("errand-test://{key}")));
+        click(&line, NSPoint::new(120.0, 16.0));
+        h.pump();
+        t.check(opens(&h, "claude:local_run") == 1 && opens(&h, "claude:local_p") == 0, "Clicking a line opens that session, not the card's");
+        let family = h.card("claude:local_p").expect("the card over the sub-tasks");
+        click(&family, NSPoint::new(120.0, 50.0));
+        h.pump();
+        t.check(opens(&h, "claude:local_p") == 1 && opens(&h, "claude:local_run") == 1, "Clicking the card's own part still opens the card's session");
+
+        let line = h.line("claude:local_new").expect("a sub-task's line");
+        let circle = first(&line, "ErrandCheckButton").and_then(|view| view.downcast::<NSButton>().ok()).expect("a line's own circle");
+        let middle = circle.convertPoint_toView(NSPoint::new(circle.bounds().size.width / 2.0, circle.bounds().size.height / 2.0), None);
+        t.check(hit(&tray_panel, middle).is_some_and(|view| same(&view, &circle)), "A click on a line's circle reaches it, not the line or the card");
+        unsafe { circle.performClick(None) };
+        h.pump();
+        t.check(
+            h.line("claude:local_new").is_some_and(|line| titled(&line, "되돌리기").is_some() && first(&line, "ErrandCountdownBar").is_some())
+                && h.line("claude:local_run").is_some_and(|line| titled(&line, "되돌리기").is_none())
+                && h.state.sessions.pending.keys().eq(["claude:local_new"].iter().map(|key| key.to_string()).collect::<Vec<_>>().iter()),
+            "A line's circle checks that line alone and offers its own 되돌리기 and countdown",
+        );
+        h.advance(SignedDuration::from_secs(5));
+        h.spin(0.6);
+        t.check(
+            completed(&h, "claude:local_new") && h.line("claude:local_new").is_none() && h.card("claude:local_p").is_some_and(|card| card.frame().size.height == 118.0 + 2.0 * 32.0 + 4.0),
+            "After its wait a checked line clears and the card closes up",
+        );
+        if let Some(circle) = h.card("claude:local_p").and_then(|card| first(&card, "ErrandCheckButton")).and_then(|view| view.downcast::<NSButton>().ok()) {
+            unsafe { circle.performClick(None) };
+        }
+        h.pump();
+        h.advance(SignedDuration::from_secs(5));
+        h.spin(0.6);
+        t.check(
+            completed(&h, "claude:local_p") && completed(&h, "claude:local_read") && !completed(&h, "claude:local_run") && card_order(&tray) == ["claude:local_run"],
+            &format!("Checking the card clears the lines already read; the rest become cards: {:?}", card_order(&tray)),
+        );
+
         let crowd: Vec<SessionRow> = (0..5)
             .map(|index| {
                 let asked = h.ago(60 * index);
@@ -855,10 +966,11 @@ mod widget {
         h.send(Msg::SetWidgetHidden(true));
     }
 
-    /// The list of rooms opens beside the dock from the menu, as the details open. Each room the person is in
-    /// gets a tab under the profile, a lock before a private room's name and how many are in it after; the open
-    /// tab shows its people in rows as thin as the folded task header, the dock growing upward to hold them, and
-    /// a click on it folds them away.
+    /// Outside a room a capsule by the nickname opens the list of rooms beside the dock, as the details open, and
+    /// the menu does too; in a room a plus after the tabs takes its place. Each room the person is in gets a tab
+    /// under the profile, a lock before a private room's name and how many are in it after; the open tab shows its
+    /// people in rows as thin as the folded task header, the dock growing upward to hold them, and a click on it
+    /// folds them away.
     fn rooms(t: &mut Checks, mtm: MainThreadMarker, defaults: &Retained<NSUserDefaults>) {
         let mut h = Harness::new(mtm, defaults, Language::Korean);
         let (panel, rooms_panel, details_panel) = {
@@ -866,18 +978,41 @@ mod widget {
             (widget.panel.clone(), widget.rooms_panel.clone(), widget.details_panel.clone())
         };
         let dock = h.dock();
-        let tabs = || {
+        let capsules = || {
             of_class(&dock, "ErrandRoomTab")
                 .into_iter()
                 .filter(|tab| !tab.isHiddenOrHasHiddenAncestor())
                 .filter_map(|tab| tab.downcast::<NSButton>().ok())
                 .collect::<Vec<_>>()
         };
+        let tabs = || capsules().into_iter().filter(|capsule| spoken(capsule) != "작업방").collect::<Vec<_>>();
+        let way_to_rooms = || capsules().into_iter().find(|capsule| spoken(capsule) == "작업방").expect("a way to the rooms");
         let rows = || of_class(&dock, "ErrandMemberRow").into_iter().filter(|row| !row.isHiddenOrHasHiddenAncestor()).collect::<Vec<_>>();
         let center = |view: &NSView| view.convertPoint_toView(NSPoint::new(view.bounds().size.width / 2.0, view.bounds().size.height / 2.0), None);
         h.send(Msg::SetWidgetHidden(false));
+        h.send(Msg::ProfileRead(Profile { name: "한결".to_owned(), avatar: "한결".to_owned() }));
         let bare = panel.frame();
-        t.check(tabs().is_empty() && rows().is_empty() && !shows(&dock, "작업방"), "Outside a room the dock has no tabs, and no rooms button by the nickname");
+        let capsule = way_to_rooms();
+        t.check(tabs().is_empty() && rows().is_empty() && shows(&capsule, "작업방") && icons(&capsule).is_empty(), "Outside a room the dock has no tabs, and the rooms capsule by the nickname");
+        let capsule_frame = capsule.convertRect_toView(capsule.bounds(), Some(&dock));
+        let nickname = label(&dock, "한결").expect("the nickname");
+        let nickname_frame = nickname.convertRect_toView(nickname.bounds(), Some(&dock));
+        t.check(
+            (max_x(capsule_frame) - (STACK_WIDTH - DOCK_PADDING)).abs() < 0.5 && max_x(nickname_frame) <= capsule_frame.origin.x,
+            &format!("The capsule ends the profile row, and the nickname stops short of it: {nickname_frame:?} {capsule_frame:?}"),
+        );
+        t.check(hit(&panel, center(&capsule)).is_some_and(|view| same(&view, &capsule)), "A click on the capsule reaches it, not the dock");
+        h.send(Msg::ToggleDetails);
+        unsafe { capsule.performClick(None) };
+        h.pump();
+        t.check(
+            rooms_panel.isVisible() && !details_panel.isVisible() && overlap_width(rooms_panel.frame(), panel.frame()) < 1.0,
+            &format!("The capsule opens the list beside the dock, in place of the details: {:?}", rooms_panel.frame()),
+        );
+        t.check(capsule.isAccessibilitySelected(), "The capsule reads pressed while its list is open");
+        unsafe { capsule.performClick(None) };
+        h.pump();
+        t.check(!rooms_panel.isVisible() && !capsule.isAccessibilitySelected(), "A second click closes the list");
 
         h.send(Msg::ToggleDetails);
         h.send(Msg::ShowRooms);
@@ -938,6 +1073,12 @@ mod widget {
             joined.len() == 1 && spoken(&joined[0]) == "고독한 야근방, 익명 참여, 3명" && shows(&joined[0], "3") && icons(&joined[0]) == ["users"],
             &format!("The room joined gets a tab under the profile, the people icon and how many are in it: {:?}", joined.iter().map(|tab| (spoken(tab), icons(tab))).collect::<Vec<_>>()),
         );
+        let plus = way_to_rooms();
+        t.check(
+            capsule.isHiddenOrHasHiddenAncestor() && icons(&plus) == ["plus"] && (plus.frame().origin.x - (max_x(joined[0].frame()) + 6.0)).abs() < 0.5,
+            &format!("In a room the capsule gives way to a plus right after the last tab: {:?} then {:?}", joined[0].frame(), plus.frame()),
+        );
+        t.check(plus.isAccessibilitySelected(), "The plus reads pressed while the list is open");
         let people = rows();
         t.check(people.len() == 3 && shows(&dock, "졸린 수달") && shows(&dock, "나"), "Its tab opens on joining, a row per person, the person first");
         // Left to right, as they read.
@@ -1024,8 +1165,8 @@ mod widget {
             folded.size.height < grown.size.height && folded.size.height > bare.size.height,
             &format!("Folded, the dock keeps only the tabs: {folded:?}"),
         );
-        let strip = unsafe { tabs()[0].superview() }.expect("the tabs' strip").frame();
-        click(&dock, NSPoint::new(strip.origin.x + strip.size.width - 6.0, strip.origin.y + strip.size.height / 2.0));
+        let row = unsafe { plus.superview() }.expect("the tabs' row").frame();
+        click(&dock, NSPoint::new(row.origin.x + row.size.width - 6.0, row.origin.y + row.size.height / 2.0));
         h.pump();
         t.check(!details_panel.isVisible() && !rooms_panel.isVisible(), "A click beside the tabs is the rooms', not the usage details'");
         unsafe { tabs().remove(0).performClick(None) };
@@ -1035,6 +1176,124 @@ mod widget {
         h.send(Msg::LeaveRoom("team".to_owned()));
         h.send(Msg::LeaveRoom("late-night".to_owned()));
         t.check(tabs().is_empty() && panel.frame().size.height == bare.size.height, "Leaving every room takes the tabs off the dock");
+        t.check(!capsule.isHiddenOrHasHiddenAncestor() && plus.isHiddenOrHasHiddenAncestor(), "and the capsule comes back beside the nickname");
+        h.send(Msg::SetWidgetHidden(true));
+    }
+
+    /// More rooms than the dock is wide: the tabs keep their whole names and move along beside the plus, which stays
+    /// where it is. Past three rooms the list shuts its ways in, and rooms an older Errand joined stay.
+    fn room_tabs(t: &mut Checks, mtm: MainThreadMarker, defaults: &Retained<NSUserDefaults>) {
+        let mut h = Harness::new(mtm, defaults, Language::Korean);
+        let (panel, rooms_panel) = {
+            let widget = h.widget.borrow();
+            (widget.panel.clone(), widget.rooms_panel.clone())
+        };
+        let dock = h.dock();
+        h.send(Msg::SetWidgetHidden(false));
+        let summary = |id: &str, name: &str| RoomSummary {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            tagline: String::new(),
+            visibility: Visibility::Public,
+            members: 3,
+            working: 1,
+            faces: Vec::new(),
+        };
+        let room = |id: &str, name: &str| Room { id: id.to_owned(), name: name.to_owned(), tagline: String::new(), visibility: Visibility::Public, members: Vec::new() };
+        let names = [("late-night", "고독한 야근방"), ("team", "우리 팀 야근방"), ("dawn", "새벽 코딩방"), ("deadline", "마감 직전방"), ("quiet", "조용히 집중방")];
+        h.send(Msg::RoomsRead(Ok(names[..4].iter().map(|(id, name)| summary(id, name)).collect())));
+        let join = |h: &mut Harness, (id, name): (&str, &str)| {
+            h.send(Msg::JoinRoom(id.to_owned()));
+            h.send(Msg::RoomRead(id.to_owned(), Ok(room(id, name))));
+        };
+        join(&mut h, names[0]);
+        let capsules = || of_class(&dock, "ErrandRoomTab").into_iter().filter(|tab| !tab.isHiddenOrHasHiddenAncestor()).collect::<Vec<_>>();
+        let tabs = || capsules().into_iter().filter(|capsule| spoken(capsule) != "작업방").collect::<Vec<_>>();
+        let plus = capsules().into_iter().find(|capsule| spoken(capsule) == "작업방").expect("the plus");
+        let alone = tabs()[0].frame().size.width;
+        let (strip, fades) = (first(&dock, "ErrandRoomTabStrip").expect("the tabs' strip").downcast::<NSScrollView>().expect("a scroll view"), of_class(&dock, "ErrandTabFade"));
+        let clip = strip.contentView();
+        let offset = || clip.bounds().origin.x;
+        let plus_at = || plus.convertRect_toView(plus.bounds(), Some(&dock));
+        let in_view = |tab: &NSView| inside(clip.bounds(), tab.frame());
+        let faded = || (!fades[0].isHidden(), !fades[1].isHidden());
+        t.check(offset() == 0.0 && faded() == (false, false), "One tab fits, so nothing moves or fades");
+
+        join(&mut h, names[1]);
+        join(&mut h, names[2]);
+        let three = tabs();
+        let whole = |tab: &NSView, name: &str| label(tab, name).is_some_and(|name| name.frame().size.width >= name.fittingSize().width - 0.5);
+        t.check(
+            three.len() == 3 && three[0].frame().size.width == alone && names[..3].iter().zip(&three).all(|((_, name), tab)| whole(tab, name)),
+            &format!("Three tabs keep their whole names and their widths: {alone} then {:?}", three.iter().map(|tab| tab.frame().size.width).collect::<Vec<_>>()),
+        );
+        let reach = strip.documentView().expect("the tabs").frame().size.width - clip.bounds().size.width;
+        let plus_home = plus_at();
+        t.check(
+            reach > 0.0 && (max_x(plus_home) - (STACK_WIDTH - DOCK_PADDING)).abs() < 0.5 && strip.frame().size.width < plus.frame().origin.x,
+            &format!("They do not all fit, so the plus stands at the row's end, clear of them: {plus_home:?}"),
+        );
+        t.check(offset() > 0.0 && in_view(&three[2]), &format!("The room just joined is brought into view: {} of {reach}", offset()));
+
+        let on_tab = three[1].convertPoint_toView(NSPoint::new(three[1].bounds().size.width / 2.0, 11.0), Some(&dock));
+        let point = CGScrollEventUnit::Pixel;
+        swipe(&dock, on_tab, point, 0, 1000, mtm);
+        t.check(offset() == 0.0 && faded() == (false, true), &format!("A swipe back stops at the first tab, and the far end fades: {}", offset()));
+        swipe(&dock, on_tab, point, 0, -40, mtm);
+        t.check((offset() - 40.0).abs() < 0.5 && faded() == (true, true), &format!("A swipe over a tab moves the tabs along, and both ends fade: {}", offset()));
+        t.check(plus_at() == plus_home, "The plus stays where it is while they move");
+        let moved = three[0].convertRect_toView(three[0].bounds(), Some(&dock));
+        let gap = NSPoint::new(max_x(moved) + 3.0, on_tab.y);
+        swipe(&dock, gap, point, 0, -10, mtm);
+        t.check((offset() - 50.0).abs() < 0.5, &format!("So does a swipe over the gap between tabs, which is the dock's: {}", offset()));
+        swipe(&dock, NSPoint::new(plus_home.origin.x + 11.0, plus_home.origin.y + 11.0), point, 0, -10, mtm);
+        t.check((offset() - 60.0).abs() < 0.5, &format!("And one over the plus: {}", offset()));
+        swipe(&dock, on_tab, point, -5, 0, mtm);
+        t.check((offset() - 65.0).abs() < 0.5, &format!("A swipe up and down moves them along too: {}", offset()));
+        let before = offset();
+        swipe(&dock, on_tab, CGScrollEventUnit::Line, -1, 0, mtm);
+        t.check(offset() >= before + 8.0, &format!("And a wheel's notch, by more than a point: {before} then {}", offset()));
+        let before = offset();
+        swipe(&dock, NSPoint::new(40.0, 30.0), point, 0, -10, mtm);
+        t.check(offset() == before, "A swipe elsewhere on the dock leaves the tabs alone");
+
+        let held = offset();
+        let busy = Room { tagline: "다시 읽음".to_owned(), ..room("team", "우리 팀 야근방") };
+        h.send(Msg::RoomRead("team".to_owned(), Ok(busy)));
+        t.check(offset() == held, &format!("Drawn again, the tabs stay where they had moved to: {held} then {}", offset()));
+        swipe(&dock, on_tab, point, 0, -9999, mtm);
+        t.check((offset() - reach).abs() < 0.5 && faded() == (true, false), &format!("They stop at the last tab: {} of {reach}", offset()));
+        let drawn = tabs();
+        h.send(Msg::ExpandRoom("late-night".to_owned()));
+        let opened = tabs();
+        t.check(in_view(&opened[0]) && offset() < reach, &format!("A tab opened from out of view comes into it: {:?} {}", drawn[0].frame(), offset()));
+        let right = fades[1].frame();
+        let under = strip.convertPoint_toView(NSPoint::new(right.origin.x + right.size.width / 2.0, 11.0), None);
+        t.check(hit(&panel, under).is_some_and(|view| class_name(&view) == "ErrandRoomTab"), "A click on a fading tab reaches the tab");
+
+        h.send(Msg::ToggleRooms);
+        let list = rooms_panel.contentView().expect("the list's view");
+        let way_in = titled(&list, "들어가기").expect("a way into the fourth room");
+        t.check(
+            !way_in.isEnabled() && tooltip(&way_in).contains("3개까지") && shows(&list, "3개까지") && titled(&list, "나가기").is_some_and(|out| out.isEnabled()),
+            "At three rooms the list shuts its ways in and says why, and its ways out stay open",
+        );
+        unsafe { way_in.performClick(None) };
+        h.pump();
+        t.check(h.performed(|effect| matches!(effect, Effect::SyncRoom { room, .. } if room == "deadline")) == 0, "A shut way in asks no room");
+        h.send(Msg::LeaveRoom("dawn".to_owned()));
+        let way_in = titled(&list, "들어가기").expect("the ways in");
+        t.check(way_in.isEnabled() && !shows(&list, "3개까지"), "Leaving a room opens the ways in again");
+        h.send(Msg::CloseRooms);
+
+        h.send(Msg::RoomsRemembered(names[2..].iter().map(|(id, _)| ((*id).to_owned(), Visibility::Public)).collect()));
+        let five = tabs();
+        swipe(&dock, on_tab, point, 0, -9999, mtm);
+        t.check(five.len() == 5 && in_view(&five[4]) && plus_at() == plus_home, "Five rooms from an older Errand all stay within reach, the plus still in place");
+        for (id, _) in names {
+            h.send(Msg::LeaveRoom(id.to_owned()));
+        }
+        t.check(tabs().is_empty(), "Leaving every room takes the tabs off the dock");
         h.send(Msg::SetWidgetHidden(true));
     }
 

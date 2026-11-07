@@ -8,7 +8,7 @@ use crate::layout::{self, DockShape, MEMBER_ROWS, TrayFold};
 use crate::model::{AppState, COMPLETION_DELAY, Notice};
 use crate::provider::Provider;
 use crate::rooms::{Joined, Member, Presence, RoomsState, Visibility};
-use crate::sessions::{SessionState, TaskCounts, VisibleSession};
+use crate::sessions::{SessionState, TaskCounts, VisibleSession, families};
 use crate::theme::{self, Rgb};
 use crate::update::UpdateState;
 use crate::usage::{self, LOW_REMAINING, Mood, UsageWindow};
@@ -147,6 +147,8 @@ pub struct DockVm {
     pub profile: ProfileVm,
     /// The rooms the person is in, as tabs under the profile, with the open one's people.
     pub rooms: Option<DockRoomsVm>,
+    /// The list of rooms is open beside the dock.
+    pub rooms_listed: bool,
     /// A newer Errand on offer, beside the profile.
     pub update: Option<UpdateVm>,
     pub accessibility_value: String,
@@ -269,6 +271,7 @@ pub fn dock(state: &AppState, context: &ViewContext) -> DockVm {
             name: state.profile.name.clone(),
         },
         rooms: dock_rooms(state, context),
+        rooms_listed: state.rooms.open,
         update: update_offer(state, context.language),
     }
 }
@@ -429,6 +432,15 @@ pub struct CardVm {
     pub folder: Option<String>,
     pub tooltip: String,
     pub accessibility_label: String,
+    /// The sessions started from this one, each a line under it, drawn from a folded card's words.
+    pub sub_tasks: Vec<CardVm>,
+}
+
+impl CardVm {
+    /// The card with its sub-tasks; `height` is its own part.
+    pub fn total_height(&self) -> f64 {
+        self.height + layout::sub_tasks_height(self.sub_tasks.len())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -439,15 +451,26 @@ pub struct TrayVm {
 
 /// `max_height` is the room the shell found for the cards on the dock's side of the screen.
 pub fn tray(state: &AppState, context: &ViewContext, max_height: f64) -> TrayVm {
-    let shown = &state.sessions.shown;
-    let full: Vec<f64> = shown.iter().map(|session| layout::card_height(action_shown(session))).collect();
-    let fold = layout::fold_cards(&full, max_height);
-    let cards = shown
+    let families = families(&state.sessions.shown);
+    let full: Vec<f64> = families.iter().map(|family| layout::card_height(action_shown(family.head))).collect();
+    let sub_tasks: Vec<usize> = families.iter().map(|family| family.sub_tasks.len()).collect();
+    let fold = layout::fold_cards(&full, &sub_tasks, max_height);
+    let deadline = |session: &VisibleSession| state.sessions.pending.get(&session.row.key).copied();
+    let cards = families
         .iter()
         .enumerate()
-        .map(|(index, session)| card(session, state.sessions.pending.get(&session.row.key).copied(), fold.compact(index), fold.heights[index], context))
+        .map(|(index, family)| {
+            let mut vm = card(family.head, deadline(family.head), fold.compact(index), fold.heights[index], context);
+            vm.sub_tasks = family.sub_tasks.iter().map(|session| sub_task(session, deadline(session), context)).collect();
+            vm
+        })
         .collect();
     TrayVm { cards, fold }
+}
+
+fn sub_task(session: &VisibleSession, deadline: Option<Timestamp>, context: &ViewContext) -> CardVm {
+    let vm = card(session, deadline, true, layout::SUB_TASK_HEIGHT, context);
+    CardVm { accessibility_label: context.language.sub_task_label(&vm.accessibility_label), ..vm }
 }
 
 fn action_shown(session: &VisibleSession) -> bool {
@@ -493,6 +516,7 @@ fn card(session: &VisibleSession, deadline: Option<Timestamp>, compact: bool, he
         folder: (!row.folder.is_empty()).then(|| row.folder.clone()),
         tooltip: String::new(),
         accessibility_label: String::new(),
+        sub_tasks: Vec::new(),
     };
     if compact {
         // Folded: the title and the request stay, so "what did I ask" survives a crowded stack.
@@ -777,13 +801,16 @@ pub struct RoomCardVm {
     /// The person is in it, so its button leaves.
     pub joined: bool,
     pub button: &'static str,
+    /// Why its button cannot be pressed, for a room the person cannot join yet.
+    pub shut: Option<String>,
 }
 
 /// The list of rooms beside the dock, to join and leave; who is in them shows on the dock.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RoomsVm {
     pub title: &'static str,
-    pub subtitle: &'static str,
+    /// What rooms are, or why no more can be joined.
+    pub subtitle: String,
     pub list: Vec<RoomCardVm>,
     /// Loading or a failure, while there is no list to show.
     pub status: Option<String>,
@@ -815,10 +842,12 @@ pub fn rooms(state: &AppState, context: &ViewContext) -> RoomsVm {
                 people: language.room_people(room.members),
                 joined,
                 button: if joined { language.leave_room() } else { language.join_room() },
+                shut: (rooms.at_limit() && !joined).then(|| language.rooms_full()),
             }
         })
         .collect();
-    RoomsVm { title: language.rooms_title(), subtitle: language.rooms_subtitle(), list, status, footer: language.rooms_footer(rooms.sample), close: language.close() }
+    let subtitle = if rooms.at_limit() { language.rooms_full() } else { language.rooms_subtitle().to_owned() };
+    RoomsVm { title: language.rooms_title(), subtitle, list, status, footer: language.rooms_footer(rooms.sample), close: language.close() }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

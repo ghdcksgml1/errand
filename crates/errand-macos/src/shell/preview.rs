@@ -147,6 +147,7 @@ pub fn render(
                 drag_began: nothing.clone(),
                 dragged: Rc::new(|_, _| {}),
                 expand_room: Rc::new(|_| {}),
+                show_rooms: nothing.clone(),
             };
             let mut dock = Dock::new(mtm, events, language);
             let vm = view::dock(state, &context);
@@ -165,6 +166,7 @@ pub fn render(
                 drag_began: nothing.clone(),
                 dragged: Rc::new(|_, _| {}),
                 expand_room: Rc::new(|_| {}),
+                show_rooms: nothing.clone(),
             };
             let mut dock = Dock::new(mtm, events, language);
             let vm = view::dock(state, &context);

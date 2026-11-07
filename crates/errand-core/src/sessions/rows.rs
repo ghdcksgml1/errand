@@ -31,6 +31,10 @@ pub struct SessionRow {
     /// The answer was already read in the app itself.
     pub seen_in_app: bool,
     pub stalled: bool,
+    /// The key of the session the app files this one under; its card shows this one as a line.
+    pub parent: Option<String>,
+    /// Of all the app's sessions, the one it put on screen last. The scan says so, comparing them.
+    pub on_screen: bool,
 }
 
 fn stalled(turn: &Turn, modified: Option<Timestamp>, now: Timestamp) -> bool {
@@ -66,6 +70,8 @@ pub fn codex_row(thread: &CodexThread, turn: &Turn, modified: Option<Timestamp>,
         url: format!("codex://threads/{}", thread.id),
         seen_in_app: read,
         stalled: stalled(turn, modified, now),
+        parent: None,
+        on_screen: false,
     }
 }
 
@@ -85,6 +91,8 @@ pub struct ClaudeMeta {
     pub last_focused_at: Option<Timestamp>,
     pub summary: Option<String>,
     pub action: Option<String>,
+    /// The session the app files this one under.
+    pub parent_session: Option<String>,
 }
 
 fn milliseconds(value: Option<&Value>) -> Option<Timestamp> {
@@ -101,6 +109,8 @@ impl ClaudeMeta {
             other => other.cloned(),
         };
         let summary = summary.as_ref().and_then(Value::as_object);
+        // As the app's own list goes: started from that session as a side session, and not moved to the top level.
+        let spawned = json::object(object.get("spawnedFrom")).filter(|spawned| json::flag(spawned.get("sideSession")) && !json::flag(object.get("lineageDetached")));
         Some(ClaudeMeta {
             session_id: text("sessionId"),
             cli_session_id: text("cliSessionId"),
@@ -113,6 +123,7 @@ impl ClaudeMeta {
             last_focused_at: milliseconds(object.get("lastFocusedAt")),
             summary: summary.and_then(|summary| json::text(summary.get("status_detail"))).map(str::to_owned),
             action: summary.and_then(|summary| json::text(summary.get("needs_action"))).map(str::to_owned),
+            parent_session: spawned.and_then(|spawned| json::text(spawned.get("sessionId"))).map(str::to_owned),
         })
     }
 }
@@ -148,5 +159,7 @@ pub fn claude_row(
         url: format!("claude://code/continue?session={session_id}"),
         seen_in_app: turn.finished_at.zip(meta.last_focused_at).is_some_and(|(finished, focused)| focused >= finished),
         stalled: stalled(turn, transcript_modified, now),
+        parent: meta.parent_session.as_deref().map(|parent| format!("{}{parent}", Provider::Claude.session_key_prefix())),
+        on_screen: false,
     })
 }

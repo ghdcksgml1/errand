@@ -122,6 +122,7 @@ impl Runtime {
                 let _ = self.scans.send(records);
                 None
             }
+            Effect::ReadAttention => Some(Msg::AttentionRead(self.platform.attention())),
             Effect::SaveResetHistory => {
                 let _ = stores::save_reset_history(&self.platform.reset_history, &self.state.history);
                 None

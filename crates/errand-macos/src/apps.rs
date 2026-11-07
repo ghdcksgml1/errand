@@ -1,7 +1,9 @@
 //! The official Codex and Claude apps: where they are installed and whether they are running.
 
 use errand_core::Provider;
+use jiff::SignedDuration;
 use objc2_app_kit::{NSRunningApplication, NSWorkspace};
+use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
 use objc2_foundation::NSString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -64,6 +66,23 @@ pub fn claude_code(home: &Path) -> Option<PathBuf> {
 pub fn running(provider: Provider) -> Option<i32> {
     let apps = NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(bundle_id(provider)));
     apps.iter().find(|app| !app.isTerminated()).map(|app| app.processIdentifier())
+}
+
+/// The service whose app is in front, if either is. The menu bar says so better than `frontmostApplication`: a system
+/// alert or a launcher can be frontmost for a while with the person still in the app under it.
+pub fn in_front() -> Option<Provider> {
+    let front = NSWorkspace::sharedWorkspace().menuBarOwningApplication()?.bundleIdentifier()?.to_string();
+    Provider::ALL.into_iter().find(|provider| bundle_id(*provider) == front)
+}
+
+/// `kCGAnyInputEventType`, which the bindings leave out.
+const ANY_INPUT: CGEventType = CGEventType(u32::MAX);
+
+/// How long since the person touched the keyboard, mouse or trackpad. Needs no permission, and hears only that
+/// something happened, never what.
+pub fn idle() -> SignedDuration {
+    let seconds = CGEventSource::seconds_since_last_event_type(CGEventSourceStateID::HIDSystemState, ANY_INPUT);
+    SignedDuration::try_from_secs_f64(seconds).unwrap_or(SignedDuration::MAX)
 }
 
 #[cfg(test)]

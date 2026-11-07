@@ -17,6 +17,9 @@ pub const SYNC_INTERVAL: SignedDuration = SignedDuration::from_secs(30);
 pub const CLOCK_TICK: SignedDuration = SignedDuration::from_secs(1);
 /// The longest nickname a private room takes, in characters.
 pub const NICKNAME_LENGTH: usize = 20;
+/// How many rooms Errand joins at once, fewer than the server allows, so the tabs stay readable. Rooms an older
+/// Errand joined past this stay until the person leaves them.
+pub const MAX_ROOMS: usize = 3;
 
 /// Who may see a room, and so who the person shows up as in it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,6 +218,11 @@ pub struct RoomsState {
 impl RoomsState {
     pub fn is_joined(&self, id: &str) -> bool {
         self.joined.iter().any(|joined| joined.id == id)
+    }
+
+    /// The person is in as many rooms as Errand joins at once.
+    pub fn at_limit(&self) -> bool {
+        self.joined.len() >= MAX_ROOMS
     }
 
     /// How visible a room is, as far as Errand knows: as it last answered, as the list says, or as it was when

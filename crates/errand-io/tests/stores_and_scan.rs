@@ -4,7 +4,7 @@
 use errand_core::format::{seconds, timestamp_from_seconds};
 use errand_core::reset_history::ResetHistory;
 use errand_core::rooms::Visibility;
-use errand_core::sessions::{SessionRecords, VisibleSession};
+use errand_core::sessions::{SessionRecords, SessionRow, VisibleSession};
 use errand_core::usage::{Span, UsageWindow, WindowName};
 use errand_core::{Provider, Timestamp};
 use errand_io::session_scan::{SessionScanner, SessionSources};
@@ -214,4 +214,39 @@ fn checked_cards_persist_and_new_requests_come_through_codexs_live_database() {
         .flat_map(|record| record.as_dictionary().unwrap().keys().map(String::as_str))
         .collect();
     assert_eq!(fields.into_iter().collect::<Vec<_>>(), ["completedAt", "seenAt"], "only times are stored, never prompts or answers");
+}
+
+#[test]
+fn the_session_on_screen_is_the_one_claude_focused_last_even_without_a_card() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = root.path().join("claude-code-sessions/account/org");
+    fs::create_dir_all(&folder).unwrap();
+    let now = at(1_792_044_000.0);
+    let session = |name: &str, seconds_ago: i64, extra: Value| {
+        let focused = now - jiff::SignedDuration::from_secs(seconds_ago);
+        let mut record = json!({"sessionId": name, "lastFocusedAt": seconds(focused) * 1000.0});
+        record.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let path = folder.join(format!("{name}.json"));
+        fs::write(&path, record.to_string()).unwrap();
+        set_modified(&path, focused);
+    };
+    session("local_older", 60, json!({}));
+    session("local_newer", 30, json!({"spawnedFrom": {"sessionId": "local_older", "sideSession": true}}));
+    let sources = SessionSources { codex_home: root.path().join("codex"), claude_sessions: root.path().join("claude-code-sessions"), claude_projects: root.path().join("projects") };
+    let mut scanner = SessionScanner::new(sources);
+    let mut records = SessionRecords::new(now);
+    let flagged = |rows: &[SessionRow]| rows.iter().filter(|row| row.on_screen).map(|row| row.key.clone()).collect::<Vec<_>>();
+
+    let rows = scanner.scan(&records, now);
+    assert_eq!(flagged(&rows), ["claude:local_newer"]);
+    assert_eq!(rows.iter().find(|row| row.key == "claude:local_newer").unwrap().parent.as_deref(), Some("claude:local_older"));
+
+    // Checked off, its file holds nothing for a card, and Errand still knows the person is looking at it.
+    records.complete("claude:local_newer", now);
+    let rows = scanner.scan(&records, now);
+    assert_eq!(rows.len(), 1);
+    assert!(flagged(&rows).is_empty(), "the session behind it is not the one on screen");
+
+    session("local_older", 10, json!({}));
+    assert_eq!(flagged(&scanner.scan(&records, now)), ["claude:local_older"], "coming on screen again takes over");
 }

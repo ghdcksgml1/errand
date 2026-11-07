@@ -1,15 +1,16 @@
 //! The dock: one battery per service, the refresh button, the person's profile and, while there are tasks,
-//! the task header on top; under the profile, a tab per work room the person is in. The whole dock is a drag
-//! handle: a click on the header folds the cards, one on the person's character opens its editor, a click on
-//! the rooms is theirs, and a click anywhere else opens the usage details.
+//! the task header on top; under the profile, a tab per work room the person is in, and beside the nickname
+//! outside them, the way to the rooms. The whole dock is a drag handle: a click on the header folds the cards,
+//! one on the person's character opens its editor, a click on the rooms is theirs, and a click anywhere else
+//! opens the usage details.
 
-use super::rooms::DockRooms;
+use super::rooms::{DockRooms, RoomTab, TabStrip};
 use super::battery::{BatteryView, dock_battery_width};
 use super::kit::{self, Action, CHIP_ICON, FlippedView, PressableView, Weight, color, digits_font, fitting_width, grey, icon_image, label, ns, rect};
 use super::spinner::SpinningIconView;
 use errand_core::avatar::Avatar;
 use errand_core::{Language, Provider};
-use errand_core::layout::{self, DOCK_PADDING, DockShape, HEADER_HEIGHT, PROFILE_HEIGHT, REFRESH_SIZE, STACK_WIDTH};
+use errand_core::layout::{self, DOCK_PADDING, DockShape, HEADER_HEIGHT, PROFILE_HEIGHT, REFRESH_SIZE, ROOM_TAB_HEIGHT, STACK_WIDTH};
 use errand_core::theme::{self, Rgb};
 use errand_core::view::{DockVm, HeaderVm, ProfileVm, UpdateVm};
 use objc2::rc::Retained;
@@ -39,6 +40,8 @@ pub struct DockEvents {
     pub edit_avatar: Rc<dyn Fn()>,
     /// A room's tab: shows or folds its people.
     pub expand_room: Rc<dyn Fn(String)>,
+    /// The way to the rooms: opens their list, or closes it.
+    pub show_rooms: Rc<dyn Fn()>,
     /// The update beside the profile.
     pub update: Rc<dyn Fn()>,
 }
@@ -240,6 +243,8 @@ pub struct DockIvars {
     profile_top: Cell<f64>,
     /// Where the room tabs start; the rooms keep the clicks below it.
     rooms_top: Cell<f64>,
+    /// Takes the swipes the row of tabs gets.
+    strip: RefCell<Option<Retained<TabStrip>>>,
     drag_start: Cell<NSPoint>,
     dragged: Cell<bool>,
 }
@@ -313,6 +318,19 @@ define_class!(
             }
         }
 
+        /// A swipe over a tab finds the strip by itself; one beside the tabs or over the plus is the dock's by
+        /// `hitTest:` and comes here.
+        #[unsafe(method(scrollWheel:))]
+        fn scroll_wheel(&self, event: &NSEvent) {
+            let point = self.convertPoint_fromView(event.locationInWindow(), None);
+            let top = self.ivars().rooms_top.get();
+            if (top..top + ROOM_TAB_HEIGHT).contains(&point.y)
+                && let Some(strip) = self.ivars().strip.borrow().as_ref()
+            {
+                strip.scrollWheel(event);
+            }
+        }
+
         #[unsafe(method(accessibilityPerformPress))]
         fn accessibility_perform_press(&self) -> bool {
             (self.ivars().events.toggle_details)();
@@ -355,11 +373,14 @@ pub struct Dock {
     nickname: Retained<NSTextField>,
     /// A newer Errand on offer.
     update: Retained<DockButton>,
+    /// The way to the rooms, at the row's end while the person is in none.
+    rooms_button: Retained<RoomTab>,
     /// The rooms the person is in, under the profile.
     rooms: DockRooms,
     /// The refresh button holds its target weakly.
     _refresh_action: Retained<Action>,
     _update_action: Retained<Action>,
+    _rooms_action: Retained<Action>,
     /// What the dock holds, as last laid out.
     shape: Cell<DockShape>,
     shown: Option<DockVm>,
@@ -372,6 +393,7 @@ impl Dock {
         let update_event = events.update.clone();
         let edit_avatar = events.edit_avatar.clone();
         let expand_event = events.expand_room.clone();
+        let show_rooms = events.show_rooms.clone();
         let view: Retained<DockView> = {
             let this = DockView::alloc(mtm).set_ivars(DockIvars {
                 events,
@@ -379,6 +401,7 @@ impl Dock {
                 avatar: RefCell::new(None),
                 profile_top: Cell::new(layout::profile_top(DockShape::FULL)),
                 rooms_top: Cell::new(f64::INFINITY),
+                strip: RefCell::new(None),
                 drag_start: Cell::new(NSPoint::ZERO),
                 dragged: Cell::new(false),
             });
@@ -444,13 +467,22 @@ impl Dock {
         let update_action = Action::new(mtm, move || update_event());
         update_action.attach(&update);
         profile.addSubview(&update);
+        let rooms_button = RoomTab::rooms_button(mtm, language.rooms_button(), language.rooms_button_tooltip());
+        rooms_button.setFrameOrigin(NSPoint::new(STACK_WIDTH - DOCK_PADDING - rooms_button.frame().size.width, (PROFILE_HEIGHT - ROOM_TAB_HEIGHT) / 2.0));
+        let rooms_action = {
+            let show_rooms = show_rooms.clone();
+            Action::new(mtm, move || show_rooms())
+        };
+        rooms_action.attach(&rooms_button);
+        profile.addSubview(&rooms_button);
         profile.setAccessibilityElement(true);
         profile.setAccessibilityRole(Some(unsafe { NSAccessibilityGroupRole }));
         view.addSubview(&profile);
         *view.ivars().header.borrow_mut() = Some(header.clone());
-        let rooms = DockRooms::new(mtm, expand_event);
+        let rooms = DockRooms::new(mtm, expand_event, show_rooms, language);
         view.addSubview(&rooms.tabs);
         view.addSubview(&rooms.members);
+        *view.ivars().strip.borrow_mut() = Some(rooms.strip.clone());
         *view.ivars().avatar.borrow_mut() = Some(avatar.clone());
         let dock = Dock {
             view,
@@ -462,9 +494,11 @@ impl Dock {
             avatar,
             nickname,
             update,
+            rooms_button,
             rooms,
             _refresh_action: refresh_action,
             _update_action: update_action,
+            _rooms_action: rooms_action,
             shape: Cell::new(DockShape::FULL),
             shown: None,
         };
@@ -521,9 +555,11 @@ impl Dock {
         if self.shown.as_ref().map(|shown| &shown.profile) != Some(&vm.profile) {
             self.render_profile(&vm.profile);
         }
-        if self.shown.as_ref().map(|shown| &shown.update) != Some(&vm.update) {
-            self.render_update(vm.update.as_ref());
+        if self.shown.as_ref().map(|shown| (&shown.update, shown.rooms.is_some())) != Some((&vm.update, vm.rooms.is_some())) {
+            self.render_row_end(vm.update.as_ref(), vm.rooms.is_some());
         }
+        self.rooms_button.set_open(vm.rooms_listed);
+        self.rooms.set_listed(vm.rooms_listed);
         self.rooms.show(vm.rooms.as_ref(), mtm);
         let providers = |vm: &DockVm| vm.batteries.iter().map(|battery| battery.provider).collect::<Vec<_>>();
         let header_changed = self.shown.as_ref().map(|shown| &shown.header) != Some(&vm.header);
@@ -537,8 +573,14 @@ impl Dock {
         self.shown = Some(vm.clone());
     }
 
-    /// The offer sits at the row's end, and the nickname makes room for it.
-    fn render_update(&self, update: Option<&UpdateVm>) {
+    /// The way to the rooms ends the row outside them; in them the plus after the tabs takes over. Any update on
+    /// offer comes before it, and the nickname makes room for them.
+    fn render_row_end(&self, update: Option<&UpdateVm>, in_rooms: bool) {
+        self.rooms_button.setHidden(in_rooms);
+        let rooms_width = if in_rooms { 0.0 } else { self.rooms_button.frame().size.width + 4.0 };
+        let mut offer = self.update.frame();
+        offer.origin.x = STACK_WIDTH - DOCK_PADDING - rooms_width - UPDATE_WIDTH;
+        self.update.setFrame(offer);
         self.update.setHidden(update.is_none());
         if let Some(update) = update {
             self.update.setTitle(&ns(&update.title));
@@ -547,7 +589,7 @@ impl Dock {
             self.update.setAccessibilityLabel(Some(&ns(&update.tooltip)));
         }
         let mut frame = self.nickname.frame();
-        frame.size.width = STACK_WIDTH - frame.origin.x - DOCK_PADDING - if update.is_some() { UPDATE_WIDTH + 4.0 } else { 4.0 };
+        frame.size.width = STACK_WIDTH - frame.origin.x - DOCK_PADDING - rooms_width - if update.is_some() { UPDATE_WIDTH + 4.0 } else { 4.0 };
         self.nickname.setFrame(frame);
     }
 

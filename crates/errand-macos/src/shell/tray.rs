@@ -6,7 +6,7 @@ use super::kit::{self, Action, CHIP_ICON, FlippedView, Weight, color, fitting_wi
 use super::marks::AppMarkView;
 use super::spinner::SpinningIconView;
 use errand_core::Language;
-use errand_core::layout::{CARD_GAP, MORE_BAR_HEIGHT, STACK_WIDTH};
+use errand_core::layout::{CARD_GAP, MORE_BAR_HEIGHT, STACK_WIDTH, SUB_TASK_HEIGHT};
 use errand_core::model::Msg;
 use errand_core::ports::Poster;
 use errand_core::sessions::SessionState;
@@ -54,6 +54,17 @@ pub fn chip_width(text: &str, mark: ChipMark) -> f64 {
 pub fn chip_rect(card_width: f64, text: &str, mark: ChipMark) -> NSRect {
     let width = chip_width(text, mark);
     rect(card_width - 14.0 - width, 12.0, width, 18.0)
+}
+
+/// Where a sub-task's chip sits: in line with the card's own, in the middle of its line.
+fn sub_task_chip(width: f64, text: &str, mark: ChipMark) -> NSRect {
+    let chip = chip_width(text, mark);
+    rect(width - 14.0 - chip, (SUB_TASK_HEIGHT - 18.0) / 2.0, chip, 18.0)
+}
+
+/// What sits before a state's words: a running chip's icon is the spinner laid over its spot.
+fn chip_mark(state: SessionState) -> ChipMark<'static> {
+    if state == SessionState::Running { ChipMark::Spinner } else { ChipMark::Icon(state.icon()) }
 }
 
 /// The spot a chip's icon takes; a spinner goes there for running work.
@@ -234,6 +245,8 @@ pub struct CardIvars {
     chip: &'static str,
     pending: bool,
     compact: bool,
+    /// Its own part, above any sub-tasks.
+    own_height: f64,
     hovering: Cell<bool>,
     hint: RefCell<Option<Retained<FlippedView>>>,
     open: Rc<dyn Fn()>,
@@ -257,7 +270,7 @@ define_class!(
         fn hit_test(&self, point: NSPoint) -> *mut NSView {
             let hit: *mut NSView = unsafe { msg_send![super(self), hitTest: point] };
             match unsafe { hit.as_ref() } {
-                Some(view) if view.isKindOfClass(NSButton::class()) => hit,
+                Some(view) if view.isKindOfClass(NSButton::class()) || view.isKindOfClass(SubTaskRow::class()) => hit,
                 Some(_) => self as *const SessionCard as *mut NSView,
                 None => std::ptr::null_mut(),
             }
@@ -292,20 +305,21 @@ define_class!(
             let _: () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
             // Cards are rebuilt while the pointer may already rest on one.
             let Some(window) = self.window() else { return };
-            let pointer = self.convertPoint_fromView(window.mouseLocationOutsideOfEventStream(), None);
-            if kit::contains(self.bounds(), pointer) && kit::contains(window.frame(), NSEvent::mouseLocation()) {
-                self.set_hover(true);
+            let pointer = window.mouseLocationOutsideOfEventStream();
+            if kit::contains(self.bounds(), self.convertPoint_fromView(pointer, None)) && kit::contains(window.frame(), NSEvent::mouseLocation()) {
+                self.pointer_on(pointer);
             }
         }
 
         #[unsafe(method(mouseEntered:))]
-        fn mouse_entered(&self, _event: &NSEvent) {
-            self.set_hover(true);
+        fn mouse_entered(&self, event: &NSEvent) {
+            self.pointer_on(event.locationInWindow());
         }
 
         #[unsafe(method(mouseExited:))]
         fn mouse_exited(&self, _event: &NSEvent) {
             self.set_hover(false);
+            NSCursor::arrowCursor().set();
         }
 
         #[unsafe(method(drawRect:))]
@@ -313,14 +327,18 @@ define_class!(
             let ivars = self.ivars();
             let state = if ivars.pending { SessionState::Done } else { ivars.state };
             let style = theme::card_style(state, ivars.hovering.get() && !ivars.pending);
-            draw_card(self.bounds(), &style);
+            let bounds = self.bounds();
+            draw_card(bounds, &style);
+            if ivars.own_height < bounds.size.height {
+                kit::paint(theme::INK.alpha(0.09)).setFill();
+                NSBezierPath::bezierPathWithRect(rect(14.0, ivars.own_height - 2.0, bounds.size.width - 28.0, 1.0)).fill();
+            }
             // A folded card that is checked shows its 되돌리기 where the chip would be.
             if ivars.pending && ivars.compact {
                 return;
             }
-            // A running chip's icon is the spinner laid over its spot.
-            let mark = if state == SessionState::Running { ChipMark::Spinner } else { ChipMark::Icon(state.icon()) };
-            draw_chip(chip_rect(self.bounds().size.width, ivars.chip, mark), ivars.chip, mark, &style);
+            let mark = chip_mark(state);
+            draw_chip(chip_rect(bounds.size.width, ivars.chip, mark), ivars.chip, mark, &style);
         }
     }
 );
@@ -331,8 +349,141 @@ impl SessionCard {
         if let Some(hint) = self.ivars().hint.borrow().as_ref() {
             hint.setHidden(!hover || self.ivars().pending);
         }
-        if hover { NSCursor::pointingHandCursor().set() } else { NSCursor::arrowCursor().set() }
         self.setNeedsDisplay(true);
+    }
+
+    /// This window location is on a sub-task's line, which lights up by itself.
+    fn on_sub_task(&self, location: NSPoint) -> bool {
+        let own = self.ivars().own_height;
+        own < self.bounds().size.height && self.convertPoint_fromView(location, None).y >= own
+    }
+
+    fn pointer_on(&self, location: NSPoint) {
+        NSCursor::pointingHandCursor().set();
+        self.set_hover(!self.on_sub_task(location));
+    }
+
+    /// A sub-task's line lost the pointer, which may have stayed on the card.
+    fn pointer_left_line(&self) {
+        let Some(window) = self.window() else { return };
+        let location = window.mouseLocationOutsideOfEventStream();
+        self.set_hover(kit::contains(self.bounds(), self.convertPoint_fromView(location, None)) && !self.on_sub_task(location));
+    }
+
+    pub fn key(&self) -> &str {
+        &self.ivars().key
+    }
+}
+
+pub struct SubTaskIvars {
+    key: String,
+    state: SessionState,
+    chip: &'static str,
+    pending: bool,
+    hovering: Cell<bool>,
+    open: Rc<dyn Fn()>,
+}
+
+define_class!(
+    /// A sub-task's line in the card it came from. It opens its own session, not the card's.
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "ErrandSubTaskRow"]
+    #[ivars = SubTaskIvars]
+    pub struct SubTaskRow;
+
+    impl SubTaskRow {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(hitTest:))]
+        fn hit_test(&self, point: NSPoint) -> *mut NSView {
+            let hit: *mut NSView = unsafe { msg_send![super(self), hitTest: point] };
+            match unsafe { hit.as_ref() } {
+                Some(view) if view.isKindOfClass(NSButton::class()) => hit,
+                Some(_) => self as *const SubTaskRow as *mut NSView,
+                None => std::ptr::null_mut(),
+            }
+        }
+
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
+            true
+        }
+
+        #[unsafe(method(mouseUp:))]
+        fn mouse_up(&self, event: &NSEvent) {
+            if kit::contains(self.bounds(), self.convertPoint_fromView(event.locationInWindow(), None)) {
+                (self.ivars().open)();
+            }
+        }
+
+        #[unsafe(method(accessibilityPerformPress))]
+        fn accessibility_perform_press(&self) -> bool {
+            (self.ivars().open)();
+            true
+        }
+
+        #[unsafe(method(updateTrackingAreas))]
+        fn update_tracking_areas(&self) {
+            let _: () = unsafe { msg_send![super(self), updateTrackingAreas] };
+            replace_tracking_area(self);
+        }
+
+        #[unsafe(method(viewDidMoveToWindow))]
+        fn view_did_move_to_window(&self) {
+            let _: () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
+            // Lines are rebuilt with their card, while the pointer may already rest on one.
+            let Some(window) = self.window() else { return };
+            let pointer = self.convertPoint_fromView(window.mouseLocationOutsideOfEventStream(), None);
+            if kit::contains(self.bounds(), pointer) && kit::contains(window.frame(), NSEvent::mouseLocation()) {
+                self.set_hover(true);
+            }
+        }
+
+        #[unsafe(method(mouseEntered:))]
+        fn mouse_entered(&self, _event: &NSEvent) {
+            self.set_hover(true);
+            if let Some(card) = self.card() {
+                card.set_hover(false);
+            }
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _event: &NSEvent) {
+            self.set_hover(false);
+            if let Some(card) = self.card() {
+                card.pointer_left_line();
+            }
+        }
+
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {
+            let ivars = self.ivars();
+            let bounds = self.bounds();
+            if ivars.hovering.get() && !ivars.pending {
+                kit::paint(theme::INK.alpha(0.035)).setFill();
+                NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(kit::inset(bounds, 6.0, 1.0), 9.0, 9.0).fill();
+            }
+            // A checked line shows its 되돌리기 where the chip would be.
+            if !ivars.pending {
+                let mark = chip_mark(ivars.state);
+                draw_chip(sub_task_chip(bounds.size.width, ivars.chip, mark), ivars.chip, mark, &theme::card_style(ivars.state, false));
+            }
+        }
+    }
+);
+
+impl SubTaskRow {
+    fn set_hover(&self, hover: bool) {
+        self.ivars().hovering.set(hover);
+        self.setNeedsDisplay(true);
+    }
+
+    fn card(&self) -> Option<Retained<SessionCard>> {
+        unsafe { self.superview() }?.downcast::<SessionCard>().ok()
     }
 
     pub fn key(&self) -> &str {
@@ -365,31 +516,18 @@ fn undo_button(vm: &CardVm, frame: NSRect, events: &CardEvents, mtm: MainThreadM
     (undo, action)
 }
 
-/// Builds one card from its view model; the actions it returns must outlive the card's buttons.
-fn card(vm: &CardVm, width: f64, events: &CardEvents, mtm: MainThreadMarker) -> (Retained<SessionCard>, Vec<Retained<Action>>) {
-    let pending = vm.countdown.is_some();
-    let open: Rc<dyn Fn()> = {
-        let (poster, key) = (events.poster.clone(), vm.key.clone());
-        Rc::new(move || poster.post(Msg::OpenSession(key.clone())))
-    };
-    let own_state = if pending { SessionState::Done } else { vm.state };
-    let this = SessionCard::alloc(mtm).set_ivars(CardIvars {
-        key: vm.key.clone(),
-        state: own_state,
-        chip: vm.chip,
-        pending,
-        compact: vm.compact,
-        hovering: Cell::new(false),
-        hint: RefCell::new(None),
-        open,
-    });
-    let view: Retained<SessionCard> = unsafe { msg_send![super(this), initWithFrame: rect(0.0, 0.0, width, vm.height)] };
-    let mut actions = Vec::new();
-    let mut content: Vec<Retained<NSView>> = Vec::new();
+/// Opens the session a card or a line stands for.
+fn open_session(vm: &CardVm, events: &CardEvents) -> Rc<dyn Fn()> {
+    let (poster, key) = (events.poster.clone(), vm.key.clone());
+    Rc::new(move || poster.post(Msg::OpenSession(key.clone())))
+}
 
+/// The circle that checks off a card or a line.
+fn check_button(vm: &CardVm, frame: NSRect, events: &CardEvents, mtm: MainThreadMarker) -> (Retained<CheckButton>, Retained<Action>) {
+    let pending = vm.countdown.is_some();
     let check: Retained<CheckButton> = {
         let this = CheckButton::alloc(mtm).set_ivars(CheckIvars { checked: Cell::new(pending), hovering: Cell::new(false) });
-        unsafe { msg_send![super(this), initWithFrame: rect(10.0, 10.5, 24.0, 20.0)] }
+        unsafe { msg_send![super(this), initWithFrame: frame] }
     };
     check.setBordered(false);
     check.setTitle(&ns(""));
@@ -397,11 +535,83 @@ fn card(vm: &CardVm, width: f64, events: &CardEvents, mtm: MainThreadMarker) -> 
     unsafe { check.setAccessibilityValue(Some(&NSNumber::new_bool(pending))) };
     check.setToolTip(Some(&ns(vm.check_tooltip)));
     check.setAccessibilityLabel(Some(&ns(&vm.check_label)));
-    let check_action = {
-        let (poster, key) = (events.poster.clone(), vm.key.clone());
-        Action::new(mtm, move || poster.post(Msg::ToggleComplete(key.clone())))
-    };
-    check_action.attach(&check);
+    let (poster, key) = (events.poster.clone(), vm.key.clone());
+    let action = Action::new(mtm, move || poster.post(Msg::ToggleComplete(key.clone())));
+    action.attach(&check);
+    (check, action)
+}
+
+/// A sub-task's line, `y` down its card. It has its own circle, and while checked its own 되돌리기 and countdown.
+fn sub_task(vm: &CardVm, y: f64, width: f64, events: &CardEvents, mtm: MainThreadMarker) -> (Retained<SubTaskRow>, Vec<Retained<Action>>) {
+    let pending = vm.countdown.is_some();
+    let this = SubTaskRow::alloc(mtm).set_ivars(SubTaskIvars {
+        key: vm.key.clone(),
+        state: vm.state,
+        chip: vm.chip,
+        pending,
+        hovering: Cell::new(false),
+        open: open_session(vm, events),
+    });
+    let view: Retained<SubTaskRow> = unsafe { msg_send![super(this), initWithFrame: rect(0.0, y, width, SUB_TASK_HEIGHT)] };
+    let middle = SUB_TASK_HEIGHT / 2.0;
+    let (check, check_action) = check_button(vm, rect(10.0, middle - 10.0, 24.0, 20.0), events, mtm);
+    view.addSubview(&check);
+    let mut actions = vec![check_action];
+    let arrow = tinted_icon("corner-down-right", 12.0, theme::MUTED, mtm);
+    arrow.setFrameOrigin(NSPoint::new(CONTENT_X, middle - 6.0));
+    view.addSubview(&arrow);
+    let chip = sub_task_chip(width, vm.chip, chip_mark(vm.state));
+    let title_x = CONTENT_X + 18.0;
+    let title_end = if pending { width - 14.0 - 78.0 } else { chip.origin.x };
+    let heading = label(&vm.title, 12.0, Weight::Semibold, theme::INK, mtm);
+    heading.setFrame(rect(title_x, middle - 8.5, title_end - 8.0 - title_x, 17.0));
+    view.addSubview(&heading);
+    if vm.state == SessionState::Running {
+        view.addSubview(&SpinningIconView::new(mtm, chip_icon_frame(chip), "loader-circle", theme::RUNNING_BRIGHT));
+    }
+    if let Some(countdown) = vm.countdown {
+        heading.setAttributedStringValue(&struck(&vm.title, &heading));
+        arrow.setAlphaValue(0.45);
+        let (undo, undo_action) = undo_button(vm, rect(width - 14.0 - 78.0, middle - 10.0, 78.0, 20.0), events, mtm);
+        view.addSubview(&undo);
+        actions.push(undo_action);
+        let bar_frame = rect(title_x, SUB_TASK_HEIGHT - 4.0, width - title_x - 14.0, 2.5);
+        view.addSubview(&CountdownBar::new(mtm, bar_frame, countdown.remaining.as_secs_f64(), countdown.fraction, events.language));
+    }
+    finish(&view, vm, events.language);
+    (view, actions)
+}
+
+/// Builds one card from its view model, with its sub-tasks; the actions it returns must outlive the buttons.
+fn card(vm: &CardVm, width: f64, events: &CardEvents, mtm: MainThreadMarker) -> (Retained<SessionCard>, Vec<Retained<Action>>) {
+    let (view, mut actions) = card_itself(vm, width, events, mtm);
+    for (index, line) in vm.sub_tasks.iter().enumerate() {
+        let (line, line_actions) = sub_task(line, vm.height + index as f64 * SUB_TASK_HEIGHT, width, events, mtm);
+        view.addSubview(&line);
+        actions.extend(line_actions);
+    }
+    (view, actions)
+}
+
+fn card_itself(vm: &CardVm, width: f64, events: &CardEvents, mtm: MainThreadMarker) -> (Retained<SessionCard>, Vec<Retained<Action>>) {
+    let pending = vm.countdown.is_some();
+    let own_state = if pending { SessionState::Done } else { vm.state };
+    let this = SessionCard::alloc(mtm).set_ivars(CardIvars {
+        key: vm.key.clone(),
+        state: own_state,
+        chip: vm.chip,
+        pending,
+        compact: vm.compact,
+        own_height: vm.height,
+        hovering: Cell::new(false),
+        hint: RefCell::new(None),
+        open: open_session(vm, events),
+    });
+    let view: Retained<SessionCard> = unsafe { msg_send![super(this), initWithFrame: rect(0.0, 0.0, width, vm.total_height())] };
+    let mut actions = Vec::new();
+    let mut content: Vec<Retained<NSView>> = Vec::new();
+
+    let (check, check_action) = check_button(vm, rect(10.0, 10.5, 24.0, 20.0), events, mtm);
     actions.push(check_action);
     view.addSubview(&check);
     let mark = AppMarkView::new(mtm, rect(CONTENT_X, 11.5, 18.0, 18.0), vm.provider);
@@ -535,7 +745,7 @@ fn card(vm: &CardVm, width: f64, events: &CardEvents, mtm: MainThreadMarker) -> 
     (view, actions)
 }
 
-fn finish(view: &SessionCard, vm: &CardVm, language: Language) {
+fn finish(view: &NSView, vm: &CardVm, language: Language) {
     view.setIdentifier(Some(&ns(&vm.key)));
     view.setAccessibilityElement(true);
     view.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
@@ -773,7 +983,7 @@ impl Tray {
         for card_vm in &vm.cards {
             let (view, actions) = card(card_vm, width, &self.events, mtm);
             view.setFrameOrigin(NSPoint::new(0.0, y));
-            y += card_vm.height + CARD_GAP;
+            y += card_vm.total_height() + CARD_GAP;
             document.addSubview(&view);
             self.actions.extend(actions);
         }
@@ -798,16 +1008,23 @@ impl Tray {
         document.subviews().iter().filter_map(|view| view.downcast::<SessionCard>().ok()).find(|card| card.key() == key)
     }
 
-    /// Fades a checked card out, so leaving the list reads as the end of the check, not a jump.
+    pub fn sub_task(&self, key: &str) -> Option<Retained<SubTaskRow>> {
+        let document = self.scroll.as_ref()?.documentView()?;
+        let lines = document.subviews().into_iter().flat_map(|card| card.subviews().to_vec());
+        lines.filter_map(|view| view.downcast::<SubTaskRow>().ok()).find(|line| line.key() == key)
+    }
+
+    /// Fades a checked card or line out, so leaving the list reads as the end of the check, not a jump.
     pub fn fade(&self, key: &str, visible: bool, poster: Arc<dyn Poster>) {
         let key = key.to_owned();
-        let Some(card) = self.card(&key).filter(|_| visible && !NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()) else {
+        let view: Option<Retained<NSView>> = self.card(&key).map(Retained::into_super).or_else(|| self.sub_task(&key).map(Retained::into_super));
+        let Some(view) = view.filter(|_| visible && !NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()) else {
             poster.post(Msg::CardFaded(key));
             return;
         };
         let changes = block2::RcBlock::new(move |context: std::ptr::NonNull<NSAnimationContext>| {
             unsafe { context.as_ref() }.setDuration(0.2);
-            card.animator().setAlphaValue(0.0);
+            view.animator().setAlphaValue(0.0);
         });
         let finished = block2::RcBlock::new(move || poster.post(Msg::CardFaded(key.clone())));
         NSAnimationContext::runAnimationGroup_completionHandler(&changes, Some(&finished));

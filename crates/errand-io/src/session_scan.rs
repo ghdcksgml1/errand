@@ -8,6 +8,7 @@ use errand_core::sessions::{
 use jiff::SignedDuration;
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags};
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
@@ -163,33 +164,58 @@ impl SessionScanner {
         Some(found)
     }
 
-    fn claude_sessions(&mut self, records: &SessionRecords, now: Timestamp) -> Vec<SessionRow> {
-        let mut rows = Vec::new();
-        let root = self.sources.claude_sessions.clone();
-        for account in list(&root) {
+    /// The session files, newest first, with when each last changed.
+    fn claude_files(&self) -> Vec<(Timestamp, PathBuf)> {
+        let root = &self.sources.claude_sessions;
+        let mut files = Vec::new();
+        for account in list(root) {
             for organization in list(&root.join(&account)) {
                 let folder = root.join(&account).join(&organization);
                 for name in list(&folder) {
                     let path = folder.join(&name);
-                    let Some(stem) = name.strip_prefix("local_").and_then(|_| name.strip_suffix(".json")) else { continue };
-                    let key = format!("claude:{stem}");
-                    let Some(modified) = fs::metadata(&path).and_then(|attributes| attributes.modified()).ok().and_then(|time| Timestamp::try_from(time).ok())
-                    else {
-                        continue;
-                    };
-                    // Every new prompt rewrites the session file, so an untouched file cannot hold one.
-                    if modified <= records.floor(&key) {
-                        continue;
+                    if name.starts_with("local_")
+                        && name.ends_with(".json")
+                        && let Some(modified) = fs::metadata(&path).and_then(|attributes| attributes.modified()).ok().and_then(|time| Timestamp::try_from(time).ok())
+                    {
+                        files.push((modified, path));
                     }
-                    let Some(meta) = self.claude_metadata(&path, modified) else { continue };
-                    if meta.session_id.is_none() {
-                        continue;
-                    }
-                    let transcript = meta.cli_session_id.clone().and_then(|cli| self.transcript(&cli, meta.cwd.as_deref()));
-                    let (turn, transcript_modified) = transcript.and_then(|path| self.turn_at(&path, Format::Claude)).unwrap_or_default();
-                    rows.extend(claude_row(stem, &meta, &turn, modified, transcript_modified, now));
                 }
             }
+        }
+        files.sort_by_key(|(modified, _)| Reverse(*modified));
+        files
+    }
+
+    fn claude_sessions(&mut self, records: &SessionRecords, now: Timestamp) -> Vec<SessionRow> {
+        let mut rows = Vec::new();
+        // The session the app put on screen last, which may be one no card shows.
+        let mut on_screen: Option<(Timestamp, String)> = None;
+        for (modified, path) in self.claude_files() {
+            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else { continue };
+            let key = format!("claude:{stem}");
+            // Every new prompt rewrites the session file, so an untouched file cannot hold one.
+            let current = modified > records.floor(&key);
+            // Coming on screen rewrites it too, so a file older than the newest of those says nothing new.
+            if !current && on_screen.as_ref().is_some_and(|(focused, _)| modified < *focused) {
+                continue;
+            }
+            let Some(meta) = self.claude_metadata(&path, modified) else { continue };
+            if let Some(focused) = meta.last_focused_at
+                && on_screen.as_ref().is_none_or(|(newest, _)| focused > *newest)
+            {
+                on_screen = Some((focused, key));
+            }
+            if !current || meta.session_id.is_none() {
+                continue;
+            }
+            let transcript = meta.cli_session_id.clone().and_then(|cli| self.transcript(&cli, meta.cwd.as_deref()));
+            let (turn, transcript_modified) = transcript.and_then(|path| self.turn_at(&path, Format::Claude)).unwrap_or_default();
+            rows.extend(claude_row(stem, &meta, &turn, modified, transcript_modified, now));
+        }
+        if let Some((_, key)) = on_screen
+            && let Some(row) = rows.iter_mut().find(|row| row.key == key)
+        {
+            row.on_screen = true;
         }
         rows
     }

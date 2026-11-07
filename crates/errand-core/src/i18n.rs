@@ -5,7 +5,7 @@
 use crate::avatar::{Avatar, Eyes, Mouth, Outfit, Part, Shape, Top};
 use crate::model::{Alert, Notice, OpenError};
 use crate::provider::Provider;
-use crate::rooms::{Presence, RoomError, Visibility};
+use crate::rooms::{MAX_ROOMS, Presence, RoomError, Visibility};
 use crate::sessions::SessionState;
 use crate::sessions::text::PICTURE;
 use crate::usage::{Mood, Span, UsageError, WindowName};
@@ -505,6 +505,14 @@ impl Language {
         }
     }
 
+    /// What VoiceOver reads for a sub-task's line, after `card_label`.
+    pub fn sub_task_label(self, card: &str) -> String {
+        match self {
+            Language::Korean => format!("하위 작업, {card}"),
+            Language::English => format!("Sub-task, {card}"),
+        }
+    }
+
     pub fn stalled_line(self) -> &'static str {
         self.pick("20분 넘게 기록이 없어요 · 열어서 확인하세요", "Nothing new for over 20 minutes · Open it to check")
     }
@@ -765,6 +773,14 @@ impl Language {
         )
     }
 
+    /// Why no more rooms can be joined, at the list's top and on its buttons.
+    pub fn rooms_full(self) -> String {
+        match self {
+            Language::Korean => format!("방은 {MAX_ROOMS}개까지 들어갈 수 있어요. 다른 방을 나가면 들어가요."),
+            Language::English => format!("You can be in {MAX_ROOMS} rooms at once. Leave one to join another."),
+        }
+    }
+
     pub fn visibility(self, visibility: Visibility) -> &'static str {
         match visibility {
             Visibility::Public => self.pick("익명 참여", "Anonymous"),
@@ -886,6 +902,19 @@ impl Language {
 
     pub fn rooms_item(self) -> &'static str {
         self.pick("작업방", "Work Rooms")
+    }
+
+    /// The way to the rooms on the dock: a capsule beside the nickname outside them, a plus after the tabs in them.
+    pub fn rooms_button(self) -> &'static str {
+        self.pick("작업방", "Rooms")
+    }
+
+    pub fn rooms_button_tooltip(self) -> &'static str {
+        self.pick("작업방 둘러보기 · 들어가기", "Browse and join work rooms")
+    }
+
+    pub fn rooms_plus_tooltip(self) -> &'static str {
+        self.pick("작업방 둘러보기 · 들어가기 · 나가기", "Browse, join and leave work rooms")
     }
 
     // The menu bar.

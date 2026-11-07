@@ -127,6 +127,8 @@ fn card(key: &str, provider: Provider, title: &str, prompt: &str, asked: Timesta
             url: String::new(),
             seen_in_app: false,
             stalled: false,
+            parent: None,
+            on_screen: false,
         },
         seen,
     }
@@ -179,6 +181,18 @@ pub fn add_sessions(state: &mut AppState, arguments: &[String], now: Timestamp, 
                 session
             })
             .collect();
+    }
+    if has("--preview-sub-tasks") {
+        // Work the first session started: a result to look at, one running, and one already read.
+        let mut sub_tasks = [
+            card("claude:preview-1a", Provider::Claude, say("입력값 검증 추가", "Add input checks"), say("검증 붙여줘", "Add the checks"), ago(900), Some(ago(120)), false),
+            card("claude:preview-1b", Provider::Claude, say("로그인 테스트 고치기", "Fix the sign-in tests"), say("테스트 고쳐줘", "Fix the tests"), ago(800), None, false),
+            card("claude:preview-1c", Provider::Claude, say("사용 설명서 고치기", "Update the guide"), say("설명서 고쳐줘", "Update the guide"), ago(700), Some(ago(600)), true),
+        ];
+        for session in &mut sub_tasks {
+            session.row.parent = Some("claude:preview-1".to_owned());
+        }
+        shown.splice(1..1, sub_tasks);
     }
     // As a scan would: a hidden service's tasks are left out.
     shown.retain(|session| state.shows(session.row.provider));

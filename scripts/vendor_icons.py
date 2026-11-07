@@ -13,7 +13,7 @@ ICONS = [
     "check", "check-check", "chevron-down", "chevron-up", "circle-alert", "circle-arrow-right",
     "circle-check", "circle-question-mark", "circle-slash", "clock", "corner-down-right", "external-link",
     "folder", "layout-dashboard", "list-todo", "loader-circle", "refresh-cw", "timer", "x", "undo-2", "battery-warning",
-    "chevron-left", "chevron-right", "shuffle", "users", "lock",
+    "chevron-left", "chevron-right", "shuffle", "users", "lock", "plus",
 ]
 
 

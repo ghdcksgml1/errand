@@ -3,7 +3,7 @@
 
 use errand_core::format::timestamp_from_seconds;
 use errand_core::sessions::{
-    ClaudeMeta, CodexThread, SessionRecords, SessionRow, SessionState, Turn, VisibleSession, claude_row, codex_row, fold_claude,
+    ClaudeMeta, CodexThread, SessionRecords, SessionRow, SessionState, Turn, VisibleSession, claude_row, codex_row, families, fold_claude,
     fold_codex,
 };
 use errand_core::{Provider, Timestamp};
@@ -208,6 +208,8 @@ fn row(key: &str, prompt_seconds_ago: f64, finished_seconds_ago: Option<f64>) ->
         url: String::new(),
         seen_in_app: false,
         stalled: false,
+        parent: None,
+        on_screen: false,
     }
 }
 
@@ -262,4 +264,51 @@ fn checked_off_records_only_hold_times() {
     assert_eq!(entries, [("claude:local_abc", false, true), ("codex:t-user", true, false)]);
     assert_eq!(records.floor("codex:t-user"), ago(1.0));
     assert_eq!(records.floor("codex:other"), ago(12.0 * 3600.0));
+}
+
+#[test]
+fn a_side_session_names_the_card_it_shows_in_as_the_app_files_it() {
+    let meta = |spawned: Value, detached: bool| ClaudeMeta::from_json(&json!({"sessionId": "local_kid", "spawnedFrom": spawned, "lineageDetached": detached})).unwrap();
+    let side = json!({"sessionId": "local_parent", "sideSession": true});
+    let row = claude_row("local_kid", &meta(side.clone(), false), &Turn::default(), ago(0.0), None, ago(0.0)).unwrap();
+    assert_eq!(row.parent.as_deref(), Some("claude:local_parent"));
+    assert_eq!(meta(side, true).parent_session, None, "the person moved it to the top level");
+    assert_eq!(meta(json!({"sessionId": "local_parent", "taskId": "task"}), false).parent_session, None, "the app links side sessions only");
+    assert_eq!(ClaudeMeta::from_json(&json!({"sessionId": "local_kid"})).unwrap().parent_session, None);
+}
+
+fn sub_task(key: &str, parent: &str, prompt_seconds_ago: f64) -> SessionRow {
+    SessionRow { parent: Some(parent.to_owned()), ..row(key, prompt_seconds_ago, None) }
+}
+
+fn leaders(visible: &[VisibleSession]) -> Vec<(&str, Vec<&str>)> {
+    families(visible).into_iter().map(|family| (family.head.row.key.as_str(), family.sub_tasks.iter().map(|session| session.row.key.as_str()).collect())).collect()
+}
+
+#[test]
+fn sub_tasks_stay_with_their_card_and_the_newest_request_places_it() {
+    let records = SessionRecords::new(ago(0.0));
+    let scan = vec![
+        row("claude:parent", 300.0, Some(200.0)),
+        sub_task("claude:older", "claude:parent", 250.0),
+        row("codex:other", 100.0, None),
+        sub_task("claude:newer", "claude:parent", 50.0),
+    ];
+    let visible = records.visible(scan);
+    assert_eq!(keys(&visible), ["claude:parent", "claude:newer", "claude:older", "codex:other"], "a request in a sub-task brings its whole card up");
+    assert_eq!(leaders(&visible), [("claude:parent", vec!["claude:newer", "claude:older"]), ("codex:other", vec![])]);
+}
+
+#[test]
+fn a_sub_task_leads_a_card_of_its_own_when_nothing_it_came_from_shows() {
+    let mut records = SessionRecords::new(ago(0.0));
+    let scan = || vec![row("claude:parent", 300.0, Some(200.0)), sub_task("claude:kid", "claude:parent", 100.0), sub_task("claude:grandkid", "claude:kid", 50.0)];
+    let visible = records.visible(scan());
+    assert_eq!(leaders(&visible), [("claude:parent", vec!["claude:grandkid", "claude:kid"])], "a sub-task's sub-task goes in the card at the top");
+    records.complete("claude:parent", ago(0.0));
+    let visible = records.visible(scan());
+    assert_eq!(leaders(&visible), [("claude:kid", vec!["claude:grandkid"])], "with the parent cleared, the next one up leads");
+
+    let looped = records.visible(vec![sub_task("claude:a", "claude:b", 20.0), sub_task("claude:b", "claude:a", 10.0)]);
+    assert_eq!(leaders(&looped), [("claude:b", vec![]), ("claude:a", vec![])], "records that go round in a circle lose no card");
 }

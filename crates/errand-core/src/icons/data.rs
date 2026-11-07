@@ -75,4 +75,5 @@ pub(super) static ICONS: &[(&str, &[Element])] = &[
     ("shuffle", &[Path("m18 14 4 4-4 4"), Path("m18 2 4 4-4 4"), Path("M2 18h1.973a4 4 0 0 0 3.3-1.7l5.454-8.6a4 4 0 0 1 3.3-1.7H22"), Path("M2 6h1.972a4 4 0 0 1 3.6 2.2"), Path("M22 18h-6.041a4 4 0 0 1-3.3-1.8l-.359-.45")]),
     ("users", &[Path("M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"), Path("M16 3.128a4 4 0 0 1 0 7.744"), Path("M22 21v-2a4 4 0 0 0-3-3.87"), Circle { cx: 9.0, cy: 7.0, r: 4.0 }]),
     ("lock", &[Rect { x: 3.0, y: 11.0, width: 18.0, height: 11.0, rx: 2.0, ry: 2.0 }, Path("M7 11V7a5 5 0 0 1 10 0v4")]),
+    ("plus", &[Path("M5 12h14"), Path("M12 5v14")]),
 ];

@@ -1,6 +1,6 @@
 //! What this computer offers Errand, gathered in one place so the rest of the app is the same on every OS.
 
-use errand_core::model::Profile;
+use errand_core::model::{Attention, Profile};
 use errand_core::ports::RoomService;
 use errand_core::update::Release;
 use errand_core::{Language, Provider};
@@ -107,6 +107,11 @@ impl Platform {
     /// The process ID of the service's app while it runs.
     pub fn running(&self, provider: Provider) -> Option<i32> {
         errand_macos::apps::running(provider)
+    }
+
+    /// Where the person is right now. Read on the main thread, where AppKit keeps the app in front up to date.
+    pub fn attention(&self) -> Attention {
+        Attention { front: errand_macos::apps::in_front(), idle: errand_macos::apps::idle() }
     }
 
     pub fn full_user_name(&self) -> String {
