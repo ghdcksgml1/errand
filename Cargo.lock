@@ -111,7 +111,7 @@ checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
 name = "errand-app"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "errand-core",
  "errand-io",
@@ -126,7 +126,7 @@ dependencies = [
 
 [[package]]
 name = "errand-core"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "jiff",
  "memchr",
@@ -137,7 +137,7 @@ dependencies = [
 
 [[package]]
 name = "errand-io"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "errand-core",
  "jiff",
@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "errand-macos"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "block2",
  "dispatch2",
@@ -167,7 +167,7 @@ dependencies = [
 
 [[package]]
 name = "errand-windows"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "errand-core",
 ]
