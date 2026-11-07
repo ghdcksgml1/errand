@@ -332,7 +332,8 @@ pub fn run(mtm: MainThreadMarker, language: Language, start: impl FnOnce(MacShel
         let handler = start(shell, shell_poster.clone());
         HANDLER.with(|slot| *slot.borrow_mut() = Some(handler));
         // Usage every two minutes.
-        let room = errand_core::rooms::SYNC_INTERVAL.as_secs_f64();
+        // Rooms are looked over every ten seconds; each goes out when it is due.
+        let room = errand_core::rooms::SHOWN_SYNC_INTERVAL.as_secs_f64();
         let update = errand_core::update::CHECK_INTERVAL.as_secs_f64();
         for (seconds, tick) in [(3.0, Tick::Accounts), (120.0, Tick::Usage), (4.0, Tick::Sessions), (room, Tick::Room), (update, Tick::Update)] {
             let poster = shell_poster.clone();

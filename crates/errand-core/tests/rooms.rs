@@ -4,12 +4,13 @@ use errand_core::avatar::Avatar;
 use errand_core::avatar::Part;
 use errand_core::format::timestamp_from_seconds;
 use errand_core::layout::{DockShape, MEMBER_ROWS};
-use errand_core::model::{AppState, Effect, Msg, WidgetPreferences, update};
+use errand_core::model::{AppState, Attention, Effect, Msg, WidgetPreferences, update};
 use errand_core::reset_history::ResetHistory;
 use errand_core::rooms::{self, Face, Identity, Member, Presence, PresenceReport, Room, RoomError, RoomSummary, Visibility};
 use errand_core::sessions::{SessionRecords, SessionRow, SessionState, TaskCounts, VisibleSession};
 use errand_core::view::{self, ViewContext};
 use errand_core::{Language, Provider, TimeZone, Timestamp, theme};
+use jiff::SignedDuration;
 use jiff::tz::offset;
 
 /// 2026-10-15 15:00 in Seoul.
@@ -206,7 +207,8 @@ fn several_rooms_at_once_each_a_tab_under_the_profile() {
         [(false, "고독한 야근방".to_owned(), Some(4), false), (true, "우리 팀 야근방".to_owned(), None, true)],
         "a private room's tab is locked"
     );
-    assert_eq!(update(&mut state, Msg::SyncRoom, at(NOW)), [sync("late-night", Visibility::Public), sync("team", Visibility::Private)]);
+    assert!(update(&mut state, Msg::SyncRoom, at(NOW)).is_empty(), "both just heard from the person");
+    assert_eq!(update(&mut state, Msg::SyncRoom, at(NOW + 30.0)), [sync("late-night", Visibility::Public), sync("team", Visibility::Private)]);
 
     update(&mut state, Msg::ExpandRoom("late-night".to_owned()), at(NOW));
     assert_eq!(rows(&state).len(), 4, "a tab shows its own room's people");
@@ -275,7 +277,7 @@ fn a_fourth_room_waits_until_the_person_leaves_one() {
 
     assert_eq!(update(&mut state, Msg::JoinRoom("deadline".to_owned()), at(NOW)), [], "the fourth room is not asked");
     assert_eq!((state.rooms.joined.len(), state.rooms.expanded.as_deref()), (3, Some("dawn")), "and what was open stays open");
-    assert!(update(&mut state, Msg::SyncRoom, at(NOW)).len() == 3, "the three rooms carry on as before");
+    assert!(update(&mut state, Msg::SyncRoom, at(NOW + 30.0)).len() == 3, "the three rooms carry on as before");
 
     update(&mut state, Msg::LeaveRoom("team".to_owned()), at(NOW));
     assert_eq!(shut(&state), [None, None, None, None]);
@@ -513,4 +515,57 @@ fn rooms_read_in_english() {
     let list = view::rooms(&state, &english);
     assert_eq!((list.title, list.list[0].visibility.text.as_str(), list.list[0].button), ("Work rooms", "Anonymous", "Leave"));
     assert_eq!(Language::English.rooms_full(), "You can be in 3 rooms at once. Leave one to join another.");
+}
+
+fn synced(effects: &[Effect]) -> Vec<String> {
+    effects.iter().filter_map(|effect| if let Effect::SyncRoom { room, .. } = effect { Some(room.clone()) } else { None }).collect()
+}
+
+fn at_the_mac(idle_seconds: i64) -> Msg {
+    Msg::AttentionRead(Attention { front: None, idle: SignedDuration::from_secs(idle_seconds) })
+}
+
+#[test]
+fn the_room_on_show_hears_every_ten_seconds_while_the_person_is_at_the_mac() {
+    let mut state = state();
+    update(&mut state, Msg::JoinRoom("late-night".to_owned()), at(NOW));
+    update(&mut state, Msg::JoinRoom("team".to_owned()), at(NOW));
+    assert_eq!(state.rooms.expanded.as_deref(), Some("team"), "the room joined last shows its people");
+    assert!(update(&mut state, Msg::SyncRoom, at(NOW + 5.0)).is_empty(), "both just heard from the person");
+    assert_eq!(update(&mut state, Msg::SyncRoom, at(NOW + 10.0)), [Effect::ReadAttention], "the room on show first asks whether the person is there");
+    assert_eq!(synced(&update(&mut state, at_the_mac(5), at(NOW + 10.0))), ["team"], "they are: it hears from them every ten seconds");
+    assert_eq!(update(&mut state, Msg::SyncRoom, at(NOW + 20.0)), [Effect::ReadAttention]);
+    assert!(synced(&update(&mut state, at_the_mac(200), at(NOW + 20.0))).is_empty(), "nothing touched for over three minutes: stepped away");
+    assert_eq!(
+        update(&mut state, Msg::SyncRoom, at(NOW + 29.0)),
+        [sync("late-night", Visibility::Public), Effect::ReadAttention],
+        "the rest every thirty, a tick early or not"
+    );
+    assert!(synced(&update(&mut state, at_the_mac(200), at(NOW + 29.0))).is_empty());
+    assert_eq!(synced(&update(&mut state, Msg::SyncRoom, at(NOW + 38.0))), ["team"], "away, the room on show still hears every thirty");
+    assert_eq!(synced(&update(&mut state, at_the_mac(1), at(NOW + 48.0))), ["team"], "back at the Mac, every ten again");
+
+    update(&mut state, Msg::ExpandRoom("team".to_owned()), at(NOW + 49.0));
+    assert!(!update(&mut state, Msg::SyncRoom, at(NOW + 58.0)).contains(&Effect::ReadAttention), "folded away, no room shows");
+    update(&mut state, Msg::ExpandRoom("late-night".to_owned()), at(NOW + 60.0));
+    update(&mut state, Msg::SetWidgetHidden(true), at(NOW + 60.0));
+    assert!(!update(&mut state, Msg::SyncRoom, at(NOW + 70.0)).contains(&Effect::ReadAttention), "with the widget hidden, none either");
+}
+
+#[test]
+fn a_change_in_the_persons_counts_reaches_the_rooms_at_once() {
+    let mut state = state();
+    update(&mut state, Msg::JoinRoom("late-night".to_owned()), at(NOW));
+    update(&mut state, Msg::ExpandRoom("late-night".to_owned()), at(NOW));
+    assert!(state.rooms.expanded.is_none());
+
+    state.sessions.shown = vec![card("claude:local_1", true, false, false)];
+    assert!(synced(&update(&mut state, Msg::Redraw, at(NOW + 3.0))).is_empty(), "moments after the last report, it waits for the next tick");
+    assert_eq!(synced(&update(&mut state, Msg::SyncRoom, at(NOW + 10.0))), ["late-night"], "which sends it, before the room's thirty seconds are up");
+    assert!(synced(&update(&mut state, Msg::SyncRoom, at(NOW + 20.0))).is_empty(), "heard, the room goes back to every thirty");
+
+    state.sessions.shown = vec![card("claude:local_1", false, false, false)];
+    assert_eq!(synced(&update(&mut state, Msg::Redraw, at(NOW + 25.0))), ["late-night"], "a later change goes out with the message that made it");
+    assert!(synced(&update(&mut state, Msg::Redraw, at(NOW + 26.0))).is_empty(), "and once");
+    assert_eq!(state.rooms.joined[0].reported, Some((at(NOW + 25.0), tasks(1, 0, 0))));
 }

@@ -5,7 +5,7 @@
 use crate::avatar::Avatar;
 use crate::provider::{PerProvider, Provider};
 use crate::reset_history::ResetHistory;
-use crate::rooms::{Joined, Room, RoomError, RoomSummary, RoomsState, Visibility, room_id};
+use crate::rooms::{Joined, Room, RoomError, RoomSummary, RoomsState, SHOWN_SYNC_INTERVAL, STEPPED_AWAY_AFTER, SYNC_INTERVAL, Visibility, room_id};
 use crate::sessions::{SessionRecords, SessionRow, SessionState, TaskCounts, VisibleSession, families};
 use crate::update::{self, Release, UpdateState};
 use crate::usage::{self, Mood, Reading, UsageError, UsageWindow};
@@ -244,7 +244,7 @@ pub enum Msg {
     UsageRead { provider: Provider, result: Result<Reading, UsageError> },
     ScanSessions,
     SessionsScanned(Vec<SessionRow>),
-    /// Asked for while the session on screen has an unread answer.
+    /// Where the person is: asked for while the session on screen has an unread answer, or the room on show is due.
     AttentionRead(Attention),
     OpenSession(String),
     /// A card's checkbox or its 되돌리기.
@@ -330,6 +330,7 @@ pub fn update(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
     if state.rooms.remembered() != remembered {
         effects.push(Effect::SaveRooms);
     }
+    effects.extend(report_changes(state, now));
     // While the open room's people show, their times in the room count up a tick at a time; once they no longer
     // show, the last tick asks for no other.
     if !state.rooms.clock && room_clock_wanted(state) {
@@ -438,16 +439,9 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             if unread_on_screen(&state.sessions).is_some() { vec![Effect::ReadAttention] } else { vec![] }
         }
         Msg::AttentionRead(attention) => {
-            let Some(row) = unread_on_screen(&state.sessions) else { return vec![] };
-            let Some(finished) = row.finished_at else { return vec![] };
-            // Being in front is not enough: the person may have walked away with the app open.
-            if attention.front != Some(row.provider) || attention.idle > now.duration_since(finished) {
-                return vec![];
-            }
-            let key = row.key.clone();
-            state.sessions.records.mark_seen(&key, now);
-            apply_sessions(state);
-            vec![Effect::SaveSessionRecords]
+            let mut effects = read_on_screen(state, attention, now);
+            effects.extend(sync_watched_room(state, attention, now));
+            effects
         }
         Msg::OpenSession(key) => {
             let Some(url) = state.sessions.scan.iter().find(|row| row.key == key).map(|row| row.url.clone()) else { return vec![] };
@@ -561,13 +555,13 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             }
         }
         Msg::Redraw => vec![],
-        Msg::ShowRooms => open_rooms(state),
+        Msg::ShowRooms => open_rooms(state, now),
         Msg::ToggleRooms => {
             if state.rooms.open {
                 state.rooms.open = false;
                 return vec![];
             }
-            open_rooms(state)
+            open_rooms(state, now)
         }
         Msg::CloseRooms => {
             state.rooms.open = false;
@@ -588,11 +582,10 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             if state.rooms.is_joined(&room) || state.rooms.at_limit() {
                 return vec![];
             }
-            let visibility = state.rooms.visibility(&room);
-            state.rooms.joined.push(Joined { id: room.clone(), room: None, failure: None, remembered: None });
+            state.rooms.joined.push(Joined { id: room.clone(), room: None, failure: None, remembered: None, reported: None });
             // A room just joined opens its tab, to see who is there.
             state.rooms.expanded = Some(room.clone());
-            vec![Effect::SyncRoom { room, visibility }]
+            vec![sync(state, &room, now)]
         }
         Msg::LeaveRoom(room) => {
             if !state.rooms.is_joined(&room) {
@@ -608,7 +601,7 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             }
             vec![]
         }
-        Msg::SyncRoom => sync_rooms(state),
+        Msg::SyncRoom => sync_due(state, now),
         Msg::RoomClock => {
             state.rooms.clock = false;
             vec![]
@@ -619,8 +612,8 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
                 if !room_id(&room) || state.rooms.is_joined(&room) {
                     continue;
                 }
-                state.rooms.joined.push(Joined { id: room.clone(), room: None, failure: None, remembered: Some(visibility) });
-                effects.push(Effect::SyncRoom { visibility: state.rooms.visibility(&room), room });
+                state.rooms.joined.push(Joined { id: room.clone(), room: None, failure: None, remembered: Some(visibility), reported: None });
+                effects.push(sync(state, &room, now));
             }
             effects
         }
@@ -655,13 +648,14 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
 
 /// Opens the list of rooms in place of the details or the character editor, reads it afresh, and tells the
 /// rooms the person is in the latest counts.
-fn open_rooms(state: &mut AppState) -> Vec<Effect> {
+fn open_rooms(state: &mut AppState, now: Timestamp) -> Vec<Effect> {
     state.rooms.open = true;
     state.details_open = false;
     state.avatar_editor_open = false;
     state.rooms.loading = state.rooms.list.is_empty();
     let mut effects = vec![Effect::FetchRooms];
-    effects.extend(sync_rooms(state));
+    let joined: Vec<String> = state.rooms.joined.iter().map(|joined| joined.id.clone()).collect();
+    effects.extend(joined.iter().map(|room| sync(state, room, now)));
     effects
 }
 
@@ -673,9 +667,68 @@ fn close_room(state: &mut AppState, room: &str) {
     }
 }
 
-/// Tells each room the person is in the latest counts.
-fn sync_rooms(state: &AppState) -> Vec<Effect> {
-    state.rooms.joined.iter().map(|joined| Effect::SyncRoom { room: joined.id.clone(), visibility: state.rooms.visibility(&joined.id) }).collect()
+/// Sends a room the person's report, noting when and with which counts.
+fn sync(state: &mut AppState, room: &str, now: Timestamp) -> Effect {
+    let tasks = state.sessions.counts();
+    let visibility = state.rooms.visibility(room);
+    if let Some(joined) = state.rooms.joined.iter_mut().find(|joined| joined.id == room) {
+        joined.reported = Some((now, tasks));
+    }
+    Effect::SyncRoom { room: room.to_owned(), visibility }
+}
+
+/// The room whose people show on the dock, while the widget is on screen.
+fn room_on_show(state: &AppState) -> Option<&str> {
+    if state.widget.hidden { None } else { state.rooms.expanded.as_deref() }
+}
+
+/// Each tick: a room that last heard other counts hears from the person every `SHOWN_SYNC_INTERVAL`, and every room
+/// every `SYNC_INTERVAL`. The room on show goes as often as the first while the person is at the Mac, which is read
+/// first.
+fn sync_due(state: &mut AppState, now: Timestamp) -> Vec<Effect> {
+    let tasks = state.sessions.counts();
+    let due: Vec<String> = state
+        .rooms
+        .joined
+        .iter()
+        .filter(|joined| joined.quiet_for(if joined.out_of_date(tasks) { SHOWN_SYNC_INTERVAL } else { SYNC_INTERVAL }, now))
+        .map(|joined| joined.id.clone())
+        .collect();
+    let mut effects: Vec<Effect> = due.iter().map(|room| sync(state, room, now)).collect();
+    if watched_room_due(state, now).is_some() {
+        effects.push(Effect::ReadAttention);
+    }
+    effects
+}
+
+/// The room on show, when it has not heard from the person for `SHOWN_SYNC_INTERVAL`.
+fn watched_room_due(state: &AppState, now: Timestamp) -> Option<String> {
+    let room = room_on_show(state)?;
+    let joined = state.rooms.joined.iter().find(|joined| joined.id == room)?;
+    joined.quiet_for(SHOWN_SYNC_INTERVAL, now).then(|| room.to_owned())
+}
+
+/// The room on show hears from the person every `SHOWN_SYNC_INTERVAL` while they are at the Mac; once they have stepped
+/// away, it waits its `SYNC_INTERVAL` like the rest.
+fn sync_watched_room(state: &mut AppState, attention: Attention, now: Timestamp) -> Vec<Effect> {
+    if attention.idle >= STEPPED_AWAY_AFTER {
+        return vec![];
+    }
+    watched_room_due(state, now).map(|room| sync(state, &room, now)).into_iter().collect()
+}
+
+/// The person's counts changed since a room last heard them: it hears them now rather than at its next round, unless
+/// it heard from the person moments ago, when the next tick takes them.
+fn report_changes(state: &mut AppState, now: Timestamp) -> Vec<Effect> {
+    let tasks = state.sessions.counts();
+    let changed: Vec<String> = state
+        .rooms
+        .joined
+        .iter()
+        .filter(|joined| joined.out_of_date(tasks) && joined.quiet_for(SHOWN_SYNC_INTERVAL, now))
+        .map(|joined| joined.id.clone())
+        .collect();
+    changed.iter().map(|room| sync(state, room, now)).collect()
 }
 
 /// A changed nickname shows up with the next usage read.
@@ -694,6 +747,20 @@ fn refresh_usage(state: &mut AppState) -> Vec<Effect> {
 /// marks a session read when it comes on screen, not when an answer lands in one already there.
 fn unread_on_screen(sessions: &SessionsState) -> Option<&SessionRow> {
     sessions.scan.iter().find(|row| row.on_screen && row.finished_at.is_some() && !row.running && !sessions.records.seen(row))
+}
+
+/// The answer in the session the app has on screen counts as read once the person did something after it landed, with
+/// that app in front. Being in front is not enough: the person may have walked away with the app open.
+fn read_on_screen(state: &mut AppState, attention: Attention, now: Timestamp) -> Vec<Effect> {
+    let Some(row) = unread_on_screen(&state.sessions) else { return vec![] };
+    let Some(finished) = row.finished_at else { return vec![] };
+    if attention.front != Some(row.provider) || attention.idle > now.duration_since(finished) {
+        return vec![];
+    }
+    let key = row.key.clone();
+    state.sessions.records.mark_seen(&key, now);
+    apply_sessions(state);
+    vec![Effect::SaveSessionRecords]
 }
 
 /// The sub-tasks in this card with nothing left to look at, which clear with it. The rest stay, as cards of their own.

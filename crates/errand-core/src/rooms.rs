@@ -11,8 +11,16 @@ use jiff::{SignedDuration, Timestamp};
 
 /// Quiet this long, a member reads as away.
 pub const AWAY_AFTER: SignedDuration = SignedDuration::from_mins(60);
-/// How often a joined room is told the latest counts and asked who is in it.
+/// How often every room the person is in hears the latest counts and says who is in it, at the least.
 pub const SYNC_INTERVAL: SignedDuration = SignedDuration::from_secs(30);
+/// How often the room whose people show on the dock hears from the person and says who is there while they are at
+/// the Mac, so its people stay current while looked at. A change in the person's counts reaches every room as soon.
+pub const SHOWN_SYNC_INTERVAL: SignedDuration = SignedDuration::from_secs(10);
+/// With no key pressed and the pointer still for this long, the person has stepped away from the Mac, and the room on
+/// show waits its `SYNC_INTERVAL` like the rest.
+pub const STEPPED_AWAY_AFTER: SignedDuration = SignedDuration::from_mins(3);
+/// Timer ticks come a little early or late, so the intervals are measured with this much give.
+const TICK_SLACK: SignedDuration = SignedDuration::from_secs(2);
 /// How often the open room's times in the room count up, worked out here rather than sent.
 pub const CLOCK_TICK: SignedDuration = SignedDuration::from_secs(1);
 /// The longest nickname a private room takes, in characters.
@@ -184,9 +192,21 @@ pub struct Joined {
     pub failure: Option<RoomError>,
     /// How visible it was when Errand last ran, for a room joined then, until it or the list says.
     pub remembered: Option<Visibility>,
+    /// When the room was last sent the person's report, and the counts it carried.
+    pub reported: Option<(Timestamp, TaskCounts)>,
 }
 
 impl Joined {
+    /// The room has heard nothing from the person for about `interval`.
+    pub fn quiet_for(&self, interval: SignedDuration, now: Timestamp) -> bool {
+        self.reported.is_none_or(|(at, _)| now.duration_since(at) >= interval - TICK_SLACK)
+    }
+
+    /// The room last heard other counts than these.
+    pub fn out_of_date(&self, tasks: TaskCounts) -> bool {
+        self.reported.is_some_and(|(_, heard)| heard != tasks)
+    }
+
     /// The room as it last answered, while it still counts the person: one that turned them away since keeps
     /// its name, but no longer says who is there with them.
     pub fn counted(&self) -> Option<&Room> {
