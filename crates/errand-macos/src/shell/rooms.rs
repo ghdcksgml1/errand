@@ -14,7 +14,7 @@ use errand_core::model::Msg;
 use errand_core::ports::Poster;
 use errand_core::sessions::SessionState;
 use errand_core::theme::{self, CardStyle, Paint};
-use errand_core::view::{ChipVm, CodeVm, CreateRoomVm, DockRoomsVm, FaceVm, InviteVm, MemberRowVm, RoomCardVm, RoomTabVm, RoomsScreenVm, RoomsVm};
+use errand_core::view::{ChipVm, CodeVm, CreateRoomVm, DockRoomsVm, FaceVm, InviteVm, MemberRowVm, MembersVm, RoomCardVm, RoomTabVm, RoomsScreenVm, RoomsVm};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
@@ -699,6 +699,7 @@ enum Screen {
     List,
     Create,
     Invite,
+    Members,
     Code { from_link: bool },
 }
 
@@ -708,6 +709,7 @@ impl Screen {
             RoomsScreenVm::List => Screen::List,
             RoomsScreenVm::Create(_) => Screen::Create,
             RoomsScreenVm::Invite(_) => Screen::Invite,
+            RoomsScreenVm::Members(_) => Screen::Members,
             RoomsScreenVm::Code(code) => Screen::Code { from_link: code.from_link },
         }
     }
@@ -801,6 +803,7 @@ impl Rooms {
             RoomsScreenVm::List => self.lay_list(vm, if keep_scroll { previous } else { NSPoint::ZERO }, mtm),
             RoomsScreenVm::Create(create) => self.lay_create(vm, create, mtm),
             RoomsScreenVm::Invite(invite) => self.lay_invite(vm, invite, mtm),
+            RoomsScreenVm::Members(members) => self.lay_members(vm, members, mtm),
             RoomsScreenVm::Code(code) => self.lay_code(vm, code, mtm),
         }
         self.shown = Some(vm.clone());
@@ -817,8 +820,13 @@ impl Rooms {
 
     /// A screen past the list: a way back, its title and what it is for, and the way to close.
     fn lay_header(&mut self, vm: &RoomsVm, title: &str, subtitle: &str, mtm: MainThreadMarker) {
+        self.lay_header_back(vm, title, subtitle, || Msg::ShowRoomsList, mtm);
+    }
+
+    /// The header, its way back going where `back` says.
+    fn lay_header_back(&mut self, vm: &RoomsVm, title: &str, subtitle: &str, back: impl Fn() -> Msg + 'static, mtm: MainThreadMarker) {
         let width = layout::ROOMS_WIDTH;
-        let (back, action) = button("", "chevron-left", false, rect(14.0, 14.0, 34.0, 26.0), self.post(|| Msg::ShowRoomsList), mtm);
+        let (back, action) = button("", "chevron-left", false, rect(14.0, 14.0, 34.0, 26.0), self.post(back), mtm);
         back.setToolTip(Some(&ns(vm.back)));
         back.setAccessibilityLabel(Some(&ns(vm.back)));
         self.body.addSubview(&back);
@@ -1133,6 +1141,61 @@ impl Rooms {
         self.lay_below(vm, mtm);
     }
 
+    fn lay_members(&mut self, vm: &RoomsVm, members: &MembersVm, mtm: MainThreadMarker) {
+        let (width, height) = (layout::ROOMS_WIDTH, layout::ROOMS_HEIGHT);
+        let room = members.room.clone();
+        self.lay_header_back(vm, members.title, &members.subtitle, move || Msg::ShowInvite(room.clone()), mtm);
+        let top = SCREEN_TOP + 10.0;
+        if let Some(status) = &members.status {
+            let words = label(status, 12.0, Weight::Medium, theme::MUTED, mtm);
+            words.setAlignment(NSTextAlignment::Center);
+            words.setFrame(rect(12.0, top + 40.0, width - 24.0, 18.0));
+            self.body.addSubview(&words);
+            return;
+        }
+        let note = wrapped(members.note, 11.0, Weight::Regular, theme::MUTED, width - 40.0, mtm);
+        let note_height = note.frame().size.height;
+        note.setFrameOrigin(NSPoint::new(20.0, height - 16.0 - note_height));
+        self.body.addSubview(&note);
+        let area = rect(12.0, top, width - 24.0, height - 16.0 - note_height - 10.0 - top);
+        let row_height = 50.0;
+        let document = FlippedView::new(mtm, rect(0.0, 0.0, area.size.width, (members.rows.len() as f64 * row_height).max(area.size.height)));
+        for (index, vm) in members.rows.iter().enumerate() {
+            let row = FlippedView::new(mtm, rect(0.0, index as f64 * row_height, area.size.width, row_height - 2.0));
+            let face = avatar(&vm.face, rect(8.0, 10.0, 28.0, 28.0), false, mtm);
+            row.addSubview(&face);
+            let name = label(&vm.name, 12.5, if vm.named { Weight::Semibold } else { Weight::Medium }, if vm.named && !vm.away { theme::INK } else { theme::MUTED }, mtm);
+            name.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+            name.setFrame(rect(46.0, 7.0, area.size.width - 46.0 - 96.0, 18.0));
+            row.addSubview(&name);
+            let status = label(&vm.status, 11.0, Weight::Regular, theme::MUTED, mtm);
+            status.setFrame(rect(46.0, 25.0, area.size.width - 46.0 - 96.0, 16.0));
+            row.addSubview(&status);
+            if vm.away {
+                face.setAlphaValue(0.55);
+            }
+            if let Some(remove) = &vm.remove {
+                let (room, member, who) = (remove.room.clone(), remove.member.clone(), remove.name.clone());
+                let ask = move || Msg::AskRemoveMember { room: room.clone(), member: member.clone(), name: who.clone() };
+                let (out, action) = button(remove.words, "", false, rect(area.size.width - 8.0 - 80.0, 10.0, 80.0, 28.0), self.post(ask), mtm);
+                row.addSubview(&out);
+                self.actions.push(action);
+            }
+            row.setAccessibilityElement(true);
+            row.setAccessibilityLabel(Some(&ns(&format!("{}, {}", vm.name, vm.status))));
+            document.addSubview(&row);
+        }
+        let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), area);
+        scroll.setDrawsBackground(false);
+        scroll.setHasVerticalScroller(members.rows.len() as f64 * row_height > area.size.height);
+        scroll.setAutohidesScrollers(true);
+        scroll.setScrollerStyle(NSScrollerStyle::Overlay);
+        scroll.setHorizontalScrollElasticity(NSScrollElasticity::None);
+        scroll.setDocumentView(Some(&document));
+        self.body.addSubview(&scroll);
+        self.scroll = Some(scroll);
+    }
+
     fn lay_invite(&mut self, vm: &RoomsVm, invite: &InviteVm, mtm: MainThreadMarker) {
         let (width, height) = (layout::ROOMS_WIDTH, layout::ROOMS_HEIGHT);
         self.lay_header(vm, invite.title, &invite.subtitle, mtm);
@@ -1192,6 +1255,26 @@ impl Rooms {
         let (delete, action) = button(invite.delete, "", false, rect(14.0 + half + 8.0, y, half, 28.0), self.post(move || Msg::DeleteInvite(delete_room.clone())), mtm);
         delete.setEnabled(!invite.busy && invite.link.is_some());
         self.body.addSubview(&delete);
+        self.actions.push(action);
+        // Everyone the room lets in, a step further.
+        let members_room = room.clone();
+        let entry_frame = rect(14.0, height - 14.0 - 28.0 - 12.0 - 40.0, width - 28.0, 40.0);
+        let boxed: Retained<MembersView> = unsafe { msg_send![MembersView::alloc(mtm), initWithFrame: entry_frame] };
+        let icon = tinted_icon("users", 13.0, theme::INK, mtm);
+        icon.setFrameOrigin(NSPoint::new(14.0, 13.5));
+        boxed.addSubview(&icon);
+        let words = label(invite.members, 12.5, Weight::Semibold, theme::INK, mtm);
+        words.setFrame(rect(34.0, 11.0, width - 120.0, 18.0));
+        boxed.addSubview(&words);
+        let chevron = tinted_icon("chevron-right", 12.0, theme::MUTED, mtm);
+        chevron.setFrameOrigin(NSPoint::new(entry_frame.size.width - 26.0, 14.0));
+        boxed.addSubview(&chevron);
+        self.body.addSubview(&boxed);
+        let (entry, action) = button("", "", false, entry_frame, self.post(move || Msg::ShowMembers(members_room.clone())), mtm);
+        entry.setBordered(false);
+        entry.setTransparent(true);
+        entry.setAccessibilityLabel(Some(&ns(invite.members)));
+        self.body.addSubview(&entry);
         self.actions.push(action);
         // Deleting the room is out of the way, at the bottom, and asks first.
         let quit_room = room.clone();

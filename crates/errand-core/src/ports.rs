@@ -3,7 +3,7 @@
 
 use crate::Provider;
 use crate::model::{Alert, AppState, Confirm, Msg, WidgetPreferences};
-use crate::rooms::{Invite, PresenceReport, Room, RoomError, RoomSummary};
+use crate::rooms::{Invite, PresenceReport, Room, RoomError, RoomMember, RoomSummary};
 use jiff::{SignedDuration, Timestamp};
 use std::time::Duration;
 
@@ -85,6 +85,8 @@ pub trait RoomService: Send + Sync {
     fn accept_invite(&self, code: &str, now: Timestamp) -> Result<RoomSummary, RoomError>;
     /// Out of a private room for good; for its owner, the room is gone.
     fn quit_room(&self, room: &str) -> Result<(), RoomError>;
+    /// Everyone a room the person owns lets in, present or not.
+    fn members(&self, room: &str, now: Timestamp) -> Result<Vec<RoomMember>, RoomError>;
     /// Turns someone out of a room the person owns, by the member id the room gave them.
     fn remove_member(&self, room: &str, member: &str) -> Result<(), RoomError>;
     /// The rooms and their people are made up, standing in for the server; the list says so.

@@ -6,7 +6,7 @@
 
 use super::{Api, Endpoint, Origin, Refusal, Service};
 use errand_core::ports::{HttpMethod, HttpRequest, HttpResponse, RoomService};
-use errand_core::rooms::{Face, Identity, Invite, Member, PresenceReport, Role, Room, RoomError, RoomSummary, Visibility, invite_code, room_id};
+use errand_core::rooms::{Face, Identity, Invite, Member, PresenceReport, Role, Room, RoomError, RoomMember, RoomSummary, Visibility, invite_code, room_id};
 use errand_core::sessions::TaskCounts;
 use errand_core::{Language, Timestamp};
 use serde_json::{Map, Value, json};
@@ -381,6 +381,23 @@ fn member(member: &Map<String, Value>, now: Timestamp) -> Option<Member> {
     })
 }
 
+/// Someone on a room owner's list; one without an id the server makes is left out.
+fn room_member(member: &Map<String, Value>) -> Option<RoomMember> {
+    let id = member.get("id")?.as_str()?;
+    let uuid = id.len() == 36 && id.bytes().all(|byte| byte.is_ascii_hexdigit() || byte == b'-');
+    let flag = |name| member.get(name).and_then(Value::as_bool).unwrap_or(false);
+    Some(RoomMember {
+        id: uuid.then(|| id.to_owned())?,
+        name: text(member.get("name")),
+        avatar: avatar(member.get("avatar")),
+        role: role(member.get("role")).unwrap_or(Role::Member),
+        me: flag("me"),
+        present: flag("present"),
+        working: flag("working"),
+        last_seen: member.get("lastSeen").and_then(Value::as_str).and_then(|at| at.parse().ok()),
+    })
+}
+
 /// A room id as it may go into an address.
 fn checked_room(room: &str) -> Result<&str, RoomError> {
     if room_id(room) { Ok(room) } else { Err(RoomError::NotFound) }
@@ -500,6 +517,17 @@ impl RoomService for HttpRooms {
     fn quit_room(&self, room: &str) -> Result<(), RoomError> {
         let path = format!("/v1/rooms/{}/membership", checked_room(room)?);
         self.call(|caller| Call::new(caller, HttpMethod::Delete, path.clone(), None, succeeded))
+    }
+
+    fn members(&self, room: &str, _now: Timestamp) -> Result<Vec<RoomMember>, RoomError> {
+        let path = format!("/v1/rooms/{}/members", checked_room(room)?);
+        self.call(|caller| {
+            Call::new(caller, HttpMethod::Get, path.clone(), None, |response| {
+                let reply = reply(response)?;
+                let members = reply.get("members").and_then(Value::as_array).ok_or(RoomError::Unreachable)?;
+                Ok(members.iter().filter_map(Value::as_object).filter_map(room_member).collect())
+            })
+        })
     }
 
     fn remove_member(&self, room: &str, member: &str) -> Result<(), RoomError> {

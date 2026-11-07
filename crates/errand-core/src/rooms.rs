@@ -67,6 +67,22 @@ impl Invite {
     }
 }
 
+/// Someone a private room lets in, as its owner's list shows them: by the nickname and character they last
+/// had there, whether or not they are in it now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoomMember {
+    /// The room's own id for them, never their install's.
+    pub id: String,
+    /// The nickname they last had in the room; None if they never sent one.
+    pub name: Option<String>,
+    pub avatar: Option<String>,
+    pub role: Role,
+    pub me: bool,
+    pub present: bool,
+    pub working: bool,
+    pub last_seen: Option<Timestamp>,
+}
+
 /// How long an invite code is.
 pub const INVITE_CODE_LENGTH: usize = 10;
 const CROCKFORD: &str = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -312,6 +328,8 @@ pub enum RoomsScreen {
     Create { sending: bool, failure: Option<RoomError> },
     /// A room's invite link, for its owner.
     Invite { room: String, invite: Option<Invite>, loading: bool, failure: Option<RoomError>, copied: bool },
+    /// Everyone a room the person owns lets in, to turn out those who should not be there.
+    Members { room: String, members: Option<Vec<RoomMember>>, loading: bool, failure: Option<RoomError> },
     /// Typing or pasting a code, or one a link brought, and the room it opens once the server says.
     Code { code: String, checking: bool, room: Option<RoomSummary>, failure: Option<RoomError>, from_link: bool, accepting: bool },
 }

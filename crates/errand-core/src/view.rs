@@ -7,7 +7,7 @@ use crate::i18n::Language;
 use crate::layout::{self, DockShape, MEMBER_ROWS, TrayFold};
 use crate::model::{AppState, COMPLETION_DELAY, Notice};
 use crate::provider::Provider;
-use crate::rooms::{INVITE_PAGE, Invite, Joined, Member, NAME_LENGTH, Presence, Role, RoomSummary, RoomsScreen, RoomsState, TAGLINE_LENGTH, Visibility, grouped, invite_code};
+use crate::rooms::{INVITE_PAGE, Invite, Joined, Member, NAME_LENGTH, Presence, Role, RoomMember, RoomSummary, RoomsScreen, RoomsState, TAGLINE_LENGTH, Visibility, grouped, invite_code};
 use crate::sessions::{SessionState, TaskCounts, VisibleSession, families};
 use crate::theme::{self, Rgb};
 use crate::update::UpdateState;
@@ -862,7 +862,34 @@ pub enum RoomsScreenVm {
     List,
     Create(CreateRoomVm),
     Invite(InviteVm),
+    Members(MembersVm),
     Code(Box<CodeVm>),
+}
+
+/// Everyone a room the person owns lets in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MembersVm {
+    pub room: String,
+    pub title: &'static str,
+    pub subtitle: String,
+    pub rows: Vec<MemberListRowVm>,
+    /// Loading, or why the list did not come.
+    pub status: Option<String>,
+    pub note: &'static str,
+}
+
+/// One person on the owner's list.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MemberListRowVm {
+    pub face: FaceVm,
+    pub name: String,
+    /// Without a nickname, a muted stand-in.
+    pub named: bool,
+    /// Owner or not, working, resting, or when they were last here.
+    pub status: String,
+    /// Not in the room now: drawn faded.
+    pub away: bool,
+    pub remove: Option<RemoveVm>,
 }
 
 /// Naming a new private room.
@@ -903,6 +930,8 @@ pub struct InviteVm {
     pub renew: &'static str,
     pub delete: &'static str,
     pub remove_room: &'static str,
+    /// The way to everyone the room lets in.
+    pub members: &'static str,
     pub busy: bool,
     pub failure: Option<String>,
 }
@@ -980,6 +1009,47 @@ fn room_card(room: &RoomSummary, rooms: &RoomsState, language: Language) -> Room
     }
 }
 
+/// Someone on the owner's list: who, how they are or when they were last here, and a way to turn them out.
+fn member_list_row(member: &RoomMember, room: &str, context: &ViewContext) -> MemberListRowVm {
+    let language = context.language;
+    let name = member.name.clone().filter(|name| !name.trim().is_empty());
+    let mut status: Vec<String> = Vec::new();
+    if member.role == Role::Owner {
+        status.push(language.owner().to_owned());
+    }
+    if member.me {
+        status.push(language.me().to_owned());
+    }
+    if !member.me {
+        status.push(match (member.present, member.working) {
+            (true, true) => language.presence(Presence::Working).to_owned(),
+            (true, false) => language.presence(Presence::Resting).to_owned(),
+            (false, _) => member.last_seen.map_or_else(
+                || language.away_now().to_owned(),
+                |seen| {
+                    let day = |at: Timestamp| at.to_zoned(context.zone.clone()).date();
+                    let days = day(seen).until(day(context.now)).map_or(0, |span| span.get_days() as i64).max(0);
+                    language.last_here(days)
+                },
+            ),
+        });
+    }
+    let shown = name.clone().unwrap_or_else(|| language.unnamed_member().to_owned());
+    MemberListRowVm {
+        face: face(&shown, member.avatar.as_deref()),
+        named: name.is_some(),
+        status: status.join(" · "),
+        away: !member.present && !member.me,
+        remove: (member.role != Role::Owner && !member.me).then(|| RemoveVm {
+            words: language.remove_member(),
+            room: room.to_owned(),
+            member: member.id.clone(),
+            name: shown.clone(),
+        }),
+        name: shown,
+    }
+}
+
 fn rooms_screen(state: &AppState, context: &ViewContext) -> RoomsScreenVm {
     let language = context.language;
     let rooms = &state.rooms;
@@ -1024,8 +1094,26 @@ fn rooms_screen(state: &AppState, context: &ViewContext) -> RoomsScreenVm {
                 renew: language.renew_invite(),
                 delete: language.delete_invite(),
                 remove_room: language.remove_room(),
+                members: language.members_title(),
                 busy: *loading,
                 failure: failure.map(|failure| language.room_error(failure).to_owned()),
+            })
+        }
+        RoomsScreen::Members { room, members, loading, failure } => {
+            let name = rooms.name(room).unwrap_or_default();
+            let rows: Vec<MemberListRowVm> = members.iter().flatten().map(|member| member_list_row(member, room, context)).collect();
+            let status = match (members, loading, failure) {
+                (_, _, Some(failure)) => Some(language.room_error(*failure).to_owned()),
+                (None, true, _) => Some(language.members_loading().to_owned()),
+                _ => None,
+            };
+            RoomsScreenVm::Members(MembersVm {
+                room: room.clone(),
+                title: language.members_title(),
+                subtitle: language.members_subtitle(name, rows.len()),
+                rows,
+                status,
+                note: language.members_note(),
             })
         }
         RoomsScreen::Code { code, checking, room, failure, from_link, accepting } => {

@@ -272,3 +272,48 @@ fn a_full_room_says_so_and_the_code_stays_unused() {
     assert_eq!((code.failure.as_deref(), code.accepting), (Some("이 방은 20명이 다 찼어요. 방장에게 알려 주세요."), false));
     assert!(!state.rooms.is_joined("p-team"));
 }
+
+#[test]
+fn the_owner_sees_everyone_the_room_lets_in_and_can_turn_out_those_away() {
+    let mut state = state();
+    update(&mut state, Msg::RoomsRead(Ok(vec![private("p-own", "내 방", Some(Role::Owner)), private("p-friend", "친구 방", Some(Role::Member))])), at(NOW));
+    assert!(update(&mut state, Msg::ShowMembers("p-friend".to_owned()), at(NOW)).is_empty(), "only the owner sees the list");
+    assert_eq!(update(&mut state, Msg::ShowMembers("p-own".to_owned()), at(NOW)), [Effect::ReadMembers("p-own".to_owned())]);
+    let RoomsScreenVm::Members(members) = screen(&state) else { panic!("the members") };
+    assert_eq!(members.status.as_deref(), Some("멤버를 불러오는 중…"));
+    let someone = |id: &str, name: Option<&str>, role: Role, me: bool, present: bool, working: bool, days: f64| rooms::RoomMember {
+        id: id.to_owned(),
+        name: name.map(str::to_owned),
+        avatar: None,
+        role,
+        me,
+        present,
+        working,
+        last_seen: Some(at(NOW - days * 86_400.0)),
+    };
+    let read = vec![
+        someone("a", Some("한결"), Role::Owner, true, true, false, 0.0),
+        someone("b", Some("민지"), Role::Member, false, true, true, 0.0),
+        someone("c", Some("서연"), Role::Member, false, false, false, 2.0),
+        someone("d", None, Role::Member, false, false, false, 1.0),
+    ];
+    update(&mut state, Msg::MembersRead("p-own".to_owned(), Ok(read)), at(NOW));
+    let RoomsScreenVm::Members(members) = screen(&state) else { panic!("the members") };
+    assert_eq!(members.subtitle, "내 방 · 초대받은 사람 4/20명. 내보내면 새 링크로만 다시 들어올 수 있어요.");
+    let rows: Vec<(&str, &str, bool, bool)> = members.rows.iter().map(|row| (row.name.as_str(), row.status.as_str(), row.away, row.remove.is_some())).collect();
+    assert_eq!(
+        rows,
+        [
+            ("한결", "방장 · 나", false, false),
+            ("민지", "작업 중", false, true),
+            ("서연", "지금 없음 · 2일 전", true, true),
+            ("이름 없음", "지금 없음 · 어제", true, true)
+        ],
+        "away members keep the name they had, and only others can be turned out"
+    );
+    let remove = members.rows[2].remove.clone().unwrap();
+    update(&mut state, Msg::Confirmed(Confirm::RemoveMember { room: remove.room, member: remove.member, name: remove.name }), at(NOW));
+    let RoomsScreenVm::Members(members) = screen(&state) else { panic!("the members") };
+    assert_eq!(members.rows.len(), 3, "gone from the list at once");
+    assert_eq!(update(&mut state, Msg::MemberRemoved("p-own".to_owned(), Ok(())), at(NOW)), [Effect::ReadMembers("p-own".to_owned())], "then read again");
+}

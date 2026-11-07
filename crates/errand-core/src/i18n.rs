@@ -1091,6 +1091,53 @@ impl Language {
         self.pick("빠지기", "Remove")
     }
 
+    pub fn members_title(self) -> &'static str {
+        self.pick("멤버 관리", "Members")
+    }
+
+    pub fn members_subtitle(self, room: &str, count: usize) -> String {
+        match self {
+            // ROOM_MEMBERS is 20.
+            Language::Korean => format!("{room} · 초대받은 사람 {count}/20명. 내보내면 새 링크로만 다시 들어올 수 있어요."),
+            Language::English => format!("{room} · {count} of 20 people. Someone removed needs a new link to come back."),
+        }
+    }
+
+    pub fn members_loading(self) -> &'static str {
+        self.pick("멤버를 불러오는 중…", "Loading members…")
+    }
+
+    pub fn members_note(self) -> &'static str {
+        self.pick(
+            "· 지금 없는 멤버는 마지막으로 들어왔을 때의 닉네임으로 보여요. 서버가 비공개 방 멤버의 닉네임을 방에 남겨 둬요.",
+            "· Members not here now show by the nickname they last had. The server keeps a private room's nicknames for it.",
+        )
+    }
+
+    pub fn unnamed_member(self) -> &'static str {
+        self.pick("이름 없음", "No name")
+    }
+
+    pub fn owner(self) -> &'static str {
+        self.pick("방장", "Owner")
+    }
+
+    /// When someone not in the room now was last there.
+    pub fn last_here(self, days: i64) -> String {
+        match (self, days) {
+            (Language::Korean, 0) => "지금 없음 · 오늘".to_owned(),
+            (Language::Korean, 1) => "지금 없음 · 어제".to_owned(),
+            (Language::Korean, days) => format!("지금 없음 · {days}일 전"),
+            (Language::English, 0) => "Away · today".to_owned(),
+            (Language::English, 1) => "Away · yesterday".to_owned(),
+            (Language::English, days) => format!("Away · {days} days ago"),
+        }
+    }
+
+    pub fn away_now(self) -> &'static str {
+        self.pick("지금 없음", "Away")
+    }
+
     pub fn remove_member(self) -> &'static str {
         self.pick("내보내기", "Remove from room")
     }

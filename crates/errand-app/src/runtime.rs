@@ -228,6 +228,10 @@ impl Runtime {
                 self.in_background(move |rooms| Msg::RoomQuit(room.clone(), rooms.quit_room(&room)));
                 None
             }
+            Effect::ReadMembers(room) => {
+                self.in_background(move |rooms| Msg::MembersRead(room.clone(), rooms.members(&room, errand_io::now())));
+                None
+            }
             Effect::RemoveMember { room, member } => {
                 self.in_background(move |rooms| Msg::MemberRemoved(room.clone(), rooms.remove_member(&room, &member)));
                 None

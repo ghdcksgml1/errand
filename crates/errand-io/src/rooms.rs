@@ -5,7 +5,7 @@
 use errand_core::Timestamp;
 use errand_core::avatar::Avatar;
 use errand_core::ports::RoomService;
-use errand_core::rooms::{Face, Identity, Invite, Member, OWNED_ROOMS, PresenceReport, Role, Room, RoomError, RoomSummary, Visibility, invite_code};
+use errand_core::rooms::{Face, Identity, Invite, Member, OWNED_ROOMS, PresenceReport, Role, Room, RoomError, RoomMember, RoomSummary, Visibility, invite_code};
 use errand_core::sessions::TaskCounts;
 use jiff::SignedDuration;
 use std::hash::{BuildHasher, RandomState};
@@ -302,6 +302,33 @@ impl RoomService for SampleRooms {
         changes.made.retain(|(id, _, _)| id != room);
         changes.quit.push(spot.id);
         Ok(())
+    }
+
+    /// The person first, as owner, then the sample members, everyone here now.
+    fn members(&self, room: &str, now: Timestamp) -> Result<Vec<RoomMember>, RoomError> {
+        let spot = self.owned(room)?;
+        let me = self.me(room);
+        let owner = RoomMember {
+            id: "me".to_owned(),
+            name: me.as_ref().map(|me| me.name.clone()),
+            avatar: me.as_ref().and_then(|me| me.avatar.clone()),
+            role: Role::Owner,
+            me: true,
+            present: me.is_some(),
+            working: me.as_ref().is_some_and(|me| me.tasks.running > 0),
+            last_seen: Some(now),
+        };
+        let others = self.members(&spot, now).into_iter().map(|member| RoomMember {
+            working: member.tasks.running > 0,
+            id: member.id,
+            name: Some(member.name),
+            avatar: member.avatar,
+            role: Role::Member,
+            me: false,
+            present: true,
+            last_seen: Some(now),
+        });
+        Ok(std::iter::once(owner).chain(others).collect())
     }
 
     fn remove_member(&self, room: &str, member: &str) -> Result<(), RoomError> {

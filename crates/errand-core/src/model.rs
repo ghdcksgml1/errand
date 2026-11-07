@@ -6,7 +6,7 @@ use crate::avatar::Avatar;
 use crate::provider::{PerProvider, Provider};
 use crate::reset_history::ResetHistory;
 use crate::rooms::{
-    Invite, Joined, NAME_LENGTH, Role, Room, RoomError, RoomSummary, RoomsScreen, RoomsState, TAGLINE_LENGTH, Visibility, clean_text, invite_code,
+    Invite, Joined, NAME_LENGTH, RoomMember, Role, Room, RoomError, RoomSummary, RoomsScreen, RoomsState, TAGLINE_LENGTH, Visibility, clean_text, invite_code,
     invite_from_link, room_id,
 };
 use crate::sessions::{SessionRecords, SessionRow, SessionState, TaskCounts, VisibleSession, families};
@@ -324,6 +324,9 @@ pub enum Msg {
     /// The person went ahead with what they were asked.
     Confirmed(Confirm),
     RoomQuit(String, Result<(), RoomError>),
+    /// The bubble to everyone a room the person owns lets in.
+    ShowMembers(String),
+    MembersRead(String, Result<Vec<RoomMember>, RoomError>),
     /// Asks first, then `Confirmed`.
     AskRemoveMember { room: String, member: String, name: String },
     MemberRemoved(String, Result<(), RoomError>),
@@ -380,6 +383,8 @@ pub enum Effect {
     AcceptInvite(String),
     /// Out of a private room for good, then send `RoomQuit`.
     QuitRoom(String),
+    /// Read everyone a room lets in, then send `MembersRead`.
+    ReadMembers(String),
     /// Turn someone out of a room, then send `MemberRemoved`.
     RemoveMember { room: String, member: String },
     /// Put this on the clipboard.
@@ -945,6 +950,28 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             Ok(()) | Err(RoomError::NotFound) => vec![Effect::FetchRooms],
             Err(failure) => vec![Effect::ShowAlert(Alert::QuitFailed(failure)), Effect::FetchRooms],
         },
+        Msg::ShowMembers(room) => {
+            if state.rooms.role(&room) != Some(Role::Owner) {
+                return vec![];
+            }
+            state.rooms.screen = RoomsScreen::Members { room: room.clone(), members: None, loading: true, failure: None };
+            vec![Effect::ReadMembers(room)]
+        }
+        Msg::MembersRead(room, result) => {
+            let RoomsScreen::Members { room: shown, members, loading, failure } = &mut state.rooms.screen else { return vec![] };
+            if *shown != room {
+                return vec![];
+            }
+            *loading = false;
+            match result {
+                Ok(read) => {
+                    *members = Some(read);
+                    *failure = None;
+                }
+                Err(error) => *failure = Some(error),
+            }
+            vec![]
+        }
         Msg::AskRemoveMember { room, member, name } => {
             if state.rooms.role(&room) != Some(Role::Owner) {
                 return vec![];
@@ -955,17 +982,26 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             if state.rooms.role(&room) != Some(Role::Owner) {
                 return vec![];
             }
-            // Gone from the room's rows at once; the room's next answer says the same.
+            // Gone from the room's rows and its list at once; the room's next answer says the same.
             if let Some(shown) = state.rooms.joined.iter_mut().find(|joined| joined.id == room).and_then(|joined| joined.room.as_mut()) {
                 shown.members.retain(|someone| someone.id != member);
+            }
+            if let RoomsScreen::Members { room: shown, members: Some(members), .. } = &mut state.rooms.screen
+                && *shown == room
+            {
+                members.retain(|someone| someone.id != member);
             }
             vec![Effect::RemoveMember { room, member }]
         }
         Msg::MemberRemoved(room, _) => {
-            if !state.rooms.is_joined(&room) {
-                return vec![];
+            let mut effects = Vec::new();
+            if matches!(&state.rooms.screen, RoomsScreen::Members { room: shown, .. } if *shown == room) {
+                effects.push(Effect::ReadMembers(room.clone()));
             }
-            vec![Effect::SyncRoom { visibility: state.rooms.visibility(&room), room }]
+            if state.rooms.is_joined(&room) {
+                effects.push(Effect::SyncRoom { visibility: state.rooms.visibility(&room), room });
+            }
+            effects
         }
         Msg::ShowDashboard => {
             state.details_open = false;

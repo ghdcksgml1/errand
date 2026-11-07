@@ -561,3 +561,16 @@ fn a_full_private_room_reads_as_too_many_members() {
     let network = FakeServer::replying(vec![registered(), reply(409, json!({"error": "too_many_members"}))]);
     assert_eq!(client(&network).accept_invite("K7QFM2XA9P", now()), Err(RoomError::TooManyMembers));
 }
+
+#[test]
+fn the_owners_list_reads_everyone_and_leaves_out_ids_that_are_not_the_servers() {
+    let members = json!({"members": [
+        {"id": "6f9b1c2d-3e4f-4a5b-8c7d-9e0f1a2b3c4d", "name": "서연", "avatar": null, "role": "member", "me": false, "present": false, "working": false, "lastSeen": "2026-11-02T13:05:00Z"},
+        {"id": "../../devices", "name": "x", "role": "member"},
+    ]});
+    let network = FakeServer::replying(vec![registered(), reply(200, members)]);
+    let read = client(&network).members("p-0123456789ab", now()).unwrap();
+    assert_eq!(read.len(), 1);
+    assert_eq!((read[0].name.as_deref(), read[0].present, read[0].last_seen), (Some("서연"), false, Some(at("2026-11-02T13:05:00Z"))));
+    assert_eq!(network.calls()[1], (HttpMethod::Get, format!("{SERVER}/v1/rooms/p-0123456789ab/members")));
+}
