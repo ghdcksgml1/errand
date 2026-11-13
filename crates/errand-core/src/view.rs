@@ -54,7 +54,7 @@ pub struct BatteryVm {
 pub fn battery(state: &AppState, provider: Provider, context: &ViewContext) -> BatteryVm {
     let language = context.language;
     let (windows, failure, loading) = usage_inputs(state, provider, language);
-    let limit = usage::limiting_window(windows);
+    let limit = usage::display_window(provider, windows);
     let title = limit.map(|limit| language.window_title(&limit.name));
     let partial = windows.iter().any(|window| window.remaining_percent.is_none());
     let remaining = limit.and_then(|limit| limit.remaining_percent);
@@ -506,10 +506,10 @@ pub struct IdleVm {
 }
 
 /// The simple widget: one line of counts and a small battery per service, under a one-line card for each task
-/// that calls the person. With the list open, every task has a line.
+/// that calls the person or has been read but not checked off. With the list open, every task has a line.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SimpleVm {
-    /// Questions, answers to check and running work. Answers already opened are counted only when nothing else is.
+    /// Questions, answers to check, running work and answers already opened.
     pub pills: Vec<PillVm>,
     pub batteries: Vec<BatteryVm>,
     pub idle: Option<IdleVm>,
@@ -525,13 +525,14 @@ pub fn simple(state: &AppState, context: &ViewContext, open: bool) -> SimpleVm {
     let language = context.language;
     let sessions = &state.sessions;
     let (counts, asking) = (sessions.counts(), sessions.asking());
-    let calling = TaskCounts { new: counts.new - asking, seen: 0, ..counts };
-    let seen = if calling == TaskCounts::default() && asking == 0 { counts.seen } else { 0 };
-    let pills = header_pills(TaskCounts { seen, ..calling }, asking, language);
+    let pills = header_pills(TaskCounts { new: counts.new - asking, ..counts }, asking, language);
     let batteries: Vec<BatteryVm> = state.shown_providers().into_iter().map(|provider| battery(state, provider, context)).collect();
     let deadline = |session: &VisibleSession| sessions.pending.get(&session.row.key).copied();
     // A checked line stays for its 되돌리기, as a card does.
-    let mut shown: Vec<&VisibleSession> = sessions.shown.iter().filter(|session| open || calls(session) || deadline(session).is_some()).collect();
+    let mut shown: Vec<&VisibleSession> = sessions.shown
+        .iter()
+        .filter(|session| open || calls(session) || SessionState::of(session) == SessionState::Seen || deadline(session).is_some())
+        .collect();
     // Questions first, then the rest that call, then running and opened work, each as the cards would stack.
     shown.sort_by_key(|session| match SessionState::of(session) {
         SessionState::Asking => 0,
@@ -1412,7 +1413,7 @@ pub struct StatusIconVm {
 pub fn status_icon(state: &AppState, language: Language) -> StatusIconVm {
     let shown = state.shown_providers();
     let levels: Vec<Option<i64>> =
-        shown.iter().map(|provider| usage::limiting_window(&state.usage[*provider].windows).and_then(|limit| limit.remaining_percent)).collect();
+        shown.iter().map(|provider| usage::display_window(*provider, &state.usage[*provider].windows).and_then(|limit| limit.remaining_percent)).collect();
     let spoken: Vec<String> = shown.iter().zip(&levels).map(|(provider, level)| language.status_level(*provider, *level)).collect();
     StatusIconVm { levels, tooltip: spoken.join(" · ") }
 }

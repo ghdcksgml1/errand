@@ -1,5 +1,5 @@
 //! Claude's limits, from the two places Claude Code shares them: a status line command as it runs, its documented
-//! way, and its own `/usage` when the person presses refresh. Errand reads no login and calls no server for them,
+//! way, and its own `/usage` on automatic or manual refresh. Errand reads no login and calls no server for them,
 //! so a limit is only as fresh as the last time Claude Code spoke.
 
 use super::{Span, UsageWindow, WindowName, remaining};

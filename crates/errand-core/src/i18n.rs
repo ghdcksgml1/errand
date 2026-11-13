@@ -764,8 +764,8 @@ impl Language {
 
     pub fn update_rhythm(self, computer: &str) -> String {
         match self {
-            Language::Korean => format!("2분마다 갱신 · 배터리는 가장 적게 남은 한도 기준 · {computer} 시간대"),
-            Language::English => format!("Updates every 2 minutes · Batteries show the lowest limit · {computer} time zone"),
+            Language::Korean => format!("2분마다 갱신 · Claude는 전체 주간 한도 우선 · {computer} 시간대"),
+            Language::English => format!("Updates every 2 minutes · Claude prefers the overall weekly limit · {computer} time zone"),
         }
     }
 

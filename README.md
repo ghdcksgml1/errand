@@ -65,7 +65,7 @@ Errand는 시킨 일과 남은 사용량을 바탕화면 한쪽에 계속 띄워
 로그인을 따로 받지 않고, 이 Mac에 이미 로그인된 계정을 그대로 씁니다.
 
 - **Codex**: Codex(ChatGPT) 데스크톱 앱에 로그인돼 있으면 바로 보입니다.
-- **Claude**: Claude 데스크톱 앱이 있으면 작업 카드는 바로 보이고, 사용량은 `새로고침`을 누르면 받아옵니다. 터미널에서 Claude Code를 쓴다면 `python3 scripts/connect_claude.py`를 한 번 실행해 자동으로 받을 수 있습니다.
+- **Claude**: Claude 데스크톱 앱이 있으면 작업 카드는 바로 보이고, 사용량은 앱을 켤 때와 2분마다 받아옵니다. `새로고침`을 누르면 바로 다시 받아옵니다. 터미널에서 Claude Code를 쓴다면 `python3 scripts/connect_claude.py`로 status line도 연결할 수 있습니다.
 
 새 버전이 나오면 위젯의 프로필 옆에 표시됩니다. 누르면 내려받아 서명을 확인한 뒤 앱을 바꾸고 다시 시작합니다. 무엇이 바뀌었는지는 [CHANGELOG](CHANGELOG.md)에 있습니다.
 

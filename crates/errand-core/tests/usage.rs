@@ -313,3 +313,50 @@ fn battery_text_names_the_limit_that_runs_out_first() {
     assert_eq!(usage::reset_details(&pair, &utc(), KO), "5시간 초기화 10/15 09:00 · 주간 초기화 시간 확인 불가");
     assert_eq!(usage::reset_details(&pair, &utc(), EN), "5-hour resets 10/15 09:00 · Weekly reset time unknown");
 }
+
+#[test]
+fn claude_display_prefers_the_week_then_account_limits_with_model_only_fallback() {
+    use errand_core::Provider;
+    let session = claude::window("five_hour", 10, FIVE_HOUR_RESET).unwrap();
+    let weekly = claude::window("seven_day", 60, WEEKLY_RESET).unwrap();
+    let model = claude::window("limits/Fable", 0, WEEKLY_RESET).unwrap();
+    let selected = |provider, limits: &[UsageWindow]| {
+        usage::display_window(provider, limits).map(|window| window.identifier.clone())
+    };
+    assert_eq!(
+        selected(
+            Provider::Claude,
+            &[session.clone(), weekly.clone(), model.clone()]
+        )
+        .as_deref(),
+        Some("seven_day")
+    );
+    assert_eq!(
+        selected(Provider::Claude, &[session.clone(), model.clone()]).as_deref(),
+        Some("five_hour")
+    );
+    assert_eq!(
+        selected(Provider::Claude, &[model]).as_deref(),
+        Some("limits/Fable")
+    );
+    assert_eq!(
+        selected(Provider::Codex, &[session.clone(), weekly.clone()]).as_deref(),
+        Some("five_hour"),
+        "Codex still follows its lowest limit"
+    );
+    assert_eq!(
+        selected(
+            Provider::Claude,
+            &[
+                UsageWindow {
+                    remaining_percent: None,
+                    ..weekly
+                },
+                session
+            ]
+        )
+        .as_deref(),
+        Some("five_hour")
+    );
+    assert_eq!(selected(Provider::Claude, &[]), None);
+}

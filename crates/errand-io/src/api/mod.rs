@@ -1,6 +1,6 @@
 //! Every call Errand makes to another service, in one place. The work rooms go over HTTPS; Codex's usage comes
 //! from its own `app-server`. Claude's usage is what Claude Code last said (see [`crate::claude`]): through the
-//! status line as it runs, or from its own `/usage` when the person presses refresh, so nothing here holds a Claude
+//! status line as it runs, or from its own `/usage` on each refresh, so nothing here holds a Claude
 //! login. The app asks [`Api`], or the rooms client built on it, and nothing else opens a connection or starts
 //! the Codex API or Claude Code.
 //!
@@ -117,7 +117,7 @@ pub struct Api {
     paused_until: Mutex<HashMap<Service, Instant>>,
     /// Errand's record of what Claude Code last said.
     claude_report: PathBuf,
-    /// Finds the Claude Code to ask `/usage`, looked for on each press as the desktop app updates its own.
+    /// Finds the Claude Code to ask `/usage`, looked for on each refresh as the desktop app updates its own.
     claude_code: Box<dyn Fn() -> Option<PathBuf> + Send + Sync>,
     codex: CodexSource,
     /// The only place the rooms' calls go.
@@ -157,8 +157,8 @@ impl Api {
         }
     }
 
-    /// Claude's usage after asking Claude Code itself, for when the person presses refresh and for nothing else.
-    /// When Claude Code gives no answer, the press failed and says so, unless a status line spoke just now: then
+    /// Claude's usage after asking Claude Code itself, for automatic and manual refreshes.
+    /// When Claude Code gives no answer, the read failed and says so, unless a status line spoke just now: then
     /// the record is as fresh as an answer, and a Claude Code too old for `/usage` does not get in the way. A
     /// failure keeps the limits already on screen, so silence never passes for an update that did not happen.
     pub fn ask_claude_code(&self) -> Result<Reading, UsageError> {

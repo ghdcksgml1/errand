@@ -1604,6 +1604,18 @@ mod widget {
         h.send(Msg::PointerOnBadge(false));
         h.send(Msg::SetWidgetMode(WidgetMode::Full));
         t.check((panel.frame().origin.x - left.origin.x).abs() < 0.5, "Back to full, the dock keeps its left edge");
+
+        h.send(Msg::SetWidgetMode(WidgetMode::Simple));
+        h.send(Msg::OpenSession("claude:answered".to_owned()));
+        let content = panel.contentView().expect("the widget's view");
+        t.check(lines(&content) == ["claude:answered"], "An opened answer stays in simple mode until explicitly checked off");
+        let strip = first(&content, "ErrandStripView").expect("the simple widget's line");
+        let pills = of_class(&strip, "ErrandCountPill");
+        t.check(pills.iter().any(|pill| tooltip(pill).contains("확인함 1개")), "The opened count stays visible beside running work");
+        h.send(Msg::ToggleComplete("claude:answered".to_owned()));
+        t.check(lines(&panel.contentView().expect("the widget's view")) == ["claude:answered"], "A checked answer stays during the undo countdown");
+        h.send(Msg::CardFaded("claude:answered".to_owned()));
+        t.check(lines(&panel.contentView().expect("the widget's view")).is_empty(), "Checking off clears the opened answer");
         h.send(Msg::SetWidgetHidden(true));
     }
 

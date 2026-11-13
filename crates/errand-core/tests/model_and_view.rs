@@ -46,7 +46,7 @@ fn a_refresh_reads_both_services_once_until_both_answer() {
     let mut state = state();
     assert_eq!(
         update(&mut state, Msg::RefreshUsage, at(NOW)),
-        [Effect::ReadProfile, Effect::FetchUsage(Provider::Codex), Effect::FetchUsage(Provider::Claude)],
+        [Effect::ReadProfile, Effect::FetchUsage(Provider::Codex), Effect::AskClaudeCode],
         "automatic polling reads Codex and Claude, nothing else"
     );
     assert!(state.loading());
@@ -93,15 +93,16 @@ fn batteries_say_what_is_left_and_when_it_refills() {
 }
 
 #[test]
-fn only_a_press_of_refresh_asks_claude_code() {
-    let read = [Effect::ReadProfile, Effect::FetchUsage(Provider::Codex), Effect::FetchUsage(Provider::Claude)];
-    assert_eq!(update(&mut state(), Msg::RefreshUsage, at(NOW)), read, "the timer and the launch only read what is on record");
+fn the_timer_and_a_press_of_refresh_both_ask_claude_code() {
+    let read = [Effect::ReadProfile, Effect::FetchUsage(Provider::Codex), Effect::AskClaudeCode];
+    assert_eq!(update(&mut state(), Msg::RefreshUsage, at(NOW)), read, "the timer and launch ask for live limits too");
     let mut pressed = state();
     assert_eq!(update(&mut pressed, Msg::AskUsage, at(NOW)), [Effect::ReadProfile, Effect::FetchUsage(Provider::Codex), Effect::AskClaudeCode]);
     assert!(pressed.loading(), "until Claude Code answers");
     assert!(update(&mut pressed, Msg::AskUsage, at(NOW)).is_empty(), "no second question while one is in flight");
     read_all(&mut pressed);
     assert!(!pressed.loading());
+    assert_eq!(update(&mut pressed, Msg::RefreshUsage, at(NOW + 120.0)), read, "the next timer asks again");
 
     let mut without_claude = state();
     without_claude.widget.hidden_services.claude = true;
@@ -182,7 +183,7 @@ fn scanned(state: &mut AppState, rows: Vec<SessionRow>) {
 }
 
 #[test]
-fn the_simple_widget_lines_up_only_what_calls() {
+fn the_simple_widget_keeps_opened_answers_until_checked_off() {
     let mut state = state();
     let mut seen = row("codex:seen", Provider::Codex, 400.0, Some(390.0));
     seen.seen_in_app = true;
@@ -191,8 +192,8 @@ fn the_simple_widget_lines_up_only_what_calls() {
     scanned(&mut state, vec![row("claude:new", Provider::Claude, 100.0, Some(90.0)), row("codex:running", Provider::Codex, 200.0, None), seen, asking]);
     let simple = view::simple(&state, &context(), false);
     let keys = |simple: &view::SimpleVm| simple.lines.iter().map(|line| line.key.clone()).collect::<Vec<_>>();
-    assert_eq!(keys(&simple), ["claude:asking", "claude:new"], "the question first, then the answer to read; running and opened work wait in the counts");
-    assert_eq!(simple.pills.iter().map(|pill| pill.words.as_str()).collect::<Vec<_>>(), ["답변 필요 1개", "확인할 것 1개", "진행 중 1개"], "opened answers are not counted on the line");
+    assert_eq!(keys(&simple), ["claude:asking", "claude:new", "codex:seen"], "opened work stays visible beside new answers");
+    assert_eq!(simple.pills.iter().map(|pill| pill.words.as_str()).collect::<Vec<_>>(), ["답변 필요 1개", "확인할 것 1개", "진행 중 1개", "확인함 1개"]);
     assert!(simple.lines.iter().all(|line| line.compact && line.tooltip.contains("클릭해서 열기")), "a line's tooltip says what the folded card would");
     assert_eq!(simple.idle, None);
     let open = view::simple(&state, &context(), true);
@@ -206,6 +207,12 @@ fn the_simple_widget_lines_up_only_what_calls() {
     let badge = view::badge(&state, &context());
     assert_eq!(badge.count, Some((1, theme::ASKING)), "the badge counts what still calls, orange while a question waits");
     assert!(badge.running && !badge.low);
+
+    update(&mut state, Msg::ToggleComplete("codex:seen".to_owned()), at(NOW));
+    assert!(view::simple(&state, &context(), false).lines.iter().any(|line| line.key == "codex:seen" && line.countdown.is_some()));
+    update(&mut state, Msg::CompletionDue("codex:seen".to_owned()), at(NOW) + COMPLETION_DELAY);
+    update(&mut state, Msg::CardFaded("codex:seen".to_owned()), at(NOW) + COMPLETION_DELAY);
+    assert!(!view::simple(&state, &context(), false).lines.iter().any(|line| line.key == "codex:seen"), "only checking off removes the opened answer");
 }
 
 #[test]
@@ -226,7 +233,8 @@ fn only_opened_answers_still_show_their_count_on_the_line() {
     scanned(&mut state, vec![seen]);
     let simple = view::simple(&state, &context(), false);
     assert_eq!(simple.pills.iter().map(|pill| pill.words.as_str()).collect::<Vec<_>>(), ["확인함 1개"], "so the line still has something to click for the list");
-    assert!(simple.lines.is_empty() && simple.idle.is_none());
+    assert_eq!(simple.lines.iter().map(|line| line.key.as_str()).collect::<Vec<_>>(), ["codex:seen"]);
+    assert!(simple.idle.is_none());
 }
 
 #[test]
@@ -580,7 +588,7 @@ fn a_hidden_service_drops_out_everywhere_but_one_always_stays() {
     assert!(!state.shows(Provider::Codex) && state.widget.hidden_services.codex);
     assert_eq!(
         update(&mut state, Msg::RefreshUsage, at(NOW)),
-        [Effect::ReadProfile, Effect::FetchUsage(Provider::Claude)],
+        [Effect::ReadProfile, Effect::AskClaudeCode],
         "a hidden service's usage is not read"
     );
     read(&mut state, Provider::Claude, Ok(vec![window("seven_day", WEEK, Some(42), Some(WEEKLY_RESET))]));
@@ -775,4 +783,73 @@ fn a_codex_subagent_question_uses_the_same_card_and_counts_as_a_question() {
     assert!(child.tooltip.contains("어느 안으로 할까요?"));
     let header = view::dock(&state, &context()).header.unwrap();
     assert_eq!(header.pills.iter().map(|pill| pill.words.as_str()).collect::<Vec<_>>(), ["답변 필요 1개", "진행 중 1개"]);
+}
+
+#[test]
+fn claude_overviews_follow_the_overall_week_even_when_a_model_is_spent() {
+    let mut state = state();
+    let limits = [
+        errand_core::usage::claude::window("five_hour", 10, NOW + 3600.0).unwrap(),
+        errand_core::usage::claude::window("seven_day", 60, WEEKLY_RESET).unwrap(),
+        errand_core::usage::claude::window("limits/Fable", 0, WEEKLY_RESET).unwrap(),
+    ];
+    read(&mut state, Provider::Claude, Ok(limits.to_vec()));
+    let battery = view::battery(&state, Provider::Claude, &context());
+    assert_eq!(
+        (battery.percent.as_str(), battery.detail.as_str()),
+        ("60%", "주간 · 10/19 09:00 초기화")
+    );
+    assert_eq!(
+        (battery.low, battery.mood, battery.color),
+        (false, Mood::Healthy, theme::HEALTHY)
+    );
+    assert_eq!(
+        view::status_icon(&state, Language::Korean).levels[1],
+        Some(60)
+    );
+    assert_eq!(
+        view::simple(&state, &context(), false).batteries[1].percent,
+        "60%"
+    );
+    assert!(!view::badge(&state, &context()).low);
+    let details = view::account_card(&state, Provider::Claude, &context());
+    assert_eq!(
+        details.quotas.len(),
+        3,
+        "all limits stay available in the details"
+    );
+    assert_eq!(
+        details.quotas[2].value, "0% 남음",
+        "the model's exhausted quota stays visible"
+    );
+
+    update(&mut state, Msg::RefreshUsage, at(NOW + 120.0));
+    read(&mut state, Provider::Codex, Ok(vec![]));
+    read(
+        &mut state,
+        Provider::Claude,
+        Err(UsageError::ClaudeAskFailed),
+    );
+    let stale = view::battery(&state, Provider::Claude, &context());
+    assert_eq!(
+        (stale.percent.as_str(), stale.color, stale.mood),
+        ("60%", theme::UNKNOWN, Mood::Unknown)
+    );
+    assert!(stale.detail.starts_with("이전 값"));
+    assert!(
+        update(&mut state, Msg::RefreshUsage, at(NOW + 240.0)).contains(&Effect::AskClaudeCode),
+        "a failed automatic read is retried next round"
+    );
+    read(
+        &mut state,
+        Provider::Claude,
+        Ok(vec![
+            errand_core::usage::claude::window("seven_day", 45, WEEKLY_RESET).unwrap(),
+        ]),
+    );
+    assert_eq!(
+        view::battery(&state, Provider::Claude, &context()).percent,
+        "45%",
+        "the automatic answer updates the battery"
+    );
 }
