@@ -8,7 +8,7 @@ use errand_core::{Provider, theme};
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, DefinedClass};
-use objc2_app_kit::{NSAccessibility, NSBezierPath, NSCompositingOperation, NSGraphicsContext, NSImage, NSImageInterpolation, NSView, NSWorkspace};
+use objc2_app_kit::{NSAccessibility, NSAffineTransformNSAppKitAdditions, NSBezierPath, NSCompositingOperation, NSGraphicsContext, NSImage, NSImageInterpolation, NSView, NSWorkspace};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -37,9 +37,7 @@ pub fn app_icon(provider: Provider) -> Option<Retained<NSImage>> {
 /// Draws the app icon over `frame`, or a letter tile in the service's colour when the app is missing.
 pub fn draw_app_mark(provider: impl Into<Option<Provider>>, frame: NSRect) {
     let Some(provider) = provider.into() else {
-        if let Some(image) = super::kit::icon_image("paperclip", frame.size.width, None, 0.0, 0.0) {
-            image.drawInRect(frame);
-        }
+        draw_attachment(frame);
         return;
     };
     if let Some(icon) = app_icon(provider) {
@@ -116,4 +114,22 @@ impl AppMarkView {
         view.setToolTip(Some(&ns(title)));
         view
     }
+}
+
+/// The soft document tile from assets/icons/attachment.svg, kept vector-sharp in every widget size.
+pub fn draw_attachment(frame: NSRect) {
+    use errand_core::icons::{attachment, path};
+    NSGraphicsContext::saveGraphicsState_class();
+    let transform = objc2_foundation::NSAffineTransform::transform();
+    transform.translateXBy_yBy(frame.origin.x, frame.origin.y);
+    transform.scaleXBy_yBy(frame.size.width / 24.0, frame.size.height / 24.0);
+    transform.concat();
+    super::kit::color(errand_core::theme::Rgb { red: 240.0/255.0, green: 236.0/255.0, blue: 250.0/255.0 }).setFill();
+    NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(rect(0.75, 0.75, 22.5, 22.5), 7.0, 7.0).fill();
+    let shape = |data: &str| { let shape = NSBezierPath::bezierPath(); super::kit::append_ops(&shape, &path::parse(data)); shape.setLineWidth(1.35); shape.setLineJoinStyle(objc2_app_kit::NSLineJoinStyle::Round); shape.setLineCapStyle(objc2_app_kit::NSLineCapStyle::Round); shape };
+    let ink = errand_core::theme::Rgb { red: 121.0/255.0, green: 99.0/255.0, blue: 153.0/255.0 };
+    let body = shape(attachment::BODY); objc2_app_kit::NSColor::whiteColor().setFill(); body.fill(); color(ink).setStroke(); body.stroke();
+    let fold = shape(attachment::FOLD); color(errand_core::theme::Rgb { red: 222.0/255.0, green: 211.0/255.0, blue: 240.0/255.0 }).setFill(); fold.fill(); color(ink).setStroke(); fold.stroke();
+    color(errand_core::theme::Rgb { red: 156.0/255.0, green: 135.0/255.0, blue: 185.0/255.0 }).setStroke(); shape(attachment::LINES).stroke();
+    NSGraphicsContext::restoreGraphicsState_class();
 }

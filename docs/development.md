@@ -64,17 +64,19 @@ GitHub에서 `v<버전>` 태그로 Release를 만들고 이 파일을 이름 그
 
 ## 첨부 작업
 
-`errand-core::tasks`가 등록 초안, 제목 생성 요청 번호, 개인 작업 상태를 관리합니다. 등록 버튼을 누른 뒤 저장이 성공한 경우에만 작업 목록을 바꿉니다. CLI 응답에는 초안과 요청 번호가 붙어서 취소, 재시도, 제공자 변경 뒤의 오래된 응답을 무시합니다. 사용자 입력은 자동 제안보다 우선합니다.
+`errand-core::tasks`가 등록 초안, 제목·메모 생성 요청 번호, 개인 작업 상태를 관리합니다. 등록 버튼을 누른 뒤 저장이 성공한 경우에만 작업 목록을 바꿉니다. CLI 응답에는 초안과 요청 번호가 붙어서 취소, 재시도, 플랫폼·모델 변경 뒤의 오래된 응답을 무시합니다. 제목은 직접 수정하기 전까지만 자동으로 채우고, 메모는 `AcceptMemo` 전까지 제안으로만 보관합니다. 메모 칸에서 Tab 또는 추천 적용 버튼으로 채택하며, 사용자 입력은 항상 우선합니다.
 
 `errand-io::tasks`는 원본을 복사하고 `tasks/tasks.json`을 원자적으로 교체합니다. 폴더는 0700, 첨부와 기록은 0600입니다. 취소된 첨부와 다음 실행에서 발견한 미등록 첨부를 정리하며, 기록을 읽지 못한 경우 빈 목록으로 덮어쓰지 않습니다.
 
+`errand-io::task_settings`는 플랫폼과 플랫폼별 모델 ID를 `tasks/ai-settings.json`에 별도로 저장합니다. 이전 기록의 플랫폼을 기본값으로 이어받으며, 저장이 성공해야 실행 중 설정을 바꿉니다. Codex 목록은 해당 계정의 `models_cache.json`에서 표시 가능한 모델만 읽고, Claude Code는 모델 별칭을 제공합니다. 모델 ID 직접 입력과 빈 값(기본 모델)도 지원합니다. 선택한 ID는 두 CLI의 `--model` 인자로 전달하며 CLI 자체 설정은 수정하지 않습니다.
+
 `errand-io::task_title`은 빈 임시 작업 폴더에서 로컬 CLI를 직접 실행합니다. Codex는 읽기 전용, 사용자 설정 제외, 셸/다중 에이전트/검색 비활성화로 실행합니다. Claude Code는 safe mode, 도구 없음, MCP 설정 격리, 훅 없음으로 저장된 Claude 로그인을 사용합니다. 각 CLI는 최대 75초, 이미지 변환은 장당 최대 12초 기다립니다. 취소 시 프로세스 그룹을 종료합니다. CLI가 지원하는 옵션은 설치 버전에 따라 다르므로 최신 CLI가 필요합니다.
 
-`task_drop`은 세 위젯 크기에 공통으로 쓰는 AppKit 드롭 대상입니다. 안의 뷰는 기존 레이아웃과 동일한 크기를 유지하고, 드래그 중에는 캐릭터의 호버 확장을 멈춥니다. `task_form`은 입력 필드를 유지하면서 AI 상태와 첨부 목록만 갱신합니다.
+`task_drop`은 세 위젯 크기에 공통으로 쓰는 AppKit 드롭 대상입니다. 안의 뷰는 기존 레이아웃과 동일한 크기를 유지하고, 드래그 중에는 캐릭터의 호버 확장을 멈춥니다. `task_form`은 입력 필드를 유지하면서 AI 상태와 첨부 목록만 갱신합니다. `settings`는 메뉴와 등록창에서 여는 설정 창입니다. 첨부 아이콘은 `assets/icons/attachment.svg`이며, 같은 경로를 `icons::attachment`와 `marks::draw_attachment`가 네이티브 벡터로 그립니다.
 
-등록창은 `--preview --preview-task-form <PNG 경로>`, 각 크기의 첨부 카드는 기존 미리보기 옵션에 `--preview-personal-task`를 더해 확인합니다. 실제 CLI 연동은 합성 샘플 파일로 다음과 같이 확인할 수 있습니다. 이 명령도 해당 계정의 모델 사용량을 사용합니다.
+등록창은 `--preview --preview-task-form <PNG 경로>`, 첨부 상세는 `--preview-task-detail`, 설정 창은 `--preview-settings`로 확인합니다. 각 크기의 첨부 카드는 기존 미리보기 옵션에 `--preview-personal-task`를 더합니다. 실제 CLI 연동은 합성 샘플 파일로 다음과 같이 확인할 수 있습니다. 마지막 모델 ID는 생략할 수 있습니다. 이 명령도 해당 계정의 모델 사용량을 사용합니다.
 
 ```sh
-cargo run -p errand-io --example task-title -- codex /path/to/codex /path/to/sample.png
-cargo run -p errand-io --example task-title -- claude /path/to/claude /path/to/sample.png
+cargo run -p errand-io --example task-title -- codex /path/to/codex /path/to/sample.png MODEL_ID
+cargo run -p errand-io --example task-title -- claude /path/to/claude /path/to/sample.png sonnet
 ```

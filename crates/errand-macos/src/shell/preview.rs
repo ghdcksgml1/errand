@@ -28,6 +28,7 @@ use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PreviewKind {
+    Settings,
     TaskForm,
     /// The account window.
     Dashboard,
@@ -128,6 +129,12 @@ pub fn render(
     let context = ViewContext { now, zone: errand_core::format::local_zone(), computer: "Mac", language };
     let nothing: Rc<dyn Fn()> = Rc::new(|| {});
     match kind {
+        PreviewKind::Settings => {
+            let mut settings = super::settings::Settings::new(mtm, poster, language);
+            settings.window.setColorSpace(Some(&NSColorSpace::sRGBColorSpace()));
+            settings.render(&state.tasks);
+            snapshot(&settings.view, output)
+        }
         PreviewKind::TaskForm => {
             let mut form = super::task_form::TaskForm::new(mtm, poster, language);
             let _panel = host(mtm, &form.view);

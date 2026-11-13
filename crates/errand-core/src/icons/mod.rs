@@ -2,6 +2,7 @@
 //! itself; arrows, dingbats and emoji never stand in for them.
 
 mod data;
+pub mod attachment;
 pub mod path;
 
 pub use path::{PathOp, Point};
@@ -25,11 +26,12 @@ pub enum Element {
 
 /// The elements of a Lucide icon, or None for a name Errand does not carry.
 pub fn elements(name: &str) -> Option<&'static [Element]> {
+    if name == "attachment" { return Some(attachment::ELEMENTS); }
     data::ICONS.iter().find(|(icon, _)| *icon == name).map(|(_, elements)| *elements)
 }
 
 pub fn names() -> impl Iterator<Item = &'static str> {
-    data::ICONS.iter().map(|(name, _)| *name)
+    data::ICONS.iter().map(|(name, _)| *name).chain(std::iter::once("attachment"))
 }
 
 /// An icon as one outline, for platforms that stroke paths only and for checking its extent.

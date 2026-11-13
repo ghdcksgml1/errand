@@ -21,3 +21,5 @@ pub fn now() -> Timestamp {
 
 pub mod task_title;
 pub mod tasks;
+
+pub mod task_settings;

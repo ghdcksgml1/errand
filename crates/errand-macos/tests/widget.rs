@@ -450,6 +450,7 @@ mod widget {
         korean(&mut t, mtm, defaults);
         english(&mut t, mtm, defaults);
         personal_tasks(&mut t, mtm, defaults);
+        ai_settings(&mut t, mtm);
         hiding(&mut t, mtm, defaults);
         modes(&mut t, mtm, defaults);
         rooms(&mut t, mtm, defaults);
@@ -1667,15 +1668,85 @@ mod widget {
             h.send(Msg::Tasks(tasks::Msg::Imported { token, result: Ok(vec![Attachment { id: "sample.txt".into(), name: "검토 요청.txt".into(), bytes: 42, image: false }]) }));
             h.send(Msg::Tasks(tasks::Msg::Title("직접 수정한 제목".into())));
             let revision = h.state.tasks.draft.as_ref().unwrap().revision;
-            h.send(Msg::Tasks(tasks::Msg::Generated { token, revision, result: Ok("늦게 온 제목".into()) }));
+            h.send(Msg::Tasks(tasks::Msg::Generated { token, revision, result: Ok(tasks::Suggestion { title: "늦게 온 제목".into(), memo: "온보딩 문서의 확인할 내용".into() }) }));
             t.check(shows(&form, "직접 수정한 제목"), "A late AI answer leaves the typed title in the native field");
+            let memo = labels(&form).into_iter().find(|field| spoken(field) == "메모").unwrap();
+            let title = labels(&form).into_iter().find(|field| spoken(field) == "제목 (필수)").unwrap();
+            t.check(memo.stringValue().is_empty() && memo.placeholderString().is_some_and(|text| text.to_string() == "온보딩 문서의 확인할 내용"), "The suggested note is a placeholder until accepted");
+            panel.makeKeyAndOrderFront(None);
+            panel.makeFirstResponder(Some(&memo));
+            let editor = memo.currentEditor().expect("a focused memo has an editor");
+            let title_tab: bool = unsafe { msg_send![&*title.delegate().unwrap(), control: &*title, textView: &*editor, doCommandBySelector: objc2::sel!(insertTab:)] };
+            let backtab: bool = unsafe { msg_send![&*memo.delegate().unwrap(), control: &*memo, textView: &*editor, doCommandBySelector: objc2::sel!(insertBacktab:)] };
+            t.check(!title_tab && !backtab && h.state.tasks.draft.as_ref().unwrap().memo.is_empty(), "Tab from the title and Shift-Tab never accept a suggested note");
+            if mode == WidgetMode::Simple {
+                unsafe { titled(&form, "추천 메모 적용").unwrap().performClick(None) };
+            } else {
+                // Let the real field editor route Tab to the delegate, just as a key press does.
+                let _: () = unsafe { msg_send![&*editor, doCommandBySelector: objc2::sel!(insertTab:)] };
+            }
+            h.pump();
+            t.check(h.state.tasks.draft.as_ref().unwrap().memo == "온보딩 문서의 확인할 내용" && memo.stringValue().to_string() == "온보딩 문서의 확인할 내용", "Click or focused Tab accepts the suggested note in the editor and model");
+            let again: bool = unsafe { msg_send![&*memo.delegate().unwrap(), control: &*memo, textView: &*editor, doCommandBySelector: objc2::sel!(insertTab:)] };
+            t.check(!again, "Tab resumes normal navigation once the note is accepted");
             t.check(h.state.tasks.records.is_empty(), "Dropping and editing does not register a task");
             let go = titled(&form, "작업 등록").unwrap(); unsafe { go.performClick(None) }; h.pump();
             t.check(h.performed(|e| matches!(e, Effect::Tasks(tasks::Effect::Save { .. }))) > 0, "The registration button asks to persist the draft");
             h.send(Msg::Tasks(tasks::Msg::Cancel));
             t.check(!panel.isVisible() && h.state.tasks.draft.is_none(), "Cancel closes registration in every widget size");
         }
+        h.state.tasks.records.push(tasks::Task { id: "manual:detail".into(), title: "첨부 확인".into(), memo: String::new(), attachments: vec![], created: h.now, done: false });
+        h.send(Msg::Tasks(tasks::Msg::Open("manual:detail".into())));
+        let panel = h.widget.borrow().task_panel.clone();
+        let form = panel.contentView().unwrap();
+        t.check(titled(&form, "완료").is_none(), "The attachment detail does not present an ambiguous completion button");
+        unsafe { titled(&form, "닫기").unwrap().performClick(None) }; h.pump();
+        t.check(!panel.isVisible() && !h.state.tasks.records[0].done, "Closing an attachment detail does not complete its task");
         h.send(Msg::SetWidgetHidden(true));
+    }
+
+    fn ai_settings(t: &mut Checks, mtm: MainThreadMarker) {
+        use errand_core::tasks::{self, ModelOption};
+        use objc2_app_kit::{NSComboBox, NSPopUpButton};
+        let inbox = Arc::new(Inbox::default());
+        let mut settings = errand_macos::shell::settings::Settings::new(mtm, inbox.clone(), Language::Korean);
+        let mut state = tasks::State::default();
+        state.model_options.push(ModelOption { id: "test-codex".into(), label: "Test Codex".into() });
+        state.settings.models.codex = "test-codex".into();
+        settings.render(&state);
+        let provider = every(&settings.view).into_iter().find_map(|v| v.downcast::<NSPopUpButton>().ok()).unwrap();
+        let model = every(&settings.view).into_iter().find_map(|v| v.downcast::<NSComboBox>().ok()).unwrap();
+        t.check(model.stringValue().to_string() == "Test Codex", "Settings shows the display name of the saved model ID");
+        model.setStringValue(&ns("custom-codex"));
+        settings.render(&state);
+        t.check(model.stringValue().to_string() == "custom-codex", "Background rendering preserves an unsaved model edit");
+        provider.selectItemAtIndex(1);
+        unsafe { provider.sendAction_to(provider.action(), provider.target().as_deref()) };
+        model.setStringValue(&ns("Sonnet"));
+        provider.selectItemAtIndex(0);
+        unsafe { provider.sendAction_to(provider.action(), provider.target().as_deref()) };
+        t.check(model.stringValue().to_string() == "custom-codex", "Switching providers remembers each provider's model edit");
+        provider.selectItemAtIndex(1);
+        unsafe { provider.sendAction_to(provider.action(), provider.target().as_deref()) };
+        unsafe { titled(&settings.view, "저장").unwrap().performClick(None) };
+        let Some(Msg::Tasks(tasks::Msg::Configure(chosen))) = inbox.take() else { panic!("Save posts settings") };
+        t.check(chosen.provider == Provider::Claude && chosen.models.claude == "sonnet" && chosen.models.codex == "custom-codex", "Save sends IDs for both models and the selected platform");
+        state.settings = chosen;
+        settings.render(&state);
+        settings.window.close();
+        settings.show(mtm);
+        settings.render(&state);
+        t.check(provider.indexOfSelectedItem() == 1 && model.stringValue().to_string() == "Sonnet", "Reopening settings shows the persisted provider and model");
+        settings.window.makeFirstResponder(Some(&model));
+        let editor = model.currentEditor().expect("model IDs can be edited");
+        editor.setSelectedRange(objc2_foundation::NSRange::new(0, 0));
+        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::KeyDown, NSPoint::new(0.0, 0.0), NSEventModifierFlags::Command, 0.0,
+            settings.window.windowNumber(), None, &ns("a"), &ns("a"), false, 0,
+        ).unwrap();
+        let handled = settings.window.performKeyEquivalent(&event);
+        t.check(handled && editor.selectedRange().length == "Sonnet".len(), &format!("Model IDs support Command-A through the window's editing responder chain: handled={handled}, selection={:?}", editor.selectedRange()));
+        settings.window.close();
     }
 
     /// The same widget in English: its own words, the view's words, and the services' data as they gave it.

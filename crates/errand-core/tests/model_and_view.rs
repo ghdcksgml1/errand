@@ -377,6 +377,7 @@ fn the_menu_and_details_list_codex_and_claude_only() {
             "사용량 조회 중…",
             "사용량 새로고침",
             "계정 창 열기",
+            "설정…",
             "작업방",
             "크게 보기",
             "간단히 보기",
@@ -388,6 +389,7 @@ fn the_menu_and_details_list_codex_and_claude_only() {
             "Errand 종료"
         ]
     );
+    assert!(entries.iter().any(|entry| matches!(entry, MenuEntry::Item(item) if item.action == Some(MenuAction::ShowSettings) && item.key == Some(','))));
     let launches: Vec<MenuAction> = entries
         .iter()
         .filter_map(|entry| match entry {
@@ -554,6 +556,7 @@ fn english_reads_the_same_state_in_english() {
             "Couldn't check usage",
             "Refresh Usage",
             "Open Usage Window",
+            "Settings…",
             "Work Rooms",
             "Full Widget",
             "Simple Widget",

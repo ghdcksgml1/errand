@@ -2,7 +2,7 @@
 use errand_core::{Language, Provider, tasks::Input};
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    assert_eq!(args.len(), 4, "provider executable sample-file");
+    assert!((4..=5).contains(&args.len()), "provider executable sample-file [model]");
     let provider = if args[1] == "claude" {
         Provider::Claude
     } else {
@@ -15,11 +15,12 @@ fn main() {
         root.path(),
         Some(std::path::Path::new(&args[2])),
         provider,
+        args.get(4).map_or("", String::as_str),
         &files,
         Language::Korean,
         &std::sync::atomic::AtomicBool::new(false),
     ) {
-        Ok(title) => println!("{title}"),
+        Ok(suggestion) => println!("Title: {}\nMemo: {}", suggestion.title, suggestion.memo),
         Err(error) => {
             eprintln!("{error}");
             std::process::exit(1);

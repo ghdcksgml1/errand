@@ -17,12 +17,21 @@ use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol, NSSize};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 pub const WIDTH: f64 = 380.0;
 pub const HEIGHT: f64 = 550.0;
+struct WatcherEvents {
+    changed: Box<dyn Fn()>,
+    accept: Option<Rc<dyn Fn() -> bool>>,
+}
 define_class!(
-    #[unsafe(super(NSObject))] #[thread_kind = MainThreadOnly] #[name = "ErrandTaskFieldWatcher"] #[ivars = Box<dyn Fn()>]
+    #[unsafe(super(NSObject))] #[thread_kind = MainThreadOnly] #[name = "ErrandTaskFieldWatcher"] #[ivars = WatcherEvents]
     struct Watcher;
     unsafe impl NSObjectProtocol for Watcher {}
     unsafe impl NSControlTextEditingDelegate for Watcher {
-        #[unsafe(method(controlTextDidChange:))] fn changed(&self, _notification: &NSNotification) { (self.ivars())(); }
+        #[unsafe(method(controlTextDidChange:))] fn changed(&self, _notification: &NSNotification) { (self.ivars().changed)(); }
+        #[unsafe(method(control:textView:doCommandBySelector:))]
+        fn command(&self, _control: &NSControl, text_view: &NSTextView, command: objc2::runtime::Sel) -> bool {
+            command == objc2::sel!(insertTab:) && !NSTextInputClient::hasMarkedText(text_view)
+                && self.ivars().accept.as_ref().is_some_and(|accept| accept())
+        }
     }
     unsafe impl NSTextFieldDelegate for Watcher {}
 );
@@ -31,11 +40,18 @@ fn field(
     caption: &str,
     y: f64,
     height: f64,
+    required: bool,
     body: &NSView,
 ) -> Retained<NSTextField> {
     let text = label(caption, 11.0, Weight::Semibold, theme::MUTED, mtm);
     text.setFrame(rect(20.0, y, 340.0, 16.0));
     body.addSubview(&text);
+    if required {
+        let mark = label("*", 13.0, Weight::Semibold, theme::Rgb { red: 0.82, green: 0.20, blue: 0.27 }, mtm);
+        mark.setFrame(rect(20.0 + kit::fitting_width(&text) + 4.0, y - 1.0, 12.0, 18.0));
+        mark.setAccessibilityElement(false);
+        body.addSubview(&mark);
+    }
     let field =
         NSTextField::initWithFrame(NSTextField::alloc(mtm), rect(18.0, y + 21.0, 344.0, height));
     field.setBezeled(true);
@@ -58,8 +74,10 @@ pub struct TaskForm {
     go: Retained<NSButton>,
     retry: Retained<NSButton>,
     add: Retained<NSButton>,
-    codex: Retained<NSButton>,
-    claude: Retained<NSButton>,
+    settings: Retained<NSButton>,
+    accept_memo: Retained<NSButton>,
+    memo_suggestion: Rc<RefCell<Option<String>>>,
+    cancel: Retained<NSButton>,
     _actions: Vec<Retained<Action>>,
     file_actions: Vec<Retained<Action>>,
     _watchers: Vec<Retained<Watcher>>,
@@ -81,7 +99,7 @@ impl TaskForm {
             theme::INK,
             mtm,
         );
-        heading.setFrame(rect(20.0, 19.0, 285.0, 26.0));
+        heading.setFrame(rect(20.0, 19.0, 225.0, 26.0));
         body.addSubview(&heading);
         let post = poster.clone();
         let (close, close_action) = button(
@@ -119,12 +137,13 @@ impl TaskForm {
         scroll.setHasVerticalScroller(true);
         scroll.setDocumentView(Some(&files));
         body.addSubview(&scroll);
-        let title = field(mtm, words(language, "제목", "Title"), 265.0, 28.0, &body);
+        let title = field(mtm, words(language, "제목", "Title"), 265.0, 28.0, true, &body);
         let memo = field(
             mtm,
-            words(language, "메모 · 선택", "Note · optional"),
+            words(language, "메모", "Note"),
             325.0,
             48.0,
+            false,
             &body,
         );
         memo.setPlaceholderString(Some(&ns(words(
@@ -132,43 +151,48 @@ impl TaskForm {
             "기억할 내용을 적어 두세요",
             "Anything to remember",
         ))));
+        title.setAccessibilityLabel(Some(&ns(words(language, "제목 (필수)", "Title (required)"))));
+        let memo_suggestion: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let (memo_field, suggested, post) = (memo.clone(), memo_suggestion.clone(), poster.clone());
+        let accept: Rc<dyn Fn() -> bool> = Rc::new(move || {
+            let suggestion = suggested.borrow().clone();
+            if memo_field.stringValue().is_empty() && let Some(text) = suggestion {
+                post.post(Msg::Tasks(tasks::Msg::AcceptMemo));
+                if let Some(window) = memo_field.window() { window.makeFirstResponder(Some(&memo_field)); }
+                memo_field.setStringValue(&ns(&text));
+                if let Some(editor) = memo_field.currentEditor() {
+                    editor.setString(&ns(&text));
+                    editor.setSelectedRange(objc2_foundation::NSRange::new(text.encode_utf16().count(), 0));
+                }
+                true
+            } else { false }
+        });
+        let accepted = accept.clone();
+        let (accept_memo, accept_action) = button(words(language, "추천 메모 적용 · 클릭 또는 Tab", "Use suggested note · Click or Tab"), "", false,
+            rect(18.0, 400.0, 344.0, 26.0), move || { accepted(); }, mtm);
+        accept_memo.setAccessibilityLabel(Some(&ns(words(language, "추천 메모 적용", "Use suggested note"))));
+        body.addSubview(&accept_memo);
         let status = label("", 11.0, Weight::Regular, theme::MUTED, mtm);
-        status.setFrame(rect(20.0, 401.0, 340.0, 42.0));
+        status.setFrame(rect(20.0, 433.0, 340.0, 36.0));
         status.setMaximumNumberOfLines(3);
         status.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
         body.addSubview(&status);
         let post = poster.clone();
+        let retry_width = if language == Language::Korean { 113.0 } else { 142.0 };
         let (retry, retry_action) = button(
-            words(language, "제목 다시 만들기", "Suggest title"),
+            words(language, "다시 추천", "Suggest again"),
             "refresh-cw",
             false,
-            rect(218.0, 443.0, 143.0, 25.0),
+            rect(362.0 - retry_width, 261.0, retry_width, 24.0),
             move || post.post(Msg::Tasks(tasks::Msg::Retry)),
             mtm,
         );
         body.addSubview(&retry);
         let post = poster.clone();
-        let (codex, codex_action) = button(
-            "Codex",
-            "",
-            false,
-            rect(18.0, 443.0, 72.0, 25.0),
-            move || post.post(Msg::Tasks(tasks::Msg::Provider(Provider::Codex))),
-            mtm,
-        );
-        codex.setButtonType(NSButtonType::PushOnPushOff);
-        body.addSubview(&codex);
-        let post = poster.clone();
-        let (claude, claude_action) = button(
-            "Claude Code",
-            "",
-            false,
-            rect(94.0, 443.0, 115.0, 25.0),
-            move || post.post(Msg::Tasks(tasks::Msg::Provider(Provider::Claude))),
-            mtm,
-        );
-        claude.setButtonType(NSButtonType::PushOnPushOff);
-        body.addSubview(&claude);
+        let settings_width = if language == Language::Korean { 54.0 } else { 74.0 };
+        let (settings, settings_action) = button(words(language, "설정", "Settings"), "", false, rect(332.0 - settings_width, 16.0, settings_width, 27.0),
+            move || post.post(Msg::Tasks(tasks::Msg::ShowSettings)), mtm);
+        body.addSubview(&settings);
         let note = label(
             words(
                 language,
@@ -180,12 +204,12 @@ impl TaskForm {
             theme::MUTED,
             mtm,
         );
-        note.setFrame(rect(20.0, 473.0, 342.0, 16.0));
+        note.setFrame(rect(20.0, 477.0, 342.0, 16.0));
         body.addSubview(&note);
         let post = poster.clone();
         let (add, add_action) = button(
             words(language, "파일 추가", "Add files"),
-            "paperclip",
+            "attachment",
             false,
             rect(18.0, 503.0, 100.0, 29.0),
             move || post.post(Msg::Tasks(tasks::Msg::PickFiles)),
@@ -211,12 +235,12 @@ impl TaskForm {
         );
         let (go, go_action) = button(
             words(language, "작업 등록", "Add task"),
-            "check",
+            "",
             false,
             rect(254.0, 503.0, 109.0, 29.0),
             move || {
-                if let Some(id) = chosen.borrow().clone() {
-                    post.post(Msg::Tasks(tasks::Msg::Complete(id)));
+                if chosen.borrow().is_some() {
+                    post.post(Msg::Tasks(tasks::Msg::Cancel));
                 } else {
                     post.post(Msg::Tasks(tasks::Msg::Title(
                         title_field.stringValue().to_string(),
@@ -241,7 +265,7 @@ impl TaskForm {
                     tasks::Msg::Memo(field_copy.stringValue().to_string())
                 }))
             }) as Box<dyn Fn()>;
-            let watcher = Watcher::alloc(mtm).set_ivars(changed);
+            let watcher = Watcher::alloc(mtm).set_ivars(WatcherEvents { changed, accept: (!title).then(|| accept.clone()) });
             let watcher: Retained<Watcher> = unsafe { msg_send![super(watcher), init] };
             unsafe { field.setDelegate(Some(ProtocolObject::from_ref(&*watcher))) };
             watchers.push(watcher);
@@ -259,16 +283,18 @@ impl TaskForm {
             go,
             retry,
             add,
-            codex,
-            claude,
+            settings,
+            accept_memo,
+            memo_suggestion,
+            cancel,
             selected,
             key: None,
             attachments: vec![],
             _actions: vec![
                 close_action,
                 retry_action,
-                codex_action,
-                claude_action,
+                settings_action,
+                accept_action,
                 add_action,
                 cancel_action,
                 go_action,
@@ -345,9 +371,11 @@ impl TaskForm {
             } else if draft.is_some_and(|d| d.generating) {
                 words(
                     self.language,
-                    "AI가 제목을 만드는 중... 직접 입력해도 됩니다.",
-                    "Suggesting a title... You can also type your own.",
+                    "AI가 제목과 메모를 추천하는 중...",
+                    "Suggesting a title and note...",
                 )
+            } else if draft.is_none() {
+                words(self.language, "첨부파일을 누르면 다시 열 수 있어요.", "Click an attachment to open it again.")
             } else {
                 words(
                     self.language,
@@ -363,16 +391,16 @@ impl TaskForm {
             if draft.is_some() {
                 "작업 등록"
             } else {
-                "완료"
+                "닫기"
             },
             if draft.is_some() {
                 "Add task"
             } else {
-                "Complete"
+                "Close"
             },
         )));
         self.go.setEnabled(
-            state.readable
+            draft.is_none() || state.readable
                 && draft.is_none_or(|d| {
                     !d.importing && !d.title.trim().is_empty() && !d.attachments.is_empty()
                 }),
@@ -385,18 +413,15 @@ impl TaskForm {
         self.add.setEnabled(
             draft.is_some_and(|d| !d.importing && d.attachments.len() < tasks::MAX_FILES),
         );
-        self.codex.setHidden(draft.is_none());
-        self.claude.setHidden(draft.is_none());
-        self.codex.setState(if state.provider == Provider::Codex {
-            1
-        } else {
-            0
-        });
-        self.claude.setState(if state.provider == Provider::Claude {
-            1
-        } else {
-            0
-        });
+        self.cancel.setHidden(draft.is_none());
+        let suggestion = draft.filter(|d| d.memo.is_empty() && !d.memo_edited).and_then(|d| d.memo_suggestion.clone());
+        *self.memo_suggestion.borrow_mut() = suggestion.clone();
+        self.memo.setPlaceholderString(Some(&ns(suggestion.as_deref().unwrap_or(words(self.language, "기억할 내용을 적어 두세요", "Anything to remember")))));
+        self.accept_memo.setHidden(suggestion.is_none());
+        self.accept_memo.setToolTip(suggestion.as_ref().map(|text| ns(text)).as_deref());
+        let provider = if state.settings.provider == Provider::Claude { "Claude Code" } else { "Codex" };
+        let model = if state.settings.model().is_empty() { words(self.language, "기본 모델", "Default model") } else { state.settings.model() };
+        self.settings.setToolTip(Some(&ns(&format!("{provider} · {model}"))));
         if changed || &self.attachments != files {
             self.attachments = files.clone();
             kit::clear(&self.files);
@@ -419,7 +444,7 @@ impl TaskForm {
                 let name = format!("{} · {} KB", file.name, file.bytes.div_ceil(1024));
                 let (open, action) = button(
                     &name,
-                    "paperclip",
+                    "attachment",
                     false,
                     rect(0.0, index as f64 * 28.0, 302.0, 25.0),
                     move || post.post(Msg::Tasks(tasks::Msg::OpenAttachment(id.clone()))),

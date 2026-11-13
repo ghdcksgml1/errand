@@ -41,7 +41,7 @@ fn draft_needs_confirmation_and_late_ai_preserves_edits() {
         Msg::Generated {
             token: d.token,
             revision: d.revision,
-            result: Ok("AI 제목".into()),
+            result: Ok(Suggestion { title: "AI 제목".into(), memo: "확인할 내용".into() }),
         },
         now(),
     );
@@ -78,13 +78,14 @@ fn cancellation_and_provider_switch_ignore_old_results() {
     let mut state = State::default();
     draft(&mut state);
     let old = state.draft.clone().unwrap();
-    update(&mut state, Msg::Provider(Provider::Claude), now());
+    let settings = AiSettings { provider: Provider::Claude, ..AiSettings::default() };
+    update(&mut state, Msg::SettingsSaved { settings, result: Ok(()) }, now());
     update(
         &mut state,
         Msg::Generated {
             token: old.token,
             revision: old.revision,
-            result: Ok("old".into()),
+            result: Ok(Suggestion { title: "old".into(), memo: "stale memo".into() }),
         },
         now(),
     );
@@ -111,7 +112,7 @@ fn cancellation_and_provider_switch_ignore_old_results() {
         Msg::Generated {
             token: old.token,
             revision: old.revision,
-            result: Ok("old".into()),
+            result: Ok(Suggestion { title: "old".into(), memo: "stale memo".into() }),
         },
         now(),
     );
@@ -178,4 +179,58 @@ fn completing_another_card_keeps_the_current_drafts_title_job() {
     let effects = update(&mut state, Msg::Saved { records: vec![], draft: None, result: Ok(()) }, now());
     assert!(state.draft.as_ref().unwrap().generating);
     assert!(!effects.contains(&Effect::CancelTitle));
+}
+
+#[test]
+fn suggested_memo_is_saved_only_after_acceptance_and_never_replaces_typing() {
+    let mut state = State::default();
+    draft(&mut state);
+    let d = state.draft.clone().unwrap();
+    let generated = Msg::Generated { token: d.token, revision: d.revision,
+        result: Ok(Suggestion { title: "문서 확인".into(), memo: "금요일 회의 전에 의견 보내기".into() }) };
+    update(&mut state, generated.clone(), now());
+    assert_eq!(state.draft.as_ref().unwrap().memo, "");
+    assert!(matches!(&update(&mut state, Msg::Register, now())[..], [Effect::Save { records, .. }] if records[0].memo.is_empty()));
+    update(&mut state, Msg::AcceptMemo, now());
+    assert_eq!(state.draft.as_ref().unwrap().memo, "금요일 회의 전에 의견 보내기");
+    assert!(matches!(&update(&mut state, Msg::Register, now())[..], [Effect::Save { records, .. }] if records[0].memo == "금요일 회의 전에 의견 보내기"));
+    update(&mut state, Msg::Memo("내가 적은 메모".into()), now());
+    update(&mut state, generated.clone(), now());
+    update(&mut state, Msg::AcceptMemo, now());
+    assert_eq!(state.draft.as_ref().unwrap().memo, "내가 적은 메모");
+    // Clearing a note deliberately is also an edit; a late answer must not resurrect it.
+    update(&mut state, Msg::Memo(String::new()), now());
+    update(&mut state, generated, now());
+    assert!(state.draft.as_ref().unwrap().memo_suggestion.is_none());
+}
+
+#[test]
+fn settings_apply_after_persistence_and_restart_with_the_selected_model() {
+    let mut state = State::default();
+    draft(&mut state);
+    update(&mut state, Msg::Title("내 제목".into()), now());
+    update(&mut state, Msg::Memo("내 메모".into()), now());
+    let old = state.draft.clone().unwrap();
+    let mut settings = AiSettings { provider: Provider::Claude, ..AiSettings::default() };
+    settings.models.claude = "sonnet".into();
+    settings.models.codex = "codex-test-model".into();
+    assert_eq!(update(&mut state, Msg::Configure(settings.clone()), now()), vec![Effect::SaveSettings(settings.clone())]);
+    assert_eq!(state.settings, AiSettings::default());
+    assert!(update(&mut state, Msg::SettingsSaved { settings: settings.clone(), result: Err("disk full".into()) }, now()).is_empty());
+    assert_eq!(state.settings, AiSettings::default());
+    assert!(!state.settings_saved);
+    let effects = update(&mut state, Msg::SettingsSaved { settings: settings.clone(), result: Ok(()) }, now());
+    assert!(matches!(&effects[..], [Effect::Generate { provider: Provider::Claude, model, .. }] if model == "sonnet"));
+    assert_eq!(state.settings, settings);
+    assert!(state.settings_error.is_none());
+    update(&mut state, Msg::Generated { token: old.token, revision: old.revision, result: Ok(Suggestion { title: "stale".into(), memo: "stale".into() }) }, now());
+    let current = state.draft.clone().unwrap();
+    assert!(current.generating);
+    update(&mut state, Msg::Generated { token: current.token, revision: current.revision, result: Ok(Suggestion { title: "new model".into(), memo: "new model".into() }) }, now());
+    assert_eq!(state.draft.as_ref().unwrap().title, "내 제목");
+    assert_eq!(state.draft.as_ref().unwrap().memo, "내 메모");
+    let mut invalid = settings;
+    invalid.models.claude = "--help".into();
+    assert!(update(&mut state, Msg::Configure(invalid), now()).is_empty());
+    assert!(state.settings_error.is_some());
 }
