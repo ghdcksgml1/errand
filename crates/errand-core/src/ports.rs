@@ -4,6 +4,9 @@
 use crate::Provider;
 use crate::model::{Alert, AppState, Confirm, Msg, WidgetPreferences};
 use crate::rooms::{Invite, PresenceReport, Room, RoomError, RoomMember, RoomSummary};
+
+/// Maximum decoded HTTP response size, enforced while receiving and before parsing.
+pub const HTTP_BODY_LIMIT: usize = 1024 * 1024;
 use jiff::{SignedDuration, Timestamp};
 use std::time::Duration;
 

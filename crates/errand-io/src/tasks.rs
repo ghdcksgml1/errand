@@ -13,6 +13,22 @@ use std::{
 };
 static NEXT: AtomicU64 = AtomicU64::new(0);
 pub const STORAGE_ERROR: &str = "첨부 작업을 저장하지 못했습니다. 저장 공간과 폴더 권한을 확인해 주세요. / Could not save. Check free space and folder permissions.";
+const QUARANTINE_ERROR: &str = "파일의 macOS 보안 정보를 보존하지 못했습니다. / Could not preserve the file's macOS security information.";
+#[cfg(target_os = "macos")]
+fn quarantine(file: &fs::File) -> std::io::Result<Option<Vec<u8>>> {
+    use xattr::FileExt;
+    file.get_xattr("com.apple.quarantine")
+}
+#[cfg(not(target_os = "macos"))]
+fn quarantine(_file: &fs::File) -> std::io::Result<Option<Vec<u8>>> { Ok(None) }
+#[cfg(target_os = "macos")]
+fn keep_quarantine(file: &fs::File, value: Option<&[u8]>) -> std::io::Result<()> {
+    use xattr::FileExt;
+    if let Some(value) = value { file.set_xattr("com.apple.quarantine", value)?; }
+    Ok(())
+}
+#[cfg(not(target_os = "macos"))]
+fn keep_quarantine(_file: &fs::File, _value: Option<&[u8]>) -> std::io::Result<()> { Ok(()) }
 fn private_dir(path: &Path) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|_| STORAGE_ERROR.to_owned())?;
     #[cfg(unix)]
@@ -53,27 +69,35 @@ pub fn import(root: &Path, inputs: &[Input], remaining: usize) -> Result<Vec<Att
     let mut imported = Vec::new();
     for input in inputs {
         let result = (|| {
-            let (name, mut reader): (String, Box<dyn Read>) = match input {
+            let (name, mut reader, quarantine): (String, Box<dyn Read>, Option<Vec<u8>>) = match input {
                 Input::File(path) => {
+                    // Reject directories/devices/FIFOs before opening; check the opened file again below.
                     let metadata = fs::metadata(path)
                         .map_err(|_| "파일을 읽을 수 없습니다. / Could not read the file.")?;
                     if !metadata.is_file() || metadata.len() > MAX_FILE_BYTES {
                         return Err("폴더는 지원하지 않습니다. 파일은 각각 50MB 이하여야 합니다. / Files only, up to 50 MB each.".into());
                     }
+                    let file = fs::File::open(path)
+                        .map_err(|_| "파일을 열 수 없습니다. / Could not open the file.")?;
+                    let metadata = file.metadata()
+                        .map_err(|_| "파일을 읽을 수 없습니다. / Could not read the file.")?;
+                    if !metadata.is_file() || metadata.len() > MAX_FILE_BYTES {
+                        return Err("폴더는 지원하지 않습니다. 파일은 각각 50MB 이하여야 합니다. / Files only, up to 50 MB each.".into());
+                    }
+                    let quarantine = quarantine(&file).map_err(|_| QUARANTINE_ERROR)?;
                     (
                         path.file_name()
                             .unwrap_or_default()
                             .to_string_lossy()
                             .into_owned(),
-                        Box::new(
-                            fs::File::open(path)
-                                .map_err(|_| "파일을 열 수 없습니다. / Could not open the file.")?,
-                        ),
+                        Box::new(file),
+                        quarantine,
                     )
                 }
                 Input::Png(bytes) => (
                     "Dropped image.png".into(),
                     Box::new(std::io::Cursor::new(bytes.clone())),
+                    None,
                 ),
             };
             let ext = Path::new(&name)
@@ -104,6 +128,8 @@ pub fn import(root: &Path, inputs: &[Input], remaining: usize) -> Result<Vec<Att
                     "파일은 각각 50MB 이하여야 합니다. / Each file must be under 50 MB.".into(),
                 );
             }
+            // Set quarantine on the private temporary file before publishing it. Failure aborts the batch.
+            keep_quarantine(temp.as_file(), quarantine.as_deref()).map_err(|_| QUARANTINE_ERROR)?;
             temp.as_file().sync_all().map_err(|_| STORAGE_ERROR)?;
             temp.persist(directory.join(&id))
                 .map_err(|_| STORAGE_ERROR)?;

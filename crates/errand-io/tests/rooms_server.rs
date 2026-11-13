@@ -73,7 +73,7 @@ fn api(network: &Arc<FakeServer>, server: RoomsServer) -> Arc<Api> {
 }
 
 fn client_at(network: &Arc<FakeServer>, server: RoomsServer, language: Language) -> HttpRooms {
-    HttpRooms::new(api(network, server), || ID.to_owned(), language)
+    HttpRooms::new(api(network, server), || Ok(ID.to_owned()), language)
 }
 
 fn client(network: &Arc<FakeServer>) -> HttpRooms {
@@ -420,7 +420,7 @@ fn the_rooms_are_errand_backends_unless_the_setting_says_otherwise() {
     let codex = CodexSource { executable: None, home: home.join(".codex"), directory: home.clone() };
     let api = Arc::new(Api::new(network.clone(), home.join("claude-usage.plist"), codex));
     assert_eq!(api.rooms_server(), &RoomsServer::official());
-    HttpRooms::new(api, || ID.to_owned(), Language::Korean).rooms(now()).unwrap();
+    HttpRooms::new(api, || Ok(ID.to_owned()), Language::Korean).rooms(now()).unwrap();
     assert_eq!(network.calls(), [(HttpMethod::Post, format!("{SERVER}/v1/devices")), (HttpMethod::Get, format!("{SERVER}/v1/rooms"))]);
 }
 
@@ -459,7 +459,7 @@ fn the_install_id_is_read_when_first_needed_and_only_sent_when_it_is_errands() {
     let counted = reads.clone();
     let rooms = HttpRooms::new(api(&network, RoomsServer::official()), move || {
         counted.fetch_add(1, Ordering::Relaxed);
-        ID.to_owned()
+        Ok(ID.to_owned())
     }, Language::Korean);
     assert_eq!(reads.load(Ordering::Relaxed), 0, "a run that never calls the rooms never reads it");
     rooms.rooms(now()).unwrap();
@@ -467,8 +467,8 @@ fn the_install_id_is_read_when_first_needed_and_only_sent_when_it_is_errands() {
     assert_eq!(reads.load(Ordering::Relaxed), 1);
 
     let network = FakeServer::replying(vec![registered()]);
-    let tampered = HttpRooms::new(api(&network, RoomsServer::official()), || "1234\r\nX-Other: header".to_owned(), Language::Korean);
-    assert_eq!(tampered.rooms(now()), Err(RoomError::Rejected), "not an ID Errand made");
+    let tampered = HttpRooms::new(api(&network, RoomsServer::official()), || Ok("1234\r\nX-Other: header".to_owned()), Language::Korean);
+    assert_eq!(tampered.rooms(now()), Err(RoomError::CredentialsUnavailable), "not an ID Errand made");
     assert!(network.requests().is_empty());
 }
 
@@ -573,4 +573,52 @@ fn the_owners_list_reads_everyone_and_leaves_out_ids_that_are_not_the_servers() 
     assert_eq!(read.len(), 1);
     assert_eq!((read[0].name.as_deref(), read[0].present, read[0].last_seen), (Some("서연"), false, Some(at("2026-11-02T13:05:00Z"))));
     assert_eq!(network.calls()[1], (HttpMethod::Get, format!("{SERVER}/v1/rooms/p-0123456789ab/members")));
+}
+
+#[test]
+fn keychain_failure_sends_nothing_and_retries_without_losing_membership() {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let counted = reads.clone();
+    let network = FakeServer::replying(vec![registered(), reply(200, json!({"rooms": []}))]);
+    let rooms = HttpRooms::new(api(&network, RoomsServer::official()), move || {
+        if counted.fetch_add(1, Ordering::Relaxed) == 0 { Err(RoomError::CredentialsUnavailable) } else { Ok(ID.into()) }
+    }, Language::Korean);
+    assert_eq!(rooms.rooms(now()), Err(RoomError::CredentialsUnavailable));
+    assert!(network.requests().is_empty());
+    assert!(!RoomError::CredentialsUnavailable.left_out());
+    assert_eq!(rooms.rooms(now()), Ok(vec![]));
+    assert_eq!(reads.load(Ordering::Relaxed), 2);
+    assert_eq!(network.calls().len(), 2);
+}
+
+#[test]
+fn credential_origins_are_canonical_and_distinct_by_scheme_host_and_port() {
+    let canonical = RoomsServer::official().origin().url("");
+    for address in ["https://ERRAND-BACKEND.VERCEL.APP:443/", "https://errand-backend.vercel.app./"] {
+        assert_eq!(RoomsServer::at(address).unwrap().origin().url(""), canonical);
+    }
+    for address in ["https://errand-backend.vercel.app:444", "https://another.example", "http://127.0.0.1:8080"] {
+        assert_ne!(RoomsServer::at(address).unwrap().origin().url(""), canonical);
+    }
+    for address in ["https://foo%2ebar", "https://foo bar", "https://foo\\bar", "https://."] {
+        assert!(RoomsServer::at(address).is_none());
+    }
+}
+
+#[test]
+fn oversized_success_errors_and_registration_are_rejected_before_interpretation() {
+    use errand_core::ports::HTTP_BODY_LIMIT;
+    for status in [200, 401, 404, 426, 429, 500] {
+        let mut body = br#"{"rooms":[],"error":"room_not_found","padding":""#.to_vec();
+        body.extend(vec![b'a'; HTTP_BODY_LIMIT]);
+        body.extend_from_slice(b"\"}");
+        let large = Ok(HttpResponse { status, body, retry_after: None });
+        let network = FakeServer::replying(vec![registered(), large.clone(), reply(200, json!({"rooms": []}))]);
+        let rooms = client(&network);
+        assert_eq!(rooms.rooms(now()), Err(RoomError::Unreachable), "status {status}");
+        assert_eq!(rooms.rooms(now()), Ok(vec![]), "oversized errors must not permanently disable or rate-limit rooms");
+        let network = FakeServer::replying(vec![large]);
+        assert_eq!(client(&network).rooms(now()), Err(RoomError::Unreachable));
+        assert_eq!(network.calls().len(), 1);
+    }
 }

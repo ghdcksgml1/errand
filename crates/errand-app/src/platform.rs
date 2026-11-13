@@ -81,9 +81,11 @@ impl Platform {
         let api = Api::new(Arc::new(UrlSession), paths.claude_report(), codex.clone()).with_claude_code(move || apps::claude_code(&home));
         let (api, rooms): (Arc<Api>, Arc<dyn RoomService>) = match rooms_source() {
             RoomsSource::Server(server) => {
+                let origin = server.origin().url("");
+                let official = errand_io::api::rooms::RoomsServer::official().origin().url("");
                 let api = Arc::new(api.with_rooms_server(server));
-                // The install's ID is read when the rooms first call the server, and goes nowhere else.
-                (api.clone(), Arc::new(HttpRooms::new(api, identity::install_id, language)))
+                let read_id = move || identity::install_id_for(&origin, &official).map_err(|_| errand_core::rooms::RoomError::CredentialsUnavailable);
+                (api.clone(), Arc::new(HttpRooms::new(api, read_id, language)))
             }
             RoomsSource::Sample => (Arc::new(api), Arc::new(errand_io::rooms::SampleRooms::new())),
         };
@@ -153,10 +155,13 @@ impl Platform {
         errand_macos::profile::keep_nickname(name)
     }
 
-    /// Makes this install's random ID the first time Errand runs. Only the rooms server ever hears it, so it is
-    /// not handed out here.
+    /// Migrate the old plaintext credential even before rooms are opened. Keychain never blocks AppKit.
     pub fn make_install_id(&self) {
-        errand_macos::identity::install_id();
+        let official = errand_io::api::rooms::RoomsServer::official().origin().url("");
+        std::thread::spawn(move || {
+            // A room request retries a failed migration and reports it through the normal room error UI.
+            let _ = errand_macos::identity::install_id_for(&official, &official);
+        });
     }
 
     pub fn app_installed(&self, provider: Provider) -> bool {

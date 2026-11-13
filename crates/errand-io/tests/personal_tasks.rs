@@ -135,3 +135,32 @@ else:
         assert_eq!(title.memo, "Please review the onboarding document");
     }
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn imports_preserve_macos_quarantine_before_the_copy_can_be_opened() {
+    use std::os::unix::fs::PermissionsExt;
+    use xattr::FileExt;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("store");
+    let value = b"0083;6733abcd;ErrandSecurityTest;12345678-1234-1234-1234-123456789abc";
+    for ext in ["dmg", "zip", "pkg", "png"] {
+        let original = temp.path().join(format!("download.{ext}"));
+        fs::write(&original, b"harmless fixture, not an executable").unwrap();
+        let source = fs::File::open(&original).unwrap();
+        source.set_xattr("com.apple.quarantine", value).unwrap();
+        let actual_value = source.get_xattr("com.apple.quarantine").unwrap().unwrap();
+        let files = import(&root, &[Input::File(original.clone())], 12).unwrap();
+        let copy = fs::File::open(attachment_path(&root, &files[0]).unwrap()).unwrap();
+        assert_eq!(copy.get_xattr("com.apple.quarantine").unwrap(), Some(actual_value));
+        assert_eq!(fs::read(attachment_path(&root, &files[0]).unwrap()).unwrap(), fs::read(&original).unwrap());
+        assert_eq!(copy.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    let clean = temp.path().join("local.txt");
+    fs::write(&clean, "local").unwrap();
+    let files = import(&root, &[Input::File(clean), Input::Png(vec![1, 2, 3])], 12).unwrap();
+    for file in &files {
+        let copy = fs::File::open(attachment_path(&root, file).unwrap()).unwrap();
+        assert!(copy.get_xattr("com.apple.quarantine").unwrap().is_none());
+    }
+}

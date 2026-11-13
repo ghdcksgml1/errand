@@ -20,7 +20,7 @@ use crate::codex::CodexSource;
 use crate::stores;
 use errand_core::Provider;
 use rooms::RoomsServer;
-use errand_core::ports::{HttpClient, HttpRequest, HttpResponse};
+use errand_core::ports::{HTTP_BODY_LIMIT, HttpClient, HttpRequest, HttpResponse};
 use errand_core::update::Release;
 use errand_core::usage::{self, Reading, UsageError};
 use std::collections::HashMap;
@@ -56,7 +56,7 @@ pub struct Origin {
 impl Origin {
     /// HTTPS to this host, on HTTPS's own port.
     pub fn https(host: &str) -> Origin {
-        Origin { secure: true, host: host.to_owned(), port: 443 }
+        Origin { secure: true, host: host.trim_end_matches('.').to_ascii_lowercase(), port: 443 }
     }
 
     /// Where an `https://` or `http://` address goes, or None for anything else. An address with user info is
@@ -74,7 +74,11 @@ impl Origin {
             Some((host, port)) => (host, port.parse().ok()?),
             None => (authority, if secure { 443 } else { 80 }),
         };
-        (!host.is_empty()).then(|| Origin { secure, host: host.to_owned(), port })
+        let host = host.trim_end_matches('.');
+        if host.is_empty() || !host.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-')) {
+            return None;
+        }
+        Some(Origin { secure, host: host.to_ascii_lowercase(), port })
     }
 
     /// An address here; `path` starts with a slash.
@@ -186,6 +190,7 @@ impl Api {
             return Err(Refusal::Elsewhere.into());
         }
         let response = self.http.send(&request).map_err(|_| Refusal::Offline)?;
+        if response.body.len() > HTTP_BODY_LIMIT { return Err(Refusal::Offline.into()); }
         if response.status == 429 {
             let wait = response.retry_after.as_deref().and_then(|value| retry_after(value, SystemTime::now())).unwrap_or(RATE_LIMIT_PAUSE);
             if let Ok(mut paused) = self.paused_until.lock() {
