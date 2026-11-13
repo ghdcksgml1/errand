@@ -76,6 +76,7 @@ pub struct MacShell {
     status: StatusMenu,
     widget: Rc<RefCell<Widget>>,
     dashboard: Dashboard,
+    settings: super::settings::Settings,
     on_menu: Rc<dyn Fn(MenuAction)>,
     hidden: bool,
     language: Language,
@@ -93,6 +94,7 @@ impl MacShell {
             MenuAction::OpenApp(provider) => menu_poster.post(Msg::OpenApp(provider)),
             MenuAction::RefreshUsage => menu_poster.post(Msg::AskUsage),
             MenuAction::ShowDashboard => menu_poster.post(Msg::ShowDashboard),
+            MenuAction::ShowSettings => menu_poster.post(Msg::Tasks(errand_core::tasks::Msg::ShowSettings)),
             MenuAction::ToggleWidget => {
                 let hidden = NSUserDefaults::standardUserDefaults().boolForKey(&ns(HIDDEN_KEY));
                 menu_poster.post(Msg::SetWidgetHidden(!hidden));
@@ -114,7 +116,7 @@ impl MacShell {
             }
         });
         let dashboard = Dashboard::new(mtm, poster.clone(), language);
-        MacShell { mtm, status: StatusMenu::new(mtm), widget, dashboard, poster, defaults, on_menu, hidden, language }
+        MacShell { settings: super::settings::Settings::new(mtm, poster.clone(), language), mtm, status: StatusMenu::new(mtm), widget, dashboard, poster, defaults, on_menu, hidden, language }
     }
 
     pub fn widget_preferences(&self) -> WidgetPreferences {
@@ -127,6 +129,7 @@ impl MacShell {
 }
 
 impl Shell for MacShell {
+    fn show_settings(&mut self) { self.settings.show(self.mtm); }
     fn choose_task_files(&mut self) {
         let dialog = objc2_app_kit::NSOpenPanel::openPanel(self.mtm);
         dialog.setAllowsMultipleSelection(true);
@@ -165,6 +168,7 @@ impl Shell for MacShell {
         self.status.render(view::status_icon(state, self.language), view::menu(state, !self.hidden, &context), &self.on_menu);
         self.widget.borrow_mut().render(state, &context);
         self.dashboard.render(&view::dashboard(state, &context), self.mtm);
+        self.settings.render(&state.tasks);
     }
 
     fn save_widget_preferences(&mut self, preferences: WidgetPreferences) {

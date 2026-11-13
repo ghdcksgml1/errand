@@ -1,9 +1,30 @@
 //! Personal tasks are owned by Errand, independent of provider sessions and room reports.
-use crate::{Language, Provider, Timestamp};
+use crate::{Language, PerProvider, Provider, Timestamp};
 use std::path::PathBuf;
 
 pub const MAX_FILES: usize = 12;
 pub const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
+
+/// Model overrides belong to Errand, never to either CLI's global settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AiSettings {
+    pub provider: Provider,
+    pub models: PerProvider<String>,
+}
+impl Default for AiSettings {
+    fn default() -> Self { Self { provider: Provider::Codex, models: PerProvider::default() } }
+}
+impl AiSettings {
+    pub fn model(&self) -> &str { &self.models[self.provider] }
+    pub fn valid(&self) -> bool { self.models.iter().all(|(_, id)| valid_model(id)) }
+}
+pub fn valid_model(id: &str) -> bool {
+    id.len() <= 160 && !id.starts_with('-') && id.chars().all(|c| c.is_ascii_alphanumeric() || "-_.:/@[]".contains(c))
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelOption { pub id: String, pub label: String }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Suggestion { pub title: String, pub memo: String }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Input {
@@ -34,6 +55,8 @@ pub struct Draft {
     pub attachments: Vec<Attachment>,
     pub title: String,
     pub memo: String,
+    pub memo_suggestion: Option<String>,
+    pub memo_edited: bool,
     pub edited: bool,
     pub importing: bool,
     pub generating: bool,
@@ -44,7 +67,10 @@ pub struct State {
     pub records: Vec<Task>,
     pub draft: Option<Draft>,
     pub selected: Option<String>,
-    pub provider: Provider,
+    pub settings: AiSettings,
+    pub model_options: Vec<ModelOption>,
+    pub settings_error: Option<String>,
+    pub settings_saved: bool,
     pub dragging: bool,
     pub error: Option<String>,
     /// A broken manifest must never be overwritten by a fresh empty list.
@@ -58,7 +84,10 @@ impl Default for State {
             records: vec![],
             draft: None,
             selected: None,
-            provider: Provider::Codex,
+            settings: AiSettings::default(),
+            model_options: vec![],
+            settings_error: None,
+            settings_saved: false,
             dragging: false,
             error: None,
             readable: true,
@@ -83,7 +112,11 @@ pub enum Msg {
     Cancel,
     Title(String),
     Memo(String),
-    Provider(Provider),
+    AcceptMemo,
+    ShowSettings,
+    Configure(AiSettings),
+    SettingsSaved { settings: AiSettings, result: Result<(), String> },
+    ModelsRead(Vec<ModelOption>),
     Retry,
     Imported {
         token: u64,
@@ -92,7 +125,7 @@ pub enum Msg {
     Generated {
         token: u64,
         revision: u64,
-        result: Result<String, String>,
+        result: Result<Suggestion, String>,
     },
     Remove(String),
     Register,
@@ -116,8 +149,12 @@ pub enum Effect {
         token: u64,
         revision: u64,
         provider: Provider,
+        model: String,
         attachments: Vec<Attachment>,
     },
+    SaveSettings(AiSettings),
+    ShowSettings,
+    ReadModels,
     CancelTitle,
     Cleanup(Vec<Attachment>),
     Save {
@@ -143,12 +180,14 @@ fn generate(state: &mut State) -> Vec<Effect> {
         draft.generating = false;
         return vec![Effect::CancelTitle];
     }
+    draft.memo_suggestion = None;
     draft.generating = true;
     draft.error = None;
     vec![Effect::Generate {
         token: draft.token,
         revision: draft.revision,
-        provider: state.provider,
+        provider: state.settings.provider,
+        model: state.settings.model().to_owned(),
         attachments: draft.attachments.clone(),
     }]
 }
@@ -174,6 +213,8 @@ pub fn update(state: &mut State, msg: Msg, now: Timestamp) -> Vec<Effect> {
                     attachments: vec![],
                     title: String::new(),
                     memo: String::new(),
+                    memo_suggestion: None,
+                    memo_edited: false,
                     edited: false,
                     importing: false,
                     generating: false,
@@ -210,11 +251,7 @@ pub fn update(state: &mut State, msg: Msg, now: Timestamp) -> Vec<Effect> {
                         draft.title = files.first().map(|f| f.name.clone()).unwrap_or_default();
                     }
                     draft.attachments.extend(files);
-                    if draft.edited {
-                        vec![]
-                    } else {
-                        generate(state)
-                    }
+                    generate(state)
                 }
                 Err(error) => {
                     draft.error = Some(error);
@@ -238,16 +275,46 @@ pub fn update(state: &mut State, msg: Msg, now: Timestamp) -> Vec<Effect> {
         Msg::Memo(memo) => {
             if let Some(draft) = &mut state.draft {
                 draft.memo = memo;
+                draft.memo_edited = true;
+                draft.memo_suggestion = None;
             }
             vec![]
         }
-        Msg::Provider(provider) => {
-            state.provider = provider;
-            generate(state)
+        Msg::AcceptMemo => {
+            if let Some(draft) = &mut state.draft && draft.memo.is_empty() && !draft.memo_edited
+                && let Some(memo) = draft.memo_suggestion.take() {
+                draft.memo = memo;
+                draft.memo_edited = true;
+            }
+            vec![]
         }
+        Msg::ShowSettings => {
+            state.settings_saved = false;
+            vec![Effect::ReadModels, Effect::ShowSettings]
+        }
+        Msg::ModelsRead(models) => { state.model_options = models; vec![] }
+        Msg::Configure(settings) => {
+            state.settings_saved = false;
+            if !settings.valid() {
+                state.settings_error = Some("모델 이름을 확인해 주세요. / Enter a valid model ID.".into());
+                return vec![];
+            }
+            vec![Effect::SaveSettings(settings)]
+        }
+        Msg::SettingsSaved { settings, result } => match result {
+            Ok(()) => {
+                let changed = state.settings != settings;
+                state.settings = settings;
+                state.settings_error = None;
+                state.settings_saved = true;
+                if changed { generate(state) } else { vec![] }
+            }
+            Err(error) => { state.settings_error = Some(error); vec![] }
+        },
         Msg::Retry => {
             if let Some(draft) = &mut state.draft {
                 draft.edited = false;
+                if draft.memo.is_empty() { draft.memo_edited = false; }
             }
             generate(state)
         }
@@ -263,9 +330,13 @@ pub fn update(state: &mut State, msg: Msg, now: Timestamp) -> Vec<Effect> {
             {
                 draft.generating = false;
                 match result {
-                    Ok(title) if !draft.edited => draft.title = title,
+                    Ok(suggestion) => {
+                        if !draft.edited { draft.title = suggestion.title; }
+                        if draft.memo.is_empty() && !draft.memo_edited {
+                            draft.memo_suggestion = (!suggestion.memo.is_empty()).then_some(suggestion.memo);
+                        }
+                    }
                     Err(error) => draft.error = Some(error),
-                    _ => {}
                 }
             }
             vec![]
@@ -282,6 +353,7 @@ pub fn update(state: &mut State, msg: Msg, now: Timestamp) -> Vec<Effect> {
                 .collect();
             draft.attachments.retain(|f| f.id != id);
             draft.generating = false;
+            draft.memo_suggestion = None;
             draft.revision += 1;
             vec![Effect::CancelTitle, Effect::Cleanup(removed)]
         }

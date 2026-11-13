@@ -87,7 +87,7 @@ pub fn state(arguments: &[String], now: Timestamp, language: Language) -> AppSta
     if has("--preview-tray") || compact {
         add_sessions(&mut state, arguments, now, language);
     }
-    if has("--preview-task-form") || has("--preview-personal-task") {
+    if has("--preview-task-form") || has("--preview-task-detail") || has("--preview-personal-task") {
         use errand_core::tasks::{self, Attachment};
         let attachments = vec![Attachment {
             id: "sample.png".into(),
@@ -115,12 +115,9 @@ pub fn state(arguments: &[String], now: Timestamp, language: Language) -> AppSta
                 tasks::Msg::Title("온보딩 문서 수정안 확인하기".into()),
                 now,
             );
-            tasks::update(
-                &mut state.tasks,
-                tasks::Msg::Memo("금요일 회의 전에 의견 보내기".into()),
-                now,
-            );
-            state.tasks.draft.as_mut().unwrap().generating = false;
+            let draft = state.tasks.draft.as_mut().unwrap();
+            draft.memo_suggestion = Some("금요일 회의 전에 의견 보내기".into());
+            draft.generating = false;
         } else {
             state.tasks.records.push(tasks::Task {
                 id: "manual:preview".into(),
@@ -132,6 +129,8 @@ pub fn state(arguments: &[String], now: Timestamp, language: Language) -> AppSta
             });
         }
     }
+    if has("--preview-task-detail") { state.tasks.selected = Some("manual:preview".into()); }
+
     // The sample rooms: `--preview-rooms` lists them beside the dock. With `--preview-room` the person is in the
     // late-night room and their team's, the late-night one open under the profile; `--preview-private-room`
     // opens the team's instead.

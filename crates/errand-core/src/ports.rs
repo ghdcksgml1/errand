@@ -49,6 +49,7 @@ pub trait Poster: Send + Sync {
 
 /// The platform's windows as the runtime drives them. Called on the UI thread only.
 pub trait Shell {
+    fn show_settings(&mut self) {}
     fn choose_task_files(&mut self) {}
     fn open_task_attachment(&mut self, _path: &std::path::Path) {}
     /// Shows the state. Views compare with what they show and change only what differs.

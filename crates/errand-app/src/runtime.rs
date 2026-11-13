@@ -43,12 +43,16 @@ impl Runtime {
             Ok((records, provider)) => {
                 errand_io::tasks::discard_orphans(&platform.session_tray.with_file_name("tasks"), &records);
                 state.tasks.records = records;
-                state.tasks.provider = provider;
+                state.tasks.settings = errand_core::tasks::AiSettings { provider, ..Default::default() };
             }
             Err(error) => {
                 state.tasks.error = Some(error);
                 state.tasks.readable = false;
             }
+        }
+        match errand_io::task_settings::load(&platform.session_tray.with_file_name("tasks"), state.tasks.settings.provider) {
+            Ok(settings) => state.tasks.settings = settings,
+            Err(error) => state.tasks.settings_error = Some(error),
         }
         let (scans, requests) = mpsc::channel::<SessionRecords>();
         let mut scanner = SessionScanner::new(platform.sessions.clone());
@@ -90,6 +94,7 @@ impl Runtime {
                 token,
                 revision,
                 provider,
+                model,
                 attachments,
             } => {
                 self.title_cancel.store(true, Ordering::Relaxed);
@@ -102,6 +107,7 @@ impl Runtime {
                         &root,
                         executable.as_deref(),
                         provider,
+                        &model,
                         &attachments,
                         language,
                         &cancel,
@@ -119,7 +125,7 @@ impl Runtime {
             }
             TaskEffect::Save { records, draft } => {
                 let result = if self.state.tasks.readable {
-                    errand_io::tasks::save(&root, &records, self.state.tasks.provider)
+                    errand_io::tasks::save(&root, &records, self.state.tasks.settings.provider)
                 } else {
                     Err(errand_io::tasks::STORAGE_ERROR.into())
                 };
@@ -135,6 +141,12 @@ impl Runtime {
                 }
             }
             TaskEffect::PickFiles => self.shell.choose_task_files(),
+            TaskEffect::ShowSettings => self.shell.show_settings(),
+            TaskEffect::ReadModels => return Some(Msg::Tasks(TaskMsg::ModelsRead(errand_io::task_settings::codex_models(&self.platform.codex.home)))),
+            TaskEffect::SaveSettings(settings) => {
+                let result = errand_io::task_settings::save(&root, &settings);
+                return Some(Msg::Tasks(TaskMsg::SettingsSaved { settings, result }));
+            }
         }
         None
     }

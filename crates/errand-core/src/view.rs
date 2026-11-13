@@ -1288,6 +1288,7 @@ fn rooms_screen(state: &AppState, context: &ViewContext) -> RoomsScreenVm {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuAction {
+    ShowSettings,
     OpenApp(Provider),
     RefreshUsage,
     ShowDashboard,
@@ -1387,6 +1388,7 @@ pub fn menu(state: &AppState, widget_visible: bool, context: &ViewContext) -> Ve
     }
     entries.push(refresh);
     entries.push(item(language.dashboard_item(), MenuAction::ShowDashboard, Some('0')));
+    entries.push(item(crate::tasks::words(language, "설정…", "Settings…"), MenuAction::ShowSettings, Some(',')));
     entries.push(item(language.rooms_item(), MenuAction::ShowRooms, None));
     entries.push(MenuEntry::Separator);
     entries.extend(widget_modes(state, language).into_iter().map(MenuEntry::Item));
@@ -1460,7 +1462,7 @@ fn personal_pill(state: &AppState, language: Language, pills: &mut Vec<PillVm>) 
             state: SessionState::Seen,
             count,
             color: theme::MUTED,
-            icon: "paperclip",
+            icon: "attachment",
             spinning: false,
             words: format!(
                 "{} {count}",
@@ -1517,7 +1519,7 @@ fn personal_card(
         detail: (!compact).then(|| DetailLineVm {
             text: files.clone(),
             tooltip: files.clone(),
-            icon: "paperclip",
+            icon: "attachment",
             color: theme::MUTED,
         }),
         action: None,

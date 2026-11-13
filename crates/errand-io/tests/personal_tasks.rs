@@ -100,7 +100,7 @@ fn interrupted_drafts_are_removed_but_saved_attachments_are_kept() {
 
 #[cfg(unix)]
 #[test]
-fn both_cli_protocols_disable_tools_and_use_structured_titles() {
+fn both_cli_protocols_disable_tools_and_use_the_selected_model_for_title_and_memo() {
     use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().unwrap();
     let original = temp.path().join("Review $(literal) file.txt"); fs::write(&original, "Please review the onboarding document").unwrap();
@@ -111,13 +111,14 @@ import json,sys,pathlib,os
 args=sys.argv[1:]
 request=sys.stdin.read()
 assert 'Please review' in request
+assert args[args.index('--model')+1]=='test-model'
 if args[0]=='exec':
     assert '--ignore-user-config' in args and '--ephemeral' in args
     assert args[args.index('--sandbox')+1]=='read-only'
     assert 'shell_tool' in args and 'unified_exec' in args and 'multi_agent' in args
     schema=json.loads(pathlib.Path(args[args.index('--output-schema')+1]).read_text())
-    assert schema['required']==['title']
-    pathlib.Path(args[args.index('--output-last-message')+1]).write_text(json.dumps({'title':'Review onboarding'}))
+    assert schema['required']==['title','memo']
+    pathlib.Path(args[args.index('--output-last-message')+1]).write_text(json.dumps({'title':'Review onboarding','memo':'Please review the onboarding document'}))
 else:
     assert '--safe-mode' in args and '--strict-mcp-config' in args and '--no-session-persistence' in args
     assert args[args.index('--tools')+1]==''
@@ -125,11 +126,12 @@ else:
     value=json.loads(request)
     assert value['message']['role']=='user'
     assert 'ANTHROPIC_API_KEY' not in os.environ
-    print(json.dumps({'type':'result','is_error':False,'structured_output':{'title':'Review onboarding'}}))
+    print(json.dumps({'type':'result','is_error':False,'structured_output':{'title':'Review onboarding','memo':'Please review the onboarding document'}}))
 "#).unwrap();
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).unwrap();
     for provider in Provider::ALL {
-        let title = errand_io::task_title::generate(&root, Some(&fake), provider, &files, errand_core::Language::English, &std::sync::atomic::AtomicBool::new(false)).unwrap();
-        assert_eq!(title, "Review onboarding");
+        let title = errand_io::task_title::generate(&root, Some(&fake), provider, "test-model", &files, errand_core::Language::English, &std::sync::atomic::AtomicBool::new(false)).unwrap();
+        assert_eq!(title.title, "Review onboarding");
+        assert_eq!(title.memo, "Please review the onboarding document");
     }
 }
