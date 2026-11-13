@@ -779,7 +779,7 @@ fn a_codex_subagent_question_uses_the_same_card_and_counts_as_a_question() {
     assert_eq!(tray.cards.len(), 1);
     assert_eq!(tray.cards[0].sub_tasks.len(), 1);
     let child = &tray.cards[0].sub_tasks[0];
-    assert_eq!((child.provider, child.state, child.chip), (Provider::Codex, SessionState::Asking, "답변 필요"));
+    assert_eq!((child.provider, child.state, child.chip), (Some(Provider::Codex), SessionState::Asking, "답변 필요"));
     assert!(child.tooltip.contains("어느 안으로 할까요?"));
     let header = view::dock(&state, &context()).header.unwrap();
     assert_eq!(header.pills.iter().map(|pill| pill.words.as_str()).collect::<Vec<_>>(), ["답변 필요 1개", "진행 중 1개"]);

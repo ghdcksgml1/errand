@@ -30,7 +30,7 @@ mod widget {
     use jiff::SignedDuration;
     use objc2::rc::Retained;
     use objc2::runtime::AnyObject;
-    use objc2::{AnyThread, MainThreadMarker, Message, msg_send};
+    use objc2::{AnyThread, MainThreadMarker, MainThreadOnly, Message, msg_send};
     use objc2_app_kit::{
         NSAccessibility, NSApplication, NSApplicationActivationPolicy, NSButton, NSColor, NSEvent, NSEventModifierFlags, NSEventType, NSFloatingWindowLevel,
         NSImageView, NSScrollView, NSTextField, NSUserInterfaceItemIdentification, NSView, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
@@ -449,6 +449,7 @@ mod widget {
         let mut t = Checks::default();
         korean(&mut t, mtm, defaults);
         english(&mut t, mtm, defaults);
+        personal_tasks(&mut t, mtm, defaults);
         hiding(&mut t, mtm, defaults);
         modes(&mut t, mtm, defaults);
         rooms(&mut t, mtm, defaults);
@@ -1584,7 +1585,7 @@ mod widget {
         t.check(titles == ["크게 보기", "간단히 보기", "캐릭터만"] && checked == [false, false, true], &format!("A right-click offers the three sizes: {titles:?} {checked:?}"));
         menu.performActionForItemAtIndex(0);
         h.pump();
-        t.check(same(&panel.contentView().expect("the widget's view"), &h.dock()) && h.state.widget.mode == WidgetMode::Full, "Picking 크게 보기 brings the dock back");
+        t.check(first(&panel.contentView().expect("the widget's view"), "ErrandUsageDockView").is_some_and(|view| same(&view, &h.dock())) && h.state.widget.mode == WidgetMode::Full, "Picking 크게 보기 brings the dock back");
         t.check((max_x(panel.frame()) - max_x(full)).abs() < 0.5 && (panel.frame().size.height - full.size.height).abs() < 0.5, "The dock comes back where it was");
         let dock_menu = h.dock().menuForEvent(&pointer(NSEventType::MouseEntered, &panel)).map(|menu| menu.numberOfItems());
         t.check(dock_menu == Some(3), "The dock has the same right-click menu");
@@ -1616,6 +1617,64 @@ mod widget {
         t.check(lines(&panel.contentView().expect("the widget's view")) == ["claude:answered"], "A checked answer stays during the undo countdown");
         h.send(Msg::CardFaded("claude:answered".to_owned()));
         t.check(lines(&panel.contentView().expect("the widget's view")).is_empty(), "Checking off clears the opened answer");
+        h.send(Msg::SetWidgetHidden(true));
+    }
+
+    objc2::define_class!(
+        #[unsafe(super(objc2_foundation::NSObject))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "ErrandTestDraggingInfo"]
+        #[ivars = Retained<objc2_app_kit::NSPasteboard>]
+        struct DragInfo;
+        impl DragInfo {
+            #[unsafe(method(draggingPasteboard))]
+            fn pasteboard(&self) -> *mut objc2_app_kit::NSPasteboard {
+                use objc2::DefinedClass;
+                Retained::as_ptr(self.ivars()) as *mut _
+            }
+        }
+    );
+
+    fn personal_tasks(t: &mut Checks, mtm: MainThreadMarker, defaults: &Retained<NSUserDefaults>) {
+        use errand_core::tasks::{self, Attachment, Input};
+        use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL, NSDragOperation};
+        use objc2_foundation::NSURL;
+        let mut h = Harness::new(mtm, defaults, Language::Korean);
+        let pasteboard = NSPasteboard::pasteboardWithUniqueName();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("검토 %20 #.png");
+        std::fs::write(&path, b"test file").unwrap();
+        let url = NSURL::from_file_path(&path).unwrap();
+        unsafe { pasteboard.declareTypes_owner(&objc2_foundation::NSArray::from_slice(&[NSPasteboardTypeFileURL]), None); }
+        pasteboard.setString_forType(&url.absoluteString().unwrap(), unsafe { NSPasteboardTypeFileURL });
+        let read = errand_macos::shell::task_drop::read_inputs(&pasteboard);
+        t.check(matches!(&read[..], [Input::File(path)] if std::fs::read(path).is_ok_and(|bytes| bytes == b"test file")), &format!("File URL drops preserve Unicode, spaces and literal percent signs: {read:?}"));
+        let info = DragInfo::alloc(mtm).set_ivars(pasteboard);
+        let info: Retained<DragInfo> = unsafe { msg_send![super(info), init] };
+        for mode in WidgetMode::ALL {
+            h.send(Msg::SetWidgetMode(mode));
+            let root = h.widget.borrow().panel.contentView().unwrap();
+            let operation: NSDragOperation = unsafe { msg_send![&*root, draggingEntered: &*info] };
+            h.pump();
+            t.check(operation == NSDragOperation::Copy && h.state.tasks.dragging, "Every widget size accepts a native file drag");
+            let accepted: bool = unsafe { msg_send![&*root, performDragOperation: &*info] };
+            h.pump();
+            let panel = h.widget.borrow().task_panel.clone();
+            t.check(accepted && panel.isVisible() && h.state.widget.mode == mode, "A native file drop opens registration without changing the widget size");
+            let form = panel.contentView().unwrap();
+            t.check(titled(&form, "작업 등록").is_some_and(|b| !b.isEnabled()), "Registration waits for attachments to finish importing");
+            let token = h.state.tasks.draft.as_ref().unwrap().token;
+            h.send(Msg::Tasks(tasks::Msg::Imported { token, result: Ok(vec![Attachment { id: "sample.txt".into(), name: "검토 요청.txt".into(), bytes: 42, image: false }]) }));
+            h.send(Msg::Tasks(tasks::Msg::Title("직접 수정한 제목".into())));
+            let revision = h.state.tasks.draft.as_ref().unwrap().revision;
+            h.send(Msg::Tasks(tasks::Msg::Generated { token, revision, result: Ok("늦게 온 제목".into()) }));
+            t.check(shows(&form, "직접 수정한 제목"), "A late AI answer leaves the typed title in the native field");
+            t.check(h.state.tasks.records.is_empty(), "Dropping and editing does not register a task");
+            let go = titled(&form, "작업 등록").unwrap(); unsafe { go.performClick(None) }; h.pump();
+            t.check(h.performed(|e| matches!(e, Effect::Tasks(tasks::Effect::Save { .. }))) > 0, "The registration button asks to persist the draft");
+            h.send(Msg::Tasks(tasks::Msg::Cancel));
+            t.check(!panel.isVisible() && h.state.tasks.draft.is_none(), "Cancel closes registration in every widget size");
+        }
         h.send(Msg::SetWidgetHidden(true));
     }
 

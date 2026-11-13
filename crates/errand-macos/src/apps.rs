@@ -109,3 +109,25 @@ mod tests {
         assert!(found.ends_with("2.1.10/bbb/claude.app/Contents/MacOS/claude"), "{}", found.display());
     }
 }
+
+/// A GUI launch has a small PATH, so include the usual standalone CLI install directories.
+pub fn local_cli(home: &std::path::Path, provider: Provider) -> Option<PathBuf> {
+    let name = if provider == Provider::Codex {
+        "codex"
+    } else {
+        "claude"
+    };
+    let mut directories: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect())
+        .unwrap_or_default();
+    directories.extend([
+        home.join(".local/bin"),
+        home.join(".bun/bin"),
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+    ]);
+    directories
+        .into_iter()
+        .map(|directory| directory.join(name))
+        .find(|path| path.is_file())
+}

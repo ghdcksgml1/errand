@@ -99,6 +99,14 @@ impl Platform {
         }
     }
 
+    pub fn title_cli(&self, provider: Provider) -> Option<PathBuf> {
+        let bundled = match provider {
+            Provider::Codex => self.codex.executable.clone(),
+            Provider::Claude => errand_macos::apps::claude_code(&self.home),
+        };
+        bundled.or_else(|| errand_macos::apps::local_cli(&self.home, provider))
+    }
+
     /// Puts this release in place of the app and starts it; false when that did not happen.
     pub fn install_update(&self, release: &Release) -> bool {
         errand_macos::updater::install(release)

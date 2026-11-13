@@ -180,6 +180,7 @@ pub struct WidgetPreferences {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppState {
+    pub tasks: crate::tasks::State,
     pub usage: PerProvider<UsageSlot>,
     /// Reads in flight; usage is loading while any is.
     pub fetching: BTreeSet<Provider>,
@@ -205,6 +206,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(history: ResetHistory, records: SessionRecords, widget: WidgetPreferences, profile_name: String) -> AppState {
         AppState {
+            tasks: crate::tasks::State::default(),
             usage: PerProvider::default(),
             fetching: BTreeSet::new(),
             history,
@@ -247,7 +249,7 @@ impl AppState {
 
     /// The card stack is on screen; the smaller widgets have none.
     pub fn tray_visible(&self) -> bool {
-        !self.widget.hidden && self.widget.mode == WidgetMode::Full && !self.widget.collapsed && !self.sessions.shown.is_empty()
+        !self.widget.hidden && self.widget.mode == WidgetMode::Full && !self.widget.collapsed && (!self.sessions.shown.is_empty() || self.tasks.active().next().is_some())
     }
 
     /// When each of a service's limits was seen to reset, by window identifier.
@@ -275,6 +277,7 @@ impl AppState {
 }
 
 pub enum Msg {
+    Tasks(crate::tasks::Msg),
     /// Every few seconds: time to check who is signed in and which apps are open.
     CheckAccounts,
     AccountsRead(PerProvider<AccountInfo>),
@@ -392,6 +395,7 @@ pub enum Msg {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
+    Tasks(crate::tasks::Effect),
     FetchUsage(Provider),
     /// Reads Claude's usage after asking Claude Code, on the timer or a press of refresh.
     AskClaudeCode,
@@ -479,6 +483,17 @@ fn room_clock_wanted(state: &AppState) -> bool {
 
 fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
     match msg {
+        Msg::Tasks(msg) => {
+            let was_open = state.tasks.open();
+            if matches!(msg, crate::tasks::Msg::Drop(_) | crate::tasks::Msg::Open(_)) {
+                state.details_open = false;
+                state.avatar_editor_open = false;
+                state.rooms.open = false;
+            }
+            let effects = crate::tasks::update(&mut state.tasks, msg, now).into_iter().map(Effect::Tasks).collect();
+            if was_open && !state.tasks.open() { state.badge_open = false; }
+            effects
+        }
         Msg::CheckAccounts => vec![Effect::ReadAccounts],
         Msg::AccountsRead(accounts) => {
             state.accounts = accounts;
@@ -584,7 +599,11 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             effects
         }
         Msg::OpenSession(key) => {
-            let Some(url) = state.sessions.scan.iter().find(|row| row.key == key).map(|row| row.url.clone()) else { return vec![] };
+            if key.starts_with("manual:") {
+                return apply(state, Msg::Tasks(crate::tasks::Msg::Open(key)), now);
+            }
+            let Some(url) = state.sessions.scan.iter().find(|row| row.key == key).map(|row| row.url.clone()) else { return vec![];
+            };
             state.sessions.records.mark_seen(&key, now);
             apply_sessions(state);
             vec![Effect::SaveSessionRecords, Effect::OpenUrl(url)]
@@ -608,6 +627,9 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             // 되돌리기 during the fade wins.
             if state.sessions.pending.remove(&key).is_none() {
                 return vec![];
+            }
+            if key.starts_with("manual:") {
+                return apply(state, Msg::Tasks(crate::tasks::Msg::Complete(key)), now);
             }
             for sub_task in read_sub_tasks(&state.sessions, &key) {
                 state.sessions.pending.remove(&sub_task);
@@ -644,6 +666,9 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             vec![]
         }
         Msg::PointerOnBadge(on) => {
+            if state.tasks.dragging || state.tasks.open() {
+                return vec![];
+            }
             state.badge_open = on && state.widget.mode == WidgetMode::Character;
             if !on {
                 state.lines_open = false;

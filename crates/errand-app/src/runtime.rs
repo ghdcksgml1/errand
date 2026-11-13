@@ -3,18 +3,19 @@
 
 use crate::platform::Platform;
 use errand_core::model::{AccountInfo, Alert, AppState, Effect, Msg, Profile, WidgetPreferences, update};
-use errand_core::rooms::{self, Visibility};
 use errand_core::ports::{Poster, Shell};
+use errand_core::rooms::{self, Visibility};
 use errand_core::sessions::{SessionRecords, SessionRow};
 use errand_core::{PerProvider, Provider};
 use errand_io::session_scan::SessionScanner;
 use errand_io::{claude, codex, stores};
 use std::collections::VecDeque;
-use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Sender};
 use std::thread;
 
 pub struct Runtime {
+    title_cancel: Arc<std::sync::atomic::AtomicBool>,
     state: AppState,
     platform: Arc<Platform>,
     shell: Box<dyn Shell>,
@@ -38,6 +39,17 @@ impl Runtime {
         });
         let mut state = AppState::new(history, records, widget, platform.full_user_name());
         state.rooms.sample = platform.rooms.sample();
+        match errand_io::tasks::load(&platform.session_tray.with_file_name("tasks")) {
+            Ok((records, provider)) => {
+                errand_io::tasks::discard_orphans(&platform.session_tray.with_file_name("tasks"), &records);
+                state.tasks.records = records;
+                state.tasks.provider = provider;
+            }
+            Err(error) => {
+                state.tasks.error = Some(error);
+                state.tasks.readable = false;
+            }
+        }
         let (scans, requests) = mpsc::channel::<SessionRecords>();
         let mut scanner = SessionScanner::new(platform.sessions.clone());
         let scan_poster = poster.clone();
@@ -51,7 +63,80 @@ impl Runtime {
             })
             .expect("the session scan thread starts");
         let remembered = Some(stores::load_joined_rooms(&platform.joined_rooms));
-        Runtime { state, platform: Arc::new(platform), shell, poster, scans, remembered }
+        Runtime {
+            title_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            state, platform: Arc::new(platform), shell, poster, scans, remembered }
+    }
+
+    fn task_effect(&mut self, effect: errand_core::tasks::Effect) -> Option<Msg> {
+        use errand_core::tasks::{Effect as TaskEffect, Msg as TaskMsg};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let root = self.platform.session_tray.with_file_name("tasks");
+        match effect {
+            TaskEffect::Import {
+                token,
+                inputs,
+                remaining,
+            } => {
+                let poster = self.poster.clone();
+                thread::spawn(move || {
+                    poster.post(Msg::Tasks(TaskMsg::Imported {
+                        token,
+                        result: errand_io::tasks::import(&root, &inputs, remaining),
+                    }))
+                });
+            }
+            TaskEffect::Generate {
+                token,
+                revision,
+                provider,
+                attachments,
+            } => {
+                self.title_cancel.store(true, Ordering::Relaxed);
+                self.title_cancel = Arc::new(AtomicBool::new(false));
+                let (cancel, poster) = (self.title_cancel.clone(), self.poster.clone());
+                let executable = self.platform.title_cli(provider);
+                let language = crate::platform::system_language();
+                thread::spawn(move || {
+                    let result = errand_io::task_title::generate(
+                        &root,
+                        executable.as_deref(),
+                        provider,
+                        &attachments,
+                        language,
+                        &cancel,
+                    );
+                    poster.post(Msg::Tasks(TaskMsg::Generated {
+                        token,
+                        revision,
+                        result,
+                    }));
+                });
+            }
+            TaskEffect::CancelTitle => self.title_cancel.store(true, Ordering::Relaxed),
+            TaskEffect::Cleanup(files) => {
+                thread::spawn(move || errand_io::tasks::cleanup(&root, &files));
+            }
+            TaskEffect::Save { records, draft } => {
+                let result = if self.state.tasks.readable {
+                    errand_io::tasks::save(&root, &records, self.state.tasks.provider)
+                } else {
+                    Err(errand_io::tasks::STORAGE_ERROR.into())
+                };
+                return Some(Msg::Tasks(TaskMsg::Saved {
+                    records,
+                    draft,
+                    result,
+                }));
+            }
+            TaskEffect::Open(file) => {
+                if let Some(path) = errand_io::tasks::attachment_path(&root, &file) {
+                    self.shell.open_task_attachment(&path);
+                }
+            }
+            TaskEffect::PickFiles => self.shell.choose_task_files(),
+        }
+        None
     }
 
     pub fn alert(&mut self, alert: &Alert) {
@@ -86,6 +171,7 @@ impl Runtime {
     /// Carries out an effect; quick reads answer at once, slow ones post their answer later.
     fn perform(&mut self, effect: Effect) -> Option<Msg> {
         match effect {
+            Effect::Tasks(effect) => self.task_effect(effect),
             Effect::FetchUsage(provider) => {
                 let (platform, poster) = (self.platform.clone(), self.poster.clone());
                 thread::spawn(move || poster.post(Msg::UsageRead { provider, result: platform.api.usage(provider) }));
@@ -273,5 +359,12 @@ fn gone(result: Result<(), errand_core::rooms::RoomError>) -> Result<(), errand_
     match result {
         Err(errand_core::rooms::RoomError::InviteNotFound) => Ok(()),
         other => other,
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        self.title_cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }

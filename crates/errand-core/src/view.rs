@@ -266,7 +266,7 @@ fn initial(name: &str) -> String {
 
 pub fn dock(state: &AppState, context: &ViewContext) -> DockVm {
     let batteries: Vec<BatteryVm> = state.shown_providers().into_iter().map(|provider| battery(state, provider, context)).collect();
-    let header = (!state.sessions.shown.is_empty()).then(|| header(state, context.language));
+    let header = (!state.sessions.shown.is_empty() || state.tasks.active().next().is_some()).then(|| header(state, context.language));
     DockVm {
         accessibility_value: batteries
             .iter()
@@ -396,10 +396,13 @@ fn header_pills(counts: TaskCounts, asking: usize, language: Language) -> Vec<Pi
 
 fn header(state: &AppState, language: Language) -> HeaderVm {
     let sessions = &state.sessions;
-    let open = sessions.shown.iter().filter(|session| !sessions.pending.contains_key(&session.row.key)).count();
+    let open = sessions.shown.iter().filter(|session| !sessions.pending.contains_key(&session.row.key)).count()
+        + personal_count(state);
     let collapsed = state.widget.collapsed;
     let (counts, asking) = (sessions.counts(), sessions.asking());
-    let pills = header_pills(TaskCounts { new: counts.new - asking, ..counts }, asking, language);
+    let mut pills = header_pills(TaskCounts { new: counts.new - asking, ..counts }, asking, language,
+    );
+    personal_pill(state, language, &mut pills);
     let spoken: Vec<&str> = pills.iter().map(|pill| pill.words.as_str()).collect();
     HeaderVm {
         title: language.tasks_title(open),
@@ -433,7 +436,7 @@ pub struct CountdownVm {
 pub struct CardVm {
     /// The session key; clicks on the card, its checkbox and its 되돌리기 carry it.
     pub key: String,
-    pub provider: Provider,
+    pub provider: Option<Provider>,
     pub title: String,
     /// Done while checked, else the session's own state.
     pub state: SessionState,
@@ -477,11 +480,13 @@ pub struct TrayVm {
 /// `max_height` is the room the shell found for the cards on the dock's side of the screen.
 pub fn tray(state: &AppState, context: &ViewContext, max_height: f64) -> TrayVm {
     let families = families(&state.sessions.shown);
-    let full: Vec<f64> = families.iter().map(|family| layout::card_height(action_shown(family.head))).collect();
-    let sub_tasks: Vec<usize> = families.iter().map(|family| family.sub_tasks.len()).collect();
+    let full: Vec<f64> = families.iter().map(|family| layout::card_height(action_shown(family.head))).chain(state.tasks.active().map(|_| layout::card_height(false)))
+        .collect();
+    let sub_tasks: Vec<usize> = families.iter().map(|family| family.sub_tasks.len())
+        .chain(state.tasks.active().map(|_| 0)).collect();
     let fold = layout::fold_cards(&full, &sub_tasks, max_height);
     let deadline = |session: &VisibleSession| state.sessions.pending.get(&session.row.key).copied();
-    let cards = families
+    let mut cards: Vec<CardVm> = families
         .iter()
         .enumerate()
         .map(|(index, family)| {
@@ -490,6 +495,16 @@ pub fn tray(state: &AppState, context: &ViewContext, max_height: f64) -> TrayVm 
             vm
         })
         .collect();
+    for (offset, task) in state.tasks.active().enumerate() {
+        let index = families.len() + offset;
+        cards.push(personal_card(
+            task,
+            state.sessions.pending.get(&task.id).copied(),
+            fold.compact(index),
+            fold.heights[index],
+            context,
+        ));
+    }
     TrayVm { cards, fold }
 }
 
@@ -525,7 +540,8 @@ pub fn simple(state: &AppState, context: &ViewContext, open: bool) -> SimpleVm {
     let language = context.language;
     let sessions = &state.sessions;
     let (counts, asking) = (sessions.counts(), sessions.asking());
-    let pills = header_pills(TaskCounts { new: counts.new - asking, ..counts }, asking, language);
+    let mut pills = header_pills(TaskCounts { new: counts.new - asking, ..counts }, asking, language);
+    personal_pill(state, language, &mut pills);
     let batteries: Vec<BatteryVm> = state.shown_providers().into_iter().map(|provider| battery(state, provider, context)).collect();
     let deadline = |session: &VisibleSession| sessions.pending.get(&session.row.key).copied();
     // A checked line stays for its 되돌리기, as a card does.
@@ -539,17 +555,29 @@ pub fn simple(state: &AppState, context: &ViewContext, open: bool) -> SimpleVm {
         _ if calls(session) => 1,
         _ => 2,
     });
-    let lines = shown
+    let mut lines: Vec<CardVm> = shown
         .into_iter()
         .map(|session| {
             let vm = card(session, deadline(session), true, layout::LINE_HEIGHT, context);
             if session.row.parent.is_some() { CardVm { accessibility_label: language.sub_task_label(&vm.accessibility_label), ..vm } } else { vm }
         })
         .collect();
+    lines.extend(state.tasks.active().map(|task| {
+        personal_card(
+            task,
+            state.sessions.pending.get(&task.id).copied(),
+            true,
+            layout::LINE_HEIGHT,
+            context,
+        )
+    }));
     let mut said: Vec<String> = pills.iter().map(|pill| pill.words.clone()).collect();
     said.extend(batteries.iter().map(|battery| format!("{} {}", battery.provider.title(), battery.percent)));
     SimpleVm {
-        idle: sessions.shown.is_empty().then(|| IdleVm { avatar: Avatar::named(&state.profile.avatar), words: language.no_errands() }),
+        idle: (sessions.shown.is_empty() && state.tasks.active().next().is_none()).then(|| {
+            IdleVm { avatar: Avatar::named(&state.profile.avatar), words: language.no_errands(),
+            }
+        }),
         summary: said.join(" · "),
         counts_tooltip: language.simple_counts_tooltip(open),
         pills,
@@ -574,7 +602,7 @@ pub struct BadgeVm {
 pub fn badge(state: &AppState, context: &ViewContext) -> BadgeVm {
     let sessions = &state.sessions;
     let open: Vec<&VisibleSession> = sessions.shown.iter().filter(|session| !sessions.pending.contains_key(&session.row.key)).collect();
-    let calling = open.iter().filter(|session| calls(session)).count();
+    let calling = open.iter().filter(|session| calls(session)).count() + personal_count(state);
     let tint = if sessions.asking() > 0 { theme::ASKING } else { theme::NEW_RESULT };
     let line = simple(state, context, false);
     BadgeVm {
@@ -625,7 +653,7 @@ fn card(session: &VisibleSession, deadline: Option<Timestamp>, compact: bool, he
     });
     let mut vm = CardVm {
         key: row.key.clone(),
-        provider: row.provider,
+        provider: Some(row.provider),
         title: title.clone(),
         state,
         countdown,
@@ -1416,4 +1444,87 @@ pub fn status_icon(state: &AppState, language: Language) -> StatusIconVm {
         shown.iter().map(|provider| usage::display_window(*provider, &state.usage[*provider].windows).and_then(|limit| limit.remaining_percent)).collect();
     let spoken: Vec<String> = shown.iter().zip(&levels).map(|(provider, level)| language.status_level(*provider, *level)).collect();
     StatusIconVm { levels, tooltip: spoken.join(" · ") }
+}
+
+fn personal_count(state: &AppState) -> usize {
+    state
+        .tasks
+        .active()
+        .filter(|task| !state.sessions.pending.contains_key(&task.id))
+        .count()
+}
+fn personal_pill(state: &AppState, language: Language, pills: &mut Vec<PillVm>) {
+    let count = personal_count(state);
+    if count > 0 {
+        pills.push(PillVm {
+            state: SessionState::Seen,
+            count,
+            color: theme::MUTED,
+            icon: "paperclip",
+            spinning: false,
+            words: format!(
+                "{} {count}",
+                crate::tasks::words(language, "할 일", "To do")
+            ),
+        });
+    }
+}
+fn personal_card(
+    task: &crate::tasks::Task,
+    deadline: Option<Timestamp>,
+    compact: bool,
+    height: f64,
+    context: &ViewContext,
+) -> CardVm {
+    let language = context.language;
+    let chip = crate::tasks::words(language, "할 일", "To do");
+    let files = task
+        .attachments
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let countdown = deadline.map(|at| {
+        let remaining = at.duration_since(context.now).max(SignedDuration::ZERO);
+        CountdownVm {
+            remaining,
+            fraction: (remaining.as_secs_f64() / COMPLETION_DELAY.as_secs_f64()).min(1.0),
+        }
+    });
+    CardVm {
+        key: task.id.clone(),
+        provider: None,
+        title: task.title.clone(),
+        state: if deadline.is_some() {
+            SessionState::Done
+        } else {
+            SessionState::Seen
+        },
+        countdown,
+        compact,
+        height,
+        chip,
+        check_label: language.complete_label(&task.title),
+        check_tooltip: language.complete_tooltip(deadline.is_some()),
+        undo_label: language.undo_label(&task.title),
+        prompt: if task.memo.is_empty() {
+            files.clone()
+        } else {
+            task.memo.clone()
+        },
+        prompt_missing: false,
+        prompt_tooltip: Some(task.memo.clone()),
+        detail: (!compact).then(|| DetailLineVm {
+            text: files.clone(),
+            tooltip: files.clone(),
+            icon: "paperclip",
+            color: theme::MUTED,
+        }),
+        action: None,
+        when: relative_time(Some(task.created), context.now, &context.zone, language),
+        folder: None,
+        tooltip: format!("{}\n{}", task.title, files),
+        accessibility_label: format!("{chip}: {}", task.title),
+        sub_tasks: vec![],
+    }
 }

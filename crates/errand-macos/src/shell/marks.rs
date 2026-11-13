@@ -35,7 +35,13 @@ pub fn app_icon(provider: Provider) -> Option<Retained<NSImage>> {
 }
 
 /// Draws the app icon over `frame`, or a letter tile in the service's colour when the app is missing.
-pub fn draw_app_mark(provider: Provider, frame: NSRect) {
+pub fn draw_app_mark(provider: impl Into<Option<Provider>>, frame: NSRect) {
+    let Some(provider) = provider.into() else {
+        if let Some(image) = super::kit::icon_image("paperclip", frame.size.width, None, 0.0, 0.0) {
+            image.drawInRect(frame);
+        }
+        return;
+    };
     if let Some(icon) = app_icon(provider) {
         // App icons keep a transparent margin of about a tenth; let the artwork itself fill the rect.
         let artwork = rect(
@@ -82,7 +88,7 @@ define_class!(
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "ErrandAppMarkView"]
-    #[ivars = Cell<Provider>]
+    #[ivars = Cell<Option<Provider>>]
     pub struct AppMarkView;
 
     impl AppMarkView {
@@ -99,12 +105,15 @@ define_class!(
 );
 
 impl AppMarkView {
-    pub fn new(mtm: MainThreadMarker, frame: NSRect, provider: Provider) -> Retained<AppMarkView> {
+    pub fn new(mtm: MainThreadMarker, frame: NSRect, provider: impl Into<Option<Provider>>,
+    ) -> Retained<AppMarkView> {
+        let provider = provider.into();
+        let title = provider.map_or("Attachment", Provider::title);
         let this = AppMarkView::alloc(mtm).set_ivars(Cell::new(provider));
         let view: Retained<AppMarkView> = unsafe { msg_send![super(this), initWithFrame: frame] };
         view.setAccessibilityElement(true);
-        view.setAccessibilityLabel(Some(&ns(provider.title())));
-        view.setToolTip(Some(&ns(provider.title())));
+        view.setAccessibilityLabel(Some(&ns(title)));
+        view.setToolTip(Some(&ns(title)));
         view
     }
 }

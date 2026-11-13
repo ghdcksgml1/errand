@@ -9,9 +9,9 @@ use crate::apps;
 use crate::paths::Paths;
 use dispatch2::{DispatchQueue, DispatchTime};
 use errand_core::model::{Alert, AppState, Confirm, Msg, OpenError, WidgetMode, WidgetPreferences};
-use errand_core::{Language, PerProvider, Provider};
 use errand_core::ports::{Poster, Shell};
 use errand_core::view::{self, MenuAction, ViewContext};
+use errand_core::{Language, PerProvider, Provider};
 use jiff::{SignedDuration, Timestamp};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -127,6 +127,38 @@ impl MacShell {
 }
 
 impl Shell for MacShell {
+    fn choose_task_files(&mut self) {
+        let dialog = objc2_app_kit::NSOpenPanel::openPanel(self.mtm);
+        dialog.setAllowsMultipleSelection(true);
+        dialog.setCanChooseDirectories(false);
+        dialog.setCanChooseFiles(true);
+        let poster = self.poster.clone();
+        let selected = dialog.clone();
+        let completion = block2::RcBlock::new(move |result| {
+            if result == objc2_app_kit::NSModalResponseOK {
+                let inputs = selected
+                    .URLs()
+                    .iter()
+                    .filter_map(|url| url.to_file_path())
+                    .map(errand_core::tasks::Input::File)
+                    .collect();
+                poster.post(Msg::Tasks(errand_core::tasks::Msg::Drop(inputs)));
+            }
+        });
+        dialog.beginWithCompletionHandler(&completion);
+    }
+    fn open_task_attachment(&mut self, path: &std::path::Path) {
+        if let Some(url) = NSURL::from_file_path(path) {
+            if !NSWorkspace::sharedWorkspace().openURL(&url) {
+                let alert = NSAlert::new(self.mtm);
+                alert.setMessageText(&ns(
+                    "첨부파일을 열 수 없습니다. / Could not open the attachment.",
+                ));
+                alert.runModal();
+            }
+        }
+    }
+
     fn render(&mut self, state: &AppState, now: Timestamp) {
         let context = self.context(now);
         self.hidden = state.widget.hidden;

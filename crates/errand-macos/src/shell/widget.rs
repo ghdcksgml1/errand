@@ -6,19 +6,21 @@
 use super::avatar_editor::AvatarEditor;
 use super::compact::{self, Character, CompactEvents, Simple};
 use super::details::Details;
-use super::rooms::Rooms;
 use super::dock::{Dock, DockEvents};
-use super::tray::Tray;
 use super::kit::{self, Action, ns};
 use super::panel::{TypingPanel, make_panel, make_typing_panel, primary_height, screen_frame, to_cocoa, to_core, visible_frames};
+use super::rooms::Rooms;
+use super::task_drop::DropView;
+use super::task_form::{self, TaskForm};
+use super::tray::Tray;
 use dispatch2::{DispatchQueue, DispatchTime};
 use errand_core::Language;
 use errand_core::layout::{self, BADGE_SIZE, DockShape, Rect, STACK_WIDTH, STRIP_HEIGHT};
 use errand_core::model::{AppState, Msg, WidgetMode};
 use errand_core::ports::Poster;
 use errand_core::view::{self, MenuAction, MenuItemVm, ViewContext};
-use objc2::rc::Retained;
 use objc2::MainThreadMarker;
+use objc2::rc::Retained;
 use objc2_app_kit::{NSApplicationDidChangeScreenParametersNotification, NSEvent, NSMenu, NSPanel, NSView};
 use objc2_foundation::{NSArray, NSNotificationCenter, NSNumber, NSPoint, NSSize, NSUserDefaults};
 use std::cell::RefCell;
@@ -34,6 +36,9 @@ pub struct Widget {
     mtm: MainThreadMarker,
     pub panel: Retained<NSPanel>,
     pub dock: Dock,
+    drop_view: Retained<DropView>,
+    pub task_panel: Retained<TypingPanel>,
+    task_form: TaskForm,
     /// The one-line widget, and the character-only one that opens into it.
     simple: Simple,
     character: Character,
@@ -153,7 +158,15 @@ impl Widget {
             let simple = Simple::new(mtm, poster.clone(), language, compact_events.clone());
             let character = Character::new(mtm, poster.clone(), language, compact_events);
             let panel = make_panel(mtm, NSSize::new(STACK_WIDTH, layout::dock_height(DockShape::FULL)), language.window_title_usage());
-            panel.setContentView(Some(&dock.view));
+            let drop_view = DropView::new(mtm, poster.clone(), &dock.view);
+            panel.setContentView(Some(&drop_view));
+            let task_form = TaskForm::new(mtm, poster.clone(), language);
+            let task_panel = make_typing_panel(
+                mtm,
+                task_form.view.frame().size,
+                errand_core::tasks::words(language, "작업 등록", "Add a task"),
+            );
+            task_panel.setContentView(Some(&task_form.view));
             let details = Details::new(mtm, poster.clone(), language);
             let details_panel = make_panel(mtm, details.view.frame().size, language.details_title());
             details_panel.setContentView(Some(&details.view));
@@ -172,6 +185,9 @@ impl Widget {
                 mtm,
                 panel,
                 dock,
+                drop_view,
+                task_panel,
+                task_form,
                 simple,
                 character,
                 mode: WidgetMode::Full,
@@ -278,6 +294,9 @@ impl Widget {
         if self.avatar_editor_panel.isVisible() {
             self.place_avatar_editor();
         }
+        if self.task_panel.isVisible() {
+            self.place_tasks();
+        }
         if self.rooms_panel.isVisible() {
             self.place_rooms();
         }
@@ -347,6 +366,22 @@ impl Widget {
         self.rooms.point(placement.tail_on_right, placement.tail_y);
     }
 
+    fn place_tasks(&self) {
+        let dock = self.dock_frame();
+        let placement = layout::popover_placement(
+            dock,
+            self.main_screen(),
+            &visible_frames(self.mtm),
+            task_form::WIDTH + layout::POPOVER_TAIL,
+            task_form::HEIGHT,
+            self.compact_aim().unwrap_or(dock.height / 2.0),
+        );
+        self.task_panel
+            .setFrame_display(to_cocoa(placement.frame, primary_height(self.mtm)), true);
+        self.task_form
+            .point(placement.tail_on_right, placement.tail_y);
+    }
+
     fn place_tray(&self) {
         let height = self.tray_panel.frame().size.height;
         let frame = layout::tray_frame(self.dock_frame(), self.main_screen(), height);
@@ -374,7 +409,7 @@ impl Widget {
             WidgetMode::Simple => &self.simple.view,
             WidgetMode::Character => &self.character.view,
         };
-        self.panel.setContentView(Some(view));
+        self.drop_view.hold(view);
         self.mode = mode;
     }
 
@@ -420,13 +455,15 @@ impl Widget {
             self.close_avatar_editor();
             self.tray_panel.orderOut(None);
             self.rooms_panel.orderOut(None);
+            self.task_panel.set_typing(None);
+            self.task_panel.orderOut(None);
             return;
         }
         if !self.panel.isVisible() {
             self.panel.orderFrontRegardless();
         }
         self.panel.invalidateShadow();
-        if state.details_open {
+        if state.details_open && !state.tasks.open() {
             self.details.render(&view::details(state, context), self.mtm);
             self.place_details();
             if !self.details_panel.isVisible() {
@@ -435,7 +472,7 @@ impl Widget {
         } else {
             self.details_panel.orderOut(None);
         }
-        if state.avatar_editor_open {
+        if state.avatar_editor_open && !state.tasks.open() {
             self.avatar_editor.render(&view::avatar_editor(state, context.language));
             self.place_avatar_editor();
             if !self.avatar_editor_panel.isVisible() {
@@ -444,7 +481,7 @@ impl Widget {
         } else {
             self.close_avatar_editor();
         }
-        if state.rooms.open {
+        if state.rooms.open && !state.tasks.open() {
             self.rooms.render(&view::rooms(state, context), self.mtm);
             self.place_rooms();
             if !self.rooms_panel.isVisible() {
@@ -459,6 +496,21 @@ impl Widget {
         } else {
             self.rooms_panel.set_typing(None);
             self.rooms_panel.orderOut(None);
+        }
+        if state.tasks.open() {
+            let focus = self.task_form.render(&state.tasks, self.mtm);
+            self.place_tasks();
+            if !self.task_panel.isVisible() {
+                self.task_panel.orderFrontRegardless();
+            }
+            self.task_panel.allow_typing();
+            if focus {
+                self.task_panel.set_typing(Some(self.task_form.focus()));
+            }
+        } else {
+            self.task_form.render(&state.tasks, self.mtm);
+            self.task_panel.set_typing(None);
+            self.task_panel.orderOut(None);
         }
         if state.tray_visible() {
             let max = layout::tray_max_height(self.dock_frame(), self.main_screen());

@@ -3,31 +3,32 @@
 
 use super::avatar_editor::AvatarEditor;
 use super::compact::{Character, CompactEvents, Simple};
-use super::kit::FlippedView;
-use objc2_foundation::NSPoint;
 use super::dashboard::Dashboard;
-use super::rooms::Rooms;
 use super::details::Details;
 use super::dock::{Dock, DockEvents};
-use super::tray::Tray;
+use super::kit;
+use super::kit::FlippedView;
 use super::panel::{make_panel, screen_frame, visible_frames};
+use super::rooms::Rooms;
+use super::tray::Tray;
+use errand_core::Language;
 use errand_core::avatar::Avatar;
 use errand_core::layout::{self, DockShape};
-use errand_core::Language;
 use errand_core::model::AppState;
 use errand_core::view::{self, ViewContext};
 use jiff::Timestamp;
-use objc2::MainThreadMarker;
-use super::kit;
-use objc2::rc::Retained;
 use objc2::AnyThread;
+use objc2::MainThreadMarker;
+use objc2::rc::Retained;
 use objc2_app_kit::{NSAffineTransformNSAppKitAdditions, NSBitmapImageFileType, NSBitmapImageRep, NSColorRenderingIntent, NSColorSpace, NSDeviceRGBColorSpace, NSGraphicsContext, NSView};
+use objc2_foundation::NSPoint;
 use objc2_foundation::{NSAffineTransform, NSDictionary, NSSize};
 use std::path::Path;
 use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PreviewKind {
+    TaskForm,
     /// The account window.
     Dashboard,
     Dock,
@@ -127,6 +128,13 @@ pub fn render(
     let context = ViewContext { now, zone: errand_core::format::local_zone(), computer: "Mac", language };
     let nothing: Rc<dyn Fn()> = Rc::new(|| {});
     match kind {
+        PreviewKind::TaskForm => {
+            let mut form = super::task_form::TaskForm::new(mtm, poster, language);
+            let _panel = host(mtm, &form.view);
+            form.render(&state.tasks, mtm);
+            form.point(true, 430.0);
+            snapshot(&form.view, output)
+        }
         PreviewKind::Character(avatar) => character(&avatar, output),
         PreviewKind::Simple { open } => {
             let mut simple = Simple::new(mtm, poster, language, CompactEvents::none());
