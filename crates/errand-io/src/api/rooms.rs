@@ -5,7 +5,7 @@
 //! the call again, when the server has forgotten it.
 
 use super::{Api, Endpoint, Origin, Refusal, Service};
-use errand_core::ports::{HttpMethod, HttpRequest, HttpResponse, RoomService};
+use errand_core::ports::{HTTP_BODY_LIMIT, HttpMethod, HttpRequest, HttpResponse, RoomService};
 use errand_core::rooms::{Face, Identity, Invite, Member, PresenceReport, Role, Room, RoomError, RoomMember, RoomSummary, Visibility, invite_code, room_id};
 use errand_core::sessions::TaskCounts;
 use errand_core::{Language, Timestamp};
@@ -18,8 +18,6 @@ use std::time::Duration;
 pub const OFFICIAL_HOST: &str = "errand-backend.vercel.app";
 /// Long enough for the server's function to start cold.
 const TIMEOUT: Duration = Duration::from_secs(15);
-/// A reply this long is not the rooms server's.
-const REPLY_LIMIT: usize = 1024 * 1024;
 /// Every call says which Errand sends it, so the server can turn away versions it no longer serves.
 const USER_AGENT: &str = concat!("Errand/", env!("CARGO_PKG_VERSION"));
 /// The most a count can be, as the server takes and gives them.
@@ -95,7 +93,9 @@ struct InstallId(String);
 impl InstallId {
     /// The UUID the platform made; anything else is not Errand's own and is never sent.
     fn read(id: String) -> Option<InstallId> {
-        let uuid = id.len() == 36 && id.bytes().all(|byte| byte.is_ascii_hexdigit() || byte == b'-');
+        let uuid = id.len() == 36 && id.bytes().enumerate().all(|(i, byte)| {
+            if matches!(i, 8 | 13 | 18 | 23) { byte == b'-' } else { byte.is_ascii_hexdigit() }
+        });
         uuid.then_some(InstallId(id))
     }
 }
@@ -265,6 +265,7 @@ fn report_json(report: &PresenceReport) -> Value {
 }
 
 fn succeeded(response: &HttpResponse) -> Result<(), RoomError> {
+    if response.body.len() > HTTP_BODY_LIMIT { return Err(RoomError::Unreachable); }
     if (200..300).contains(&response.status) { Ok(()) } else { Err(failure(response)) }
 }
 
@@ -272,7 +273,7 @@ fn succeeded(response: &HttpResponse) -> Result<(), RoomError> {
 fn reply(response: &HttpResponse) -> Result<Map<String, Value>, RoomError> {
     succeeded(response)?;
     match serde_json::from_slice::<Value>(&response.body) {
-        Ok(Value::Object(reply)) if response.body.len() <= REPLY_LIMIT => Ok(reply),
+        Ok(Value::Object(reply)) => Ok(reply),
         _ => Err(RoomError::Unreachable),
     }
 }
@@ -280,7 +281,8 @@ fn reply(response: &HttpResponse) -> Result<Map<String, Value>, RoomError> {
 /// What a reply other than success means, from its status and the server's `{"error": "<code>"}`. A 429 never
 /// gets here: [`Api::send`] keeps the wait it asks for.
 fn failure(response: &HttpResponse) -> RoomError {
-    let reply = serde_json::from_slice::<Value>(&response.body).ok().filter(|_| response.body.len() <= REPLY_LIMIT);
+    if response.body.len() > HTTP_BODY_LIMIT { return RoomError::Unreachable; }
+    let reply = serde_json::from_slice::<Value>(&response.body).ok();
     let code = reply.as_ref().and_then(|reply| reply.get("error")).and_then(Value::as_str);
     let failure = match (response.status, code) {
         (401, _) => RoomError::Unauthorized,
@@ -407,8 +409,8 @@ fn checked_room(room: &str) -> Result<&str, RoomError> {
 pub struct HttpRooms {
     api: Arc<Api>,
     /// Reads this install's ID where the platform keeps it, the first time a call needs it.
-    read_id: Box<dyn Fn() -> String + Send + Sync>,
-    id: OnceLock<Option<InstallId>>,
+    read_id: Box<dyn Fn() -> Result<String, RoomError> + Send + Sync>,
+    id: OnceLock<InstallId>,
     language: Language,
     /// Registered with the server this run. Held while registering, so calls made at once register once.
     registered: Mutex<bool>,
@@ -418,12 +420,16 @@ pub struct HttpRooms {
 
 impl HttpRooms {
     /// `read_id` gives this install's ID; `language` is the one Errand speaks, for the server's aliases.
-    pub fn new(api: Arc<Api>, read_id: impl Fn() -> String + Send + Sync + 'static, language: Language) -> HttpRooms {
+    pub fn new(api: Arc<Api>, read_id: impl Fn() -> Result<String, RoomError> + Send + Sync + 'static, language: Language) -> HttpRooms {
         HttpRooms { api, read_id: Box::new(read_id), id: OnceLock::new(), language, registered: Mutex::new(false), too_old: AtomicBool::new(false) }
     }
 
     fn caller(&self) -> Result<Caller<'_>, RoomError> {
-        let id = self.id.get_or_init(|| InstallId::read((self.read_id)())).as_ref().ok_or(RoomError::Rejected)?;
+        if self.id.get().is_none() {
+            let id = InstallId::read((self.read_id)()?).ok_or(RoomError::CredentialsUnavailable)?;
+            let _ = self.id.set(id);
+        }
+        let id = self.id.get().ok_or(RoomError::CredentialsUnavailable)?;
         Ok(Caller { server: self.api.rooms_server().origin(), id, language: self.language })
     }
 

@@ -23,6 +23,7 @@ jobs:
         run: |
           cargo test --locked -p errand-core -p errand-io -p errand-app
           cargo test --locked -p errand-macos --lib
+          cargo test --locked -p errand-macos --test http
       - name: Script tests
         run: |
           python3 Tests/StartupTests.py

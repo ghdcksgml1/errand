@@ -255,6 +255,8 @@ impl Room {
 pub enum RoomError {
     /// The rooms server did not answer, or not as a rooms server would.
     Unreachable,
+    /// This install's secret could not be read from secure storage. Retrying must preserve membership.
+    CredentialsUnavailable,
     /// The server does not know this install, even after it was registered again.
     Unauthorized,
     /// No such room, or a private one the person was not invited to: its tab closes.
@@ -282,7 +284,7 @@ pub enum RoomError {
 impl RoomError {
     /// The room no longer counts the person, so its last answer no longer says who is there with them.
     pub fn left_out(self) -> bool {
-        !matches!(self, RoomError::Unreachable | RoomError::RateLimited | RoomError::TooManyOwned | RoomError::TooManyInvites | RoomError::InviteNotFound | RoomError::TooManyMembers)
+        !matches!(self, RoomError::Unreachable | RoomError::CredentialsUnavailable | RoomError::RateLimited | RoomError::TooManyOwned | RoomError::TooManyInvites | RoomError::InviteNotFound | RoomError::TooManyMembers)
     }
 }
 

@@ -16,6 +16,10 @@ Rust로 만든 Cargo 워크스페이스입니다. 코드는 `crates/` 아래에 
 
 작업방 서버는 별도 저장소(`errand-backend`)입니다. `ERRAND_ROOMS_API`로 다른 서버를 쓸 수 있고, `ERRAND_ROOMS_API=sample`이면 네트워크 없이 예시 데이터로 동작합니다.
 
+작업방 인증정보는 Keychain의 `com.errand.rooms.credentials` 서비스에 보관하며, 계정 이름은 정규화한 서버 origin(스킴·호스트·포트)입니다. 다른 서버는 별도 인증정보를 사용하므로 공식 서버의 계정이나 비공개 방 권한을 공유하지 않습니다. 예전 설정의 `InstallID`는 공식 서버용으로만 이전하고 Keychain에서 읽기를 확인한 뒤 지웁니다. Keychain 오류가 나면 새 계정이나 평문 저장으로 우회하지 않고 다음 요청에서 재시도합니다.
+
+HTTP 전송은 리다이렉트·캐시·쿠키를 사용하지 않고, 응답 헤더와 수신 청크에서 1MiB 제한을 검사합니다. 압축 응답도 해제된 크기를 기준으로 하며, API 계층에서도 JSON 파싱 전에 검사합니다. 첨부 파일은 열린 원본 파일의 `com.apple.quarantine`을 임시 복사본에 적용한 뒤 저장을 완료합니다. 보안 속성을 읽거나 쓰지 못하면 가져오기를 취소합니다.
+
 ## 빌드와 테스트
 
 macOS 13 이상, Command Line Tools, Rust 1.88 이상이 필요합니다.
@@ -27,6 +31,12 @@ python3 scripts/install.py --update
 ```
 
 `scripts/test.sh`는 모든 테스트를 돌립니다. 위젯 검사는 실제 AppKit 창을 쓰므로 화면에 위젯이 잠깐 나타나고, GUI 세션이 필요합니다. 그래서 GitHub Actions에서는 위젯 검사를 빼고 돌립니다. 테스트는 임시 폴더에서 돌고 실제 로그인 정보를 쓰지 않습니다.
+
+실제 Keychain 이전 검사는 임시 키체인과 가짜 인증값만 사용하는 별도 테스트입니다. 개인 키체인은 변경하지 않으며, 실행 후 임시 키체인을 삭제합니다.
+
+```sh
+MACOSX_DEPLOYMENT_TARGET=13.0 cargo test --locked -p errand-macos --lib identity::tests::real_keychain_migration_and_origin_isolation -- --ignored --exact
+```
 
 ## 미리보기
 

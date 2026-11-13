@@ -456,21 +456,7 @@ mod widget {
         rooms(&mut t, mtm, defaults);
         private_rooms(&mut t, mtm, defaults);
         room_tabs(&mut t, mtm, defaults);
-        identity(&mut t, defaults);
         t
-    }
-
-    /// The install's own ID for the room server: random, made once and kept, and another install's differs.
-    fn identity(t: &mut Checks, defaults: &Retained<NSUserDefaults>) {
-        let id = errand_macos::identity::install_id_in(defaults);
-        let parsed = NSUUID::initWithUUIDString(NSUUID::alloc(), &ns(&id));
-        t.check(parsed.is_some() && id == id.to_lowercase(), &format!("An install's ID is a random UUID: {id}"));
-        t.check(errand_macos::identity::install_id_in(defaults) == id, "The install keeps its ID");
-        let suite = format!("{}/errand-identity-{}", env!("CARGO_TARGET_TMPDIR"), NSUUID::new().UUIDString());
-        let other = NSUserDefaults::initWithSuiteName(NSUserDefaults::alloc(), Some(&ns(&suite))).expect("a second defaults suite");
-        t.check(errand_macos::identity::install_id_in(&other) != id, "Another install makes an ID of its own");
-        other.removePersistentDomainForName(&ns(&suite));
-        let _ = std::fs::remove_file(format!("{suite}.plist"));
     }
 
     fn korean(t: &mut Checks, mtm: MainThreadMarker, defaults: &Retained<NSUserDefaults>) {

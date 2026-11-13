@@ -16,3 +16,6 @@ serde_json.workspace = true
 
 tempfile.workspace = true
 base64 = "0.22"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+xattr = "1.7"

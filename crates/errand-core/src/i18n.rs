@@ -942,6 +942,7 @@ impl Language {
     pub fn room_error(self, error: RoomError) -> &'static str {
         match error {
             RoomError::Unreachable => self.pick("작업방 서버에 연결하지 못했어요.", "Couldn't reach the rooms server."),
+            RoomError::CredentialsUnavailable => self.pick("작업방 인증정보를 읽지 못했어요. 키체인 접근을 허용한 뒤 다시 시도해 주세요.", "Couldn't read your rooms credentials. Allow Keychain access, then try again."),
             RoomError::Unauthorized => self.pick("작업방 서버가 이 Mac을 알아보지 못했어요.", "The rooms server didn't recognize this Mac."),
             RoomError::NotFound => self.pick("이 방은 이제 없어요.", "This room is gone."),
             RoomError::Full => self.pick("방이 꽉 찼어요. 자리가 나면 들어가요.", "The room is full. You'll get in when someone leaves."),
