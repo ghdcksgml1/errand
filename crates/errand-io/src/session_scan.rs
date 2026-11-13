@@ -1,6 +1,8 @@
 //! Finds the person's sessions in what Codex and Claude record on this computer, reading only. The apps'
 //! files are never written, and Codex's database never gains `-wal` or `-shm` files from being read.
 
+mod codex_history;
+
 use errand_core::Timestamp;
 use errand_core::sessions::{
     ClaudeMeta, CodexThread, SessionRecords, SessionRow, Turn, claude_row, codex_row, fold_claude, fold_codex, text::claude_project_directory,
@@ -124,6 +126,8 @@ impl SessionScanner {
         let since = (records.tracking_start - errand_core::sessions::records::BOOTSTRAP_WINDOW).as_second();
         let (threads, read) = codex_threads(&db, since);
         drop(db);
+        // Newer Codex versions compress old rollouts after projecting them into this database.
+        let history = open_read_only(&self.sources.codex_home.join("thread_history_1.sqlite"));
         let mut rows = Vec::new();
         for thread in threads {
             let key = format!("codex:{}", thread.id);
@@ -131,7 +135,10 @@ impl SessionScanner {
             if thread.updated_at < records.floor(&key) - SignedDuration::from_secs(1) {
                 continue;
             }
-            let (turn, modified) = self.turn_at(Path::new(&thread.rollout_path), Format::Codex).unwrap_or_default();
+            let (turn, modified) = self.turn_at(Path::new(&thread.rollout_path), Format::Codex)
+                .filter(|(turn, _)| turn.started_at.is_some() || turn.prompt_at.is_some() || turn.finished_at.is_some() || turn.question.is_some())
+                .or_else(|| history.as_ref().and_then(|db| codex_history::latest_turn(db, &thread.id)))
+                .unwrap_or_default();
             rows.push(codex_row(&thread, &turn, modified, read.contains(&thread.id), now));
         }
         rows
@@ -294,12 +301,11 @@ fn text(value: ValueRef<'_>) -> Option<String> {
     }
 }
 
-/// The person's own threads updated since `since`, and the threads Codex has marked read. Guardian and
-/// subagent threads are left out.
+/// The person's threads and explicitly spawned agents, plus the threads Codex has marked read.
+/// Guardian, review and other internal agents stay out; a structured spawn source names a real parent.
 fn codex_threads(db: &Connection, since: i64) -> (Vec<CodexThread>, HashSet<String>) {
-    let query = "SELECT id, rollout_path, COALESCE(NULLIF(name, ''), NULLIF(title, ''), first_user_message), first_user_message, cwd, updated_at \
-                 FROM threads WHERE updated_at >= ? AND (thread_source = 'user' OR \
-                 (COALESCE(thread_source, '') = '' AND source IN ('vscode', 'cli', 'exec')))";
+    let query = "SELECT id, rollout_path, COALESCE(NULLIF(name, ''), NULLIF(title, ''), first_user_message), first_user_message, cwd, updated_at, source, thread_source \
+                 FROM threads WHERE updated_at >= ?";
     let mut threads = Vec::new();
     if let Ok(mut statement) = db.prepare(query)
         && let Ok(mut rows) = statement.query([since])
@@ -307,6 +313,17 @@ fn codex_threads(db: &Connection, since: i64) -> (Vec<CodexThread>, HashSet<Stri
         while let Ok(Some(row)) = rows.next() {
             let column = |index: usize| row.get_ref(index).ok().and_then(text);
             let (Some(id), Some(rollout_path)) = (column(0).filter(|id| !id.is_empty()), column(1).filter(|path| !path.is_empty())) else { continue };
+            let source = column(6).unwrap_or_default();
+            let kind = column(7).unwrap_or_default();
+            let source_json = serde_json::from_str::<serde_json::Value>(&source).ok();
+            let subagent = source_json.as_ref().and_then(|source| source.get("subagent"));
+            let parent_thread_id = subagent.and_then(|agent| agent.get("thread_spawn"))
+                .and_then(|spawn| spawn.get("parent_thread_id")).and_then(serde_json::Value::as_str)
+                .filter(|parent| !parent.is_empty() && *parent != id).map(str::to_owned);
+            let user = subagent.is_none() && (kind == "user" || (kind.is_empty() && matches!(source.as_str(), "vscode" | "cli" | "exec")));
+            if !user && parent_thread_id.is_none() {
+                continue;
+            }
             let updated = match row.get_ref(5) {
                 Ok(ValueRef::Integer(seconds)) => seconds,
                 Ok(ValueRef::Real(seconds)) => seconds as i64,
@@ -319,6 +336,7 @@ fn codex_threads(db: &Connection, since: i64) -> (Vec<CodexThread>, HashSet<Stri
                 first_message: column(3).unwrap_or_default(),
                 cwd: column(4).unwrap_or_default(),
                 updated_at: Timestamp::from_second(updated).unwrap_or(Timestamp::UNIX_EPOCH),
+                parent_thread_id,
             });
         }
     }

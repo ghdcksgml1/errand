@@ -680,3 +680,21 @@ fn a_plan_waiting_for_approval_says_so() {
     let english = view::tray(&state, &english(), 560.0);
     assert_eq!((english.cards[0].chip, english.cards[0].when.as_str()), ("Needs answer", "asked you 2 min ago"));
 }
+
+#[test]
+fn a_codex_subagent_question_uses_the_same_card_and_counts_as_a_question() {
+    let mut state = state();
+    let mut child = asking();
+    child.key = "codex:child".to_owned();
+    child.provider = Provider::Codex;
+    child.parent = Some("codex:parent".to_owned());
+    scanned(&mut state, vec![row("codex:parent", Provider::Codex, 400.0, None), child]);
+    let tray = view::tray(&state, &context(), 560.0);
+    assert_eq!(tray.cards.len(), 1);
+    assert_eq!(tray.cards[0].sub_tasks.len(), 1);
+    let child = &tray.cards[0].sub_tasks[0];
+    assert_eq!((child.provider, child.state, child.chip), (Provider::Codex, SessionState::Asking, "답변 필요"));
+    assert!(child.tooltip.contains("어느 안으로 할까요?"));
+    let header = view::dock(&state, &context()).header.unwrap();
+    assert_eq!(header.pills.iter().map(|pill| pill.words.as_str()).collect::<Vec<_>>(), ["답변 필요 1개", "진행 중 1개"]);
+}

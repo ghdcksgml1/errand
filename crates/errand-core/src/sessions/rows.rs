@@ -54,6 +54,8 @@ pub struct CodexThread {
     pub first_message: String,
     pub cwd: String,
     pub updated_at: Timestamp,
+    /// The thread that spawned this agent, when this is a delegated task.
+    pub parent_thread_id: Option<String>,
 }
 
 /// `read` means Codex has a read receipt with no unread turn; `modified` is the rollout file's.
@@ -73,9 +75,9 @@ pub fn codex_row(thread: &CodexThread, turn: &Turn, modified: Option<Timestamp>,
         url: format!("codex://threads/{}", thread.id),
         seen_in_app: read,
         stalled: stalled(turn, modified, now),
-        parent: None,
+        parent: thread.parent_thread_id.as_ref().map(|id| format!("codex:{id}")),
         on_screen: false,
-        question: None,
+        question: question_for_row(turn),
     }
 }
 
@@ -165,10 +167,11 @@ pub fn claude_row(
         stalled: stalled(turn, transcript_modified, now),
         parent: meta.parent_session.as_deref().map(|parent| format!("{}{parent}", Provider::Claude.session_key_prefix())),
         on_screen: false,
-        question: turn
-            .question
-            .clone()
-            .filter(|_| turn.running)
-            .map(|question| Question { questions: question.questions.iter().map(|text| preview(text, 200)).collect(), ..question }),
+        question: question_for_row(turn),
     })
+}
+
+fn question_for_row(turn: &Turn) -> Option<Question> {
+    turn.question.clone().filter(|_| turn.running)
+        .map(|question| Question { questions: question.questions.iter().map(|text| preview(text, 200)).collect(), ..question })
 }

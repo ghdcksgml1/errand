@@ -138,6 +138,7 @@ fn codex_thread() -> CodexThread {
         first_message: "첫 요청".to_owned(),
         cwd: "/Users/me/app".to_owned(),
         updated_at: ago(30.0),
+        parent_thread_id: None,
     }
 }
 
