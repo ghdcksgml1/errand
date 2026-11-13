@@ -8,7 +8,7 @@ use super::widget::Widget;
 use crate::apps;
 use crate::paths::Paths;
 use dispatch2::{DispatchQueue, DispatchTime};
-use errand_core::model::{Alert, AppState, Confirm, Msg, OpenError, WidgetPreferences};
+use errand_core::model::{Alert, AppState, Confirm, Msg, OpenError, WidgetMode, WidgetPreferences};
 use errand_core::{Language, PerProvider, Provider};
 use errand_core::ports::{Poster, Shell};
 use errand_core::view::{self, MenuAction, ViewContext};
@@ -36,6 +36,8 @@ const HIDDEN_KEY: &str = "FloatingPetsHidden";
 const COLLAPSED_KEY: &str = "SessionTrayCollapsed";
 /// The services the person hid, by the keys Errand's records use for them.
 const HIDDEN_SERVICES_KEY: &str = "HiddenServices";
+/// How much of the widget shows: full, simple or character.
+const MODE_KEY: &str = "WidgetMode";
 
 type Handler = Box<dyn FnMut(Msg)>;
 
@@ -97,6 +99,7 @@ impl MacShell {
             }
             MenuAction::ToggleService(provider) => menu_poster.post(Msg::ToggleService(provider)),
             MenuAction::ShowRooms => menu_poster.post(Msg::ShowRooms),
+            MenuAction::SetWidgetMode(mode) => menu_poster.post(Msg::SetWidgetMode(mode)),
             MenuAction::InstallUpdate => menu_poster.post(Msg::InstallUpdate),
             MenuAction::ResetWidgetPosition => {
                 if let Some(widget) = menu_widget.upgrade() {
@@ -232,12 +235,14 @@ pub fn stored_preferences(defaults: &NSUserDefaults) -> WidgetPreferences {
     if Provider::ALL.iter().all(|provider| hidden_services[*provider]) {
         hidden_services = PerProvider::default();
     }
-    WidgetPreferences { hidden: defaults.boolForKey(&ns(HIDDEN_KEY)), collapsed: defaults.boolForKey(&ns(COLLAPSED_KEY)), hidden_services }
+    let mode = defaults.stringForKey(&ns(MODE_KEY)).and_then(|key| WidgetMode::from_storage_key(&key.to_string())).unwrap_or_default();
+    WidgetPreferences { hidden: defaults.boolForKey(&ns(HIDDEN_KEY)), collapsed: defaults.boolForKey(&ns(COLLAPSED_KEY)), hidden_services, mode }
 }
 
 pub fn store_preferences(defaults: &NSUserDefaults, preferences: WidgetPreferences) {
     defaults.setBool_forKey(preferences.hidden, &ns(HIDDEN_KEY));
     defaults.setBool_forKey(preferences.collapsed, &ns(COLLAPSED_KEY));
+    unsafe { defaults.setObject_forKey(Some(&ns(preferences.mode.storage_key())), &ns(MODE_KEY)) };
     let hidden: Vec<Retained<NSString>> =
         Provider::ALL.into_iter().filter(|provider| preferences.hidden_services[*provider]).map(|provider| ns(provider.storage_key())).collect();
     unsafe { defaults.setObject_forKey(Some(&NSArray::from_retained_slice(&hidden)), &ns(HIDDEN_SERVICES_KEY)) };

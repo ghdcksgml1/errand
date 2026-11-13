@@ -3,7 +3,7 @@
 //! session titles or a model's name, is shown as it came.
 
 use crate::avatar::{Avatar, Eyes, Mouth, Outfit, Part, Shape, Top};
-use crate::model::{Alert, Confirm, Notice, OpenError};
+use crate::model::{Alert, Confirm, Notice, OpenError, WidgetMode};
 use crate::provider::Provider;
 use crate::rooms::{MAX_ROOMS, Presence, RoomError, Visibility};
 use crate::sessions::SessionState;
@@ -393,6 +393,15 @@ impl Language {
             Language::Korean => format!("내가 시킨 작업 {count}개{pills}. {}", self.fold_word(collapsed)),
             Language::English => format!("My tasks, {count}{pills}. {}", self.fold_word(collapsed)),
         }
+    }
+
+    /// The simple widget's line with nothing on errand, beside the person's character.
+    pub fn no_errands(self) -> &'static str {
+        self.pick("맡긴 일 없음", "No errands")
+    }
+
+    pub fn simple_counts_tooltip(self, open: bool) -> &'static str {
+        if open { self.pick("클릭해서 작업 접기", "Click to hide the tasks") } else { self.pick("클릭해서 맡긴 작업 모두 보기", "Click to see every task") }
     }
 
     /// The word beside the header's chevron: what a click does.
@@ -1260,6 +1269,14 @@ impl Language {
 
     pub fn widget_item(self, visible: bool) -> &'static str {
         if visible { self.pick("플로팅 위젯 숨기기", "Hide Floating Widget") } else { self.pick("플로팅 위젯 보이기", "Show Floating Widget") }
+    }
+
+    pub fn widget_mode_item(self, mode: WidgetMode) -> &'static str {
+        match mode {
+            WidgetMode::Full => self.pick("크게 보기", "Full Widget"),
+            WidgetMode::Simple => self.pick("간단히 보기", "Simple Widget"),
+            WidgetMode::Character => self.pick("캐릭터만", "Character Only"),
+        }
     }
 
     pub fn reset_widget_item(self) -> &'static str {

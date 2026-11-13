@@ -2,6 +2,9 @@
 //! accounts.
 
 use super::avatar_editor::AvatarEditor;
+use super::compact::{Character, CompactEvents, Simple};
+use super::kit::FlippedView;
+use objc2_foundation::NSPoint;
 use super::dashboard::Dashboard;
 use super::rooms::Rooms;
 use super::details::Details;
@@ -37,6 +40,11 @@ pub enum PreviewKind {
     Rooms,
     /// One character whole, on nothing.
     Character(Avatar),
+    /// The simple widget: a one-line card per task that calls, over the line of counts and batteries; open, every
+    /// task's line.
+    Simple { open: bool },
+    /// The character-only widget; open, with the simple widget over it, as the pointer resting on it shows.
+    Badge { open: bool },
 }
 
 fn capture(view: &NSView) -> Option<Retained<NSBitmapImageRep>> {
@@ -120,6 +128,29 @@ pub fn render(
     let nothing: Rc<dyn Fn()> = Rc::new(|| {});
     match kind {
         PreviewKind::Character(avatar) => character(&avatar, output),
+        PreviewKind::Simple { open } => {
+            let mut simple = Simple::new(mtm, poster, language, CompactEvents::none());
+            let height = simple.render(&view::simple(state, &context, open), mtm);
+            // 16 points in from a clear edge, as the cards' picture is.
+            let frame = FlippedView::new(mtm, kit::rect(0.0, 0.0, layout::STACK_WIDTH + 32.0, height + 32.0));
+            simple.view.setFrameOrigin(NSPoint::new(16.0, 16.0));
+            frame.addSubview(&simple.view);
+            let _panel = host(mtm, &frame);
+            snapshot(&frame, output)
+        }
+        PreviewKind::Badge { open } => {
+            let mut character = Character::new(mtm, poster, language, CompactEvents::none());
+            let line = open.then(|| view::simple(state, &context, false));
+            let size = character.render(&view::badge(state, &context), line.as_ref(), true, mtm);
+            // The circle 16 points in from a clear edge; its marks stand out past it.
+            let inset = (layout::BADGE_SIZE - layout::BADGE_CIRCLE) / 2.0;
+            let margin = 16.0 - inset;
+            let frame = FlippedView::new(mtm, kit::rect(0.0, 0.0, size.width + margin * 2.0, size.height + margin * 2.0));
+            character.view.setFrameOrigin(NSPoint::new(margin, margin));
+            frame.addSubview(&character.view);
+            let _panel = host(mtm, &frame);
+            snapshot(&frame, output)
+        }
         PreviewKind::Rooms => {
             let mut rooms = Rooms::new(mtm, poster);
             let _panel = host(mtm, &rooms.view);
@@ -149,6 +180,7 @@ pub fn render(
                 dragged: Rc::new(|_, _| {}),
                 expand_room: Rc::new(|_| {}),
                 show_rooms: nothing.clone(),
+                mode_menu: Rc::new(|| None),
             };
             let mut dock = Dock::new(mtm, events, language);
             let vm = view::dock(state, &context);
@@ -169,6 +201,7 @@ pub fn render(
                 dragged: Rc::new(|_, _| {}),
                 expand_room: Rc::new(|_| {}),
                 show_rooms: nothing.clone(),
+                mode_menu: Rc::new(|| None),
             };
             let mut dock = Dock::new(mtm, events, language);
             let vm = view::dock(state, &context);

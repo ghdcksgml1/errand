@@ -1,33 +1,49 @@
 //! The floating widget: the dock in the bottom-right corner, the task cards stacked on it, and the usage
 //! details or the character editor beside it. Its place survives relaunch and comes back into view when a
-//! monitor goes away.
+//! monitor goes away. On a small screen it can be one line instead, or the person's character alone; it keeps
+//! the side of the screen it sits nearer, so changing size never moves it away from its corner.
 
 use super::avatar_editor::AvatarEditor;
+use super::compact::{self, Character, CompactEvents, Simple};
 use super::details::Details;
 use super::rooms::Rooms;
 use super::dock::{Dock, DockEvents};
 use super::tray::Tray;
-use super::kit::ns;
+use super::kit::{self, Action, ns};
 use super::panel::{TypingPanel, make_panel, make_typing_panel, primary_height, screen_frame, to_cocoa, to_core, visible_frames};
+use dispatch2::{DispatchQueue, DispatchTime};
 use errand_core::Language;
-use errand_core::layout::{self, DockShape, Rect, STACK_WIDTH};
-use errand_core::model::{AppState, Msg};
+use errand_core::layout::{self, BADGE_SIZE, DockShape, Rect, STACK_WIDTH, STRIP_HEIGHT};
+use errand_core::model::{AppState, Msg, WidgetMode};
 use errand_core::ports::Poster;
-use errand_core::view::{self, ViewContext};
+use errand_core::view::{self, MenuAction, MenuItemVm, ViewContext};
 use objc2::rc::Retained;
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSApplicationDidChangeScreenParametersNotification, NSPanel};
+use objc2_app_kit::{NSApplicationDidChangeScreenParametersNotification, NSEvent, NSMenu, NSPanel, NSView};
 use objc2_foundation::{NSArray, NSNotificationCenter, NSNumber, NSPoint, NSSize, NSUserDefaults};
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
+use std::time::Duration;
 
 const POSITION_KEY: &str = "FloatingPetsPosition";
+/// The widget keeps its right edge where it changes size; false, its left.
+const ANCHOR_KEY: &str = "WidgetAnchoredRight";
 
 pub struct Widget {
     mtm: MainThreadMarker,
     pub panel: Retained<NSPanel>,
     pub dock: Dock,
+    /// The one-line widget, and the character-only one that opens into it.
+    simple: Simple,
+    character: Character,
+    /// What the panel holds, as last drawn.
+    mode: WidgetMode,
+    /// The edge kept when the widget changes size: the side of the screen it sits nearer.
+    anchor_right: bool,
+    /// The widget's right-click menu, as the last render had it, and the targets of the menu on show.
+    mode_items: Rc<RefCell<Vec<MenuItemVm>>>,
+    _menu_actions: Rc<RefCell<Vec<Retained<Action>>>>,
     pub details_panel: Retained<NSPanel>,
     details: Details,
     pub avatar_editor_panel: Retained<NSPanel>,
@@ -51,6 +67,43 @@ impl Widget {
             };
             let began = this.clone();
             let dragged = this.clone();
+            let drag_began: Rc<dyn Fn()> = {
+                let poster = poster.clone();
+                Rc::new(move || {
+                    if let Some(widget) = began.upgrade() {
+                        let mut widget = widget.borrow_mut();
+                        widget.drag_origin = Some(widget.dock_frame());
+                    }
+                    poster.post(Msg::CloseDetails);
+                    poster.post(Msg::CloseAvatarEditor);
+                    poster.post(Msg::CloseRooms);
+                })
+            };
+            let drag: Rc<dyn Fn(NSPoint, bool)> = {
+                let poster = poster.clone();
+                Rc::new(move |delta: NSPoint, done: bool| {
+                    let Some(widget) = dragged.upgrade() else { return };
+                    let mut widget = widget.borrow_mut();
+                    let Some(start) = widget.drag_origin else { return };
+                    // AppKit's y grows upward; the core's downward.
+                    widget.move_to(Rect { x: start.x + delta.x, y: start.y - delta.y, ..start }, done);
+                    if done {
+                        widget.drag_origin = None;
+                        poster.post(Msg::Redraw);
+                    }
+                })
+            };
+            let mode_items: Rc<RefCell<Vec<MenuItemVm>>> = Rc::new(RefCell::new(Vec::new()));
+            let menu_actions: Rc<RefCell<Vec<Retained<Action>>>> = Rc::new(RefCell::new(Vec::new()));
+            let mode_menu: Rc<dyn Fn() -> Option<Retained<NSMenu>>> = {
+                let (items, actions, poster) = (mode_items.clone(), menu_actions.clone(), poster.clone());
+                let on_action: Rc<dyn Fn(MenuAction)> = Rc::new(move |action| {
+                    if let MenuAction::SetWidgetMode(mode) = action {
+                        poster.post(Msg::SetWidgetMode(mode));
+                    }
+                });
+                Rc::new(move || Some(compact::mode_menu(&items.borrow(), &on_action, &actions, mtm)))
+            };
             let events = DockEvents {
                 toggle_details: post(|| Msg::ToggleDetails),
                 toggle_tray: post(|| Msg::ToggleTray),
@@ -65,35 +118,40 @@ impl Widget {
                     let poster = poster.clone();
                     Rc::new(move |room, member, name| poster.post(Msg::AskRemoveMember { room, member, name }))
                 },
-                drag_began: {
-                    let poster = poster.clone();
-                    Rc::new(move || {
-                        if let Some(widget) = began.upgrade() {
-                            let mut widget = widget.borrow_mut();
-                            widget.drag_origin = Some(widget.dock_frame());
-                        }
-                        poster.post(Msg::CloseDetails);
-                        poster.post(Msg::CloseAvatarEditor);
-                        poster.post(Msg::CloseRooms);
-                    })
-                },
-                dragged: {
-                    let poster = poster.clone();
-                    Rc::new(move |delta: NSPoint, done: bool| {
-                        let Some(widget) = dragged.upgrade() else { return };
-                        let mut widget = widget.borrow_mut();
-                        let Some(start) = widget.drag_origin else { return };
-                        // AppKit's y grows upward; the core's downward.
-                        widget.move_to(Rect { x: start.x + delta.x, y: start.y - delta.y, ..start }, done);
-                        if done {
-                            widget.drag_origin = None;
-                            poster.post(Msg::Redraw);
-                        }
-                    })
-                },
+                drag_began: drag_began.clone(),
+                dragged: drag.clone(),
                 edit_avatar: post(|| Msg::ToggleAvatarEditor),
+                mode_menu: mode_menu.clone(),
+            };
+            let compact_events = CompactEvents {
+                toggle_list: post(|| Msg::ToggleLines),
+                toggle_details: post(|| Msg::ToggleDetails),
+                edit_avatar: post(|| Msg::ToggleAvatarEditor),
+                drag_began,
+                dragged: drag,
+                menu: mode_menu,
+                hover: {
+                    let (poster, widget) = (poster.clone(), this.clone());
+                    Rc::new(move |on: bool| {
+                        if on {
+                            poster.post(Msg::PointerOnBadge(true));
+                            return;
+                        }
+                        // A moment's grace: the pointer may only be crossing a gap, or the widget opening under it.
+                        let Some(frame) = widget.upgrade().and_then(|widget| widget.try_borrow().ok().map(|widget| widget.panel.frame())) else { return };
+                        let poster = poster.clone();
+                        let when = DispatchTime::try_from(Duration::from_millis(350)).unwrap_or(DispatchTime::NOW);
+                        let _ = DispatchQueue::main().after(when, move || {
+                            if !kit::contains(frame, NSEvent::mouseLocation()) {
+                                poster.post(Msg::PointerOnBadge(false));
+                            }
+                        });
+                    })
+                },
             };
             let dock = Dock::new(mtm, events, language);
+            let simple = Simple::new(mtm, poster.clone(), language, compact_events.clone());
+            let character = Character::new(mtm, poster.clone(), language, compact_events);
             let panel = make_panel(mtm, NSSize::new(STACK_WIDTH, layout::dock_height(DockShape::FULL)), language.window_title_usage());
             panel.setContentView(Some(&dock.view));
             let details = Details::new(mtm, poster.clone(), language);
@@ -114,6 +172,12 @@ impl Widget {
                 mtm,
                 panel,
                 dock,
+                simple,
+                character,
+                mode: WidgetMode::Full,
+                anchor_right: true,
+                mode_items,
+                _menu_actions: menu_actions,
                 details_panel,
                 details,
                 avatar_editor_panel,
@@ -132,6 +196,7 @@ impl Widget {
                 None => layout::default_dock_frame(widget.main_screen(), DockShape::FULL),
             };
             widget.move_to(frame, false);
+            widget.anchor_right = widget.stored_anchor().unwrap_or_else(|| widget.dock_frame().mid_x() > widget.main_screen().mid_x());
             let screens = this.clone();
             let redraw = poster.clone();
             let block = block2::RcBlock::new(move |_| {
@@ -158,7 +223,8 @@ impl Widget {
         screen_frame(&self.panel, self.mtm)
     }
 
-    /// The saved bottom-left corner, in AppKit coordinates as the Objective-C build stored it.
+    /// The saved bottom-left corner, in AppKit coordinates as the Objective-C build stored it. It is the full dock's
+    /// corner whatever size the widget is, so an older Errand puts the dock where this one left it.
     fn stored_origin(&self) -> Option<NSPoint> {
         let stored = self.defaults.arrayForKey(&ns(POSITION_KEY))?;
         let numbers: Vec<f64> = stored.iter().filter_map(|value| value.downcast::<NSNumber>().ok()).map(|number| number.doubleValue()).collect();
@@ -168,15 +234,44 @@ impl Widget {
         }
     }
 
+    fn stored_anchor(&self) -> Option<bool> {
+        let stored = self.defaults.objectForKey(&ns(ANCHOR_KEY))?;
+        Some(stored.downcast::<NSNumber>().ok()?.boolValue())
+    }
+
     pub fn dock_frame(&self) -> Rect {
         to_core(self.panel.frame(), primary_height(self.mtm))
     }
 
+    /// Where the widget sits across the screen: the dock's middle, or the character's, which keeps its own side.
+    fn sits_right(&self, frame: Rect, screen: Rect) -> bool {
+        let middle = match self.mode {
+            WidgetMode::Character if self.anchor_right => frame.right() - BADGE_SIZE / 2.0,
+            WidgetMode::Character => frame.x + BADGE_SIZE / 2.0,
+            _ => frame.mid_x(),
+        };
+        middle > screen.mid_x()
+    }
+
     /// Moves the dock, kept on a connected screen; `persist` saves the place for the next launch.
     pub fn move_to(&mut self, frame: Rect, persist: bool) {
-        let frame = layout::constrained_frame(frame, &visible_frames(self.mtm));
-        let cocoa = to_cocoa(frame, primary_height(self.mtm));
-        self.panel.setFrame_display(cocoa, true);
+        let mut frame = layout::constrained_frame(frame, &visible_frames(self.mtm));
+        let primary = primary_height(self.mtm);
+        self.panel.setFrame_display(to_cocoa(frame, primary), true);
+        if persist {
+            // Let go across the middle of the screen, the widget keeps the other edge from now on. The character
+            // stays where it was let go; the simple widget open over it swaps sides around it.
+            let right = self.sits_right(frame, self.main_screen());
+            if right != self.anchor_right {
+                if self.mode == WidgetMode::Character {
+                    let circle = if self.anchor_right { frame.right() - BADGE_SIZE } else { frame.x };
+                    frame.x = if right { circle + BADGE_SIZE - frame.width } else { circle };
+                    frame = layout::constrained_frame(frame, &visible_frames(self.mtm));
+                    self.panel.setFrame_display(to_cocoa(frame, primary), true);
+                }
+                self.anchor_right = right;
+            }
+        }
         if self.details_panel.isVisible() {
             self.place_details();
         }
@@ -191,15 +286,33 @@ impl Widget {
             self.place_tray();
         }
         if persist {
-            let origin = [NSNumber::new_f64(cocoa.origin.x), NSNumber::new_f64(cocoa.origin.y)];
-            unsafe { self.defaults.setObject_forKey(Some(&NSArray::from_retained_slice(&origin)), &ns(POSITION_KEY)) };
+            let cocoa = to_cocoa(frame, primary);
+            let x = if self.anchor_right { cocoa.origin.x + cocoa.size.width - STACK_WIDTH } else { cocoa.origin.x };
+            let origin = [NSNumber::new_f64(x), NSNumber::new_f64(cocoa.origin.y)];
+            unsafe {
+                self.defaults.setObject_forKey(Some(&NSArray::from_retained_slice(&origin)), &ns(POSITION_KEY));
+                self.defaults.setObject_forKey(Some(&NSNumber::new_bool(self.anchor_right)), &ns(ANCHOR_KEY));
+            }
+        }
+    }
+
+    /// How far down the smaller widgets a bubble's tail points: at their line, or at the character.
+    fn compact_aim(&self) -> Option<f64> {
+        let height = self.dock_frame().height;
+        match self.mode {
+            WidgetMode::Full => None,
+            WidgetMode::Simple => Some(height - STRIP_HEIGHT / 2.0),
+            WidgetMode::Character => Some(height - BADGE_SIZE / 2.0),
         }
     }
 
     /// The details beside the dock, on the side with more room, the tail aimed at the batteries.
     fn place_details(&self) {
-        let dock = self.dock_frame();
-        let placement = layout::detail_placement(dock, self.main_screen(), &visible_frames(self.mtm), self.dock.shape());
+        let (dock, screen, visible, shape) = (self.dock_frame(), self.main_screen(), visible_frames(self.mtm), self.dock.shape());
+        let placement = match self.compact_aim() {
+            None => layout::detail_placement(dock, screen, &visible, shape),
+            Some(aim) => layout::popover_placement(dock, screen, &visible, layout::detail_body_width(shape.batteries) + layout::POPOVER_TAIL, layout::DETAIL_HEIGHT, aim),
+        };
         self.details_panel.setFrame_display(to_cocoa(placement.frame, primary_height(self.mtm)), true);
         self.details.point(placement.tail_on_right, placement.tail_y);
     }
@@ -214,14 +327,22 @@ impl Widget {
     }
 
     fn place_avatar_editor(&self) {
-        let placement = layout::avatar_editor_placement(self.dock_frame(), self.main_screen(), &visible_frames(self.mtm), self.dock.shape());
+        let (dock, screen, visible) = (self.dock_frame(), self.main_screen(), visible_frames(self.mtm));
+        let placement = match self.compact_aim() {
+            None => layout::avatar_editor_placement(dock, screen, &visible, self.dock.shape()),
+            Some(aim) => layout::popover_placement(dock, screen, &visible, layout::AVATAR_EDITOR_WIDTH + layout::POPOVER_TAIL, layout::AVATAR_EDITOR_HEIGHT, aim),
+        };
         self.avatar_editor_panel.setFrame_display(to_cocoa(placement.frame, primary_height(self.mtm)), true);
         self.avatar_editor.point(placement.tail_on_right, placement.tail_y);
     }
 
     /// The list of rooms beside the dock, the tail aimed at what opens it.
     fn place_rooms(&self) {
-        let placement = layout::rooms_placement(self.dock_frame(), self.main_screen(), &visible_frames(self.mtm), self.dock.shape());
+        let (dock, screen, visible) = (self.dock_frame(), self.main_screen(), visible_frames(self.mtm));
+        let placement = match self.compact_aim() {
+            None => layout::rooms_placement(dock, screen, &visible, self.dock.shape()),
+            Some(aim) => layout::popover_placement(dock, screen, &visible, layout::ROOMS_WIDTH + layout::POPOVER_TAIL, layout::ROOMS_HEIGHT, aim),
+        };
         self.rooms_panel.setFrame_display(to_cocoa(placement.frame, primary_height(self.mtm)), true);
         self.rooms.point(placement.tail_on_right, placement.tail_y);
     }
@@ -237,20 +358,61 @@ impl Widget {
     }
 
     pub fn reset_position(&mut self) {
-        let frame = layout::default_dock_frame(self.main_screen(), self.dock.shape());
-        self.move_to(frame, true);
+        let full = layout::default_dock_frame(self.main_screen(), self.dock.shape());
+        let frame = self.dock_frame();
+        self.anchor_right = true;
+        self.move_to(Rect { x: full.right() - frame.width, y: full.bottom() - frame.height, ..frame }, true);
+    }
+
+    /// The panel holds the dock, the line or the character.
+    fn hold(&mut self, mode: WidgetMode) {
+        if self.mode == mode {
+            return;
+        }
+        let view: &NSView = match mode {
+            WidgetMode::Full => &self.dock.view,
+            WidgetMode::Simple => &self.simple.view,
+            WidgetMode::Character => &self.character.view,
+        };
+        self.panel.setContentView(Some(view));
+        self.mode = mode;
+    }
+
+    /// How much of the screen above the widget's foot the one-line cards may take.
+    fn room_for_lines(&self, under: f64) -> f64 {
+        let (frame, screen) = (self.dock_frame(), self.main_screen());
+        (frame.bottom() - screen.y - layout::STACK_GAP - under).min(layout::TRAY_MAX_HEIGHT)
     }
 
     pub fn render(&mut self, state: &AppState, context: &ViewContext) {
         let dock = view::dock(state, context);
         let shape = dock.shape();
+        // The dock is drawn whatever shows, so the bubbles beside the smaller widgets still know its batteries.
         self.dock.render(&dock, self.mtm);
-        // The dock keeps its bottom edge, growing upward when the task header appears or a room opens, and
-        // shrinking when a service is hidden.
+        *self.mode_items.borrow_mut() = view::widget_modes(state, context.language);
+        self.hold(state.widget.mode);
+        let size = match state.widget.mode {
+            WidgetMode::Full => NSSize::new(STACK_WIDTH, layout::dock_height(shape)),
+            WidgetMode::Simple => {
+                let mut line = view::simple(state, context, state.lines_open);
+                line.lines.truncate(layout::lines_that_fit(self.room_for_lines(0.0)));
+                NSSize::new(STACK_WIDTH, self.simple.render(&line, self.mtm))
+            }
+            WidgetMode::Character => {
+                let line = state.badge_open.then(|| {
+                    let mut line = view::simple(state, context, state.lines_open);
+                    line.lines.truncate(layout::lines_that_fit(self.room_for_lines(BADGE_SIZE + layout::STACK_GAP)));
+                    line
+                });
+                self.character.render(&view::badge(state, context), line.as_ref(), self.anchor_right, self.mtm)
+            }
+        };
+        // The widget keeps its bottom edge and its side's, growing upward when the task header appears, a room
+        // opens or a line comes, and shrinking when a service is hidden.
         let frame = self.dock_frame();
-        let height = layout::dock_height(shape);
-        if frame.height != height {
-            self.move_to(Rect { y: frame.bottom() - height, height, ..frame }, false);
+        if frame.width != size.width || frame.height != size.height {
+            let x = if self.anchor_right { frame.right() - size.width } else { frame.x };
+            self.move_to(Rect { x, y: frame.bottom() - size.height, width: size.width, height: size.height }, false);
         }
         if state.widget.hidden {
             self.panel.orderOut(None);

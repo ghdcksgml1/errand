@@ -162,3 +162,12 @@ fn path_data_parses_like_svg() {
     let (low, high) = path::bounds(&arc).unwrap();
     assert!((low.y + 5.0).abs() < 0.01 && high.y.abs() < 1e-9 && (high.x - 10.0).abs() < 1e-9, "a sweep half circle bulges upward: {low:?} {high:?}");
 }
+
+#[test]
+fn the_simple_widget_grows_a_line_at_a_time() {
+    assert_eq!(layout::simple_height(0), layout::STRIP_HEIGHT, "with nothing calling, it is its own line");
+    assert_eq!(layout::simple_height(2), 2.0 * 36.0 + 6.0 + 8.0 + 40.0);
+    assert_eq!(layout::lines_that_fit(layout::simple_height(3)), 3);
+    assert_eq!(layout::lines_that_fit(layout::simple_height(3) - 1.0), 2, "only whole lines fit");
+    assert_eq!(layout::lines_that_fit(10.0), 0);
+}

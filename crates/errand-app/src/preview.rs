@@ -44,6 +44,11 @@ pub fn state(arguments: &[String], now: Timestamp, language: Language) -> AppSta
     if has("--preview-multiple") {
         claude_reading.windows.extend(claude::window("limits/Fable", 88, 1792368000.0));
     }
+    if has("--preview-low") {
+        // Claude's week nearly spent: 18% left.
+        let low = json!({"five_hour": {"used_percentage": 35.4, "resets_at": 1792054800}, "seven_day": {"used_percentage": 82, "resets_at": 1792368000}});
+        claude_reading.windows = claude::windows_from_rate_limits(&low);
+    }
     for (provider, reading) in [(Provider::Codex, codex_reading), (Provider::Claude, claude_reading)] {
         update(&mut state, Msg::UsageRead { provider, result: Ok(reading) }, fetched);
     }
@@ -78,7 +83,8 @@ pub fn state(arguments: &[String], now: Timestamp, language: Language) -> AppSta
     // so the person's report carries the character they would send.
     state.profile = if has("--preview-profile") { Platform::current(language).profile() } else { Profile { avatar: nickname.clone(), name: nickname } };
     // The cards come before the rooms, so the person's row in a room counts what their own task header does.
-    if has("--preview-tray") {
+    let compact = ["--preview-simple", "--preview-simple-open", "--preview-badge", "--preview-badge-open"].iter().any(|flag| has(flag));
+    if has("--preview-tray") || compact {
         add_sessions(&mut state, arguments, now, language);
     }
     // The sample rooms: `--preview-rooms` lists them beside the dock. With `--preview-room` the person is in the
@@ -236,6 +242,19 @@ pub fn add_sessions(state: &mut AppState, arguments: &[String], now: Timestamp, 
         let question = say("하위 작업 카드를 어떤 시안으로 구현할까요?", "Which mock-up should the sub-task cards follow?");
         waiting.row.question = Some(Question { id: "toolu_preview".to_owned(), asked_at: ago(120), questions: vec![question.to_owned()] });
         shown.insert(0, waiting);
+    }
+    if has("--preview-calm") {
+        // Nothing calls: the new result was opened, and only the running request is left to wait on.
+        shown[0].seen = true;
+    }
+    if has("--preview-stalled") {
+        // A request that has said nothing for over twenty minutes.
+        let mut quiet = card("codex:preview-stalled", Provider::Codex, say("이미지 리사이즈 스크립트", "Image resize script"), say("썸네일 만드는 스크립트 짜줘", "Write the thumbnail script"), ago(2400), None, false);
+        quiet.row.stalled = true;
+        shown.insert(0, quiet);
+    }
+    if has("--preview-no-tasks") {
+        shown.clear();
     }
     // As a scan would: a hidden service's tasks are left out.
     shown.retain(|session| state.shows(session.row.provider));
