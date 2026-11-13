@@ -1,6 +1,6 @@
 //! Claude Code's own `/usage`: Errand runs the official Claude Code and reads what it prints, as it does Codex's
-//! `app-server`. The login stays Claude Code's and no model is called, so it costs no usage. It runs only when the
-//! person presses refresh, never on a timer, which is why it is its own call and not part of reading usage.
+//! `app-server`. The login stays Claude Code's and no model is called, so it costs no usage. The app asks on launch,
+//! every two minutes, and when the person presses refresh.
 
 use errand_core::json;
 use serde_json::Value;
@@ -17,7 +17,7 @@ pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(20);
 const ANSWER_LIMIT: u64 = 1024 * 1024;
 /// Inherited settings that would make it answer for some other account.
 const ACCOUNT_OVERRIDES: [&str; 3] = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"];
-/// A press of refresh is not a session: it keeps no transcript and starts none of the person's hooks or servers.
+/// A usage read is not a session: it keeps no transcript and starts none of the person's hooks or servers.
 const ARGUMENTS: [&str; 8] =
     ["-p", "/usage", "--output-format", "json", "--no-session-persistence", "--strict-mcp-config", "--settings", r#"{"disableAllHooks":true}"#];
 

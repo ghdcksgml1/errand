@@ -5,6 +5,7 @@ pub mod codex;
 
 use crate::format::{month_day_time, timestamp_from_seconds};
 use crate::i18n::Language;
+use crate::Provider;
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
@@ -39,7 +40,7 @@ impl WindowName {
 pub enum UsageError {
     /// Nothing has told Errand Claude's limits yet.
     ClaudeNotHeard,
-    /// The person pressed refresh, Claude Code gave no limits, and there are none on record to show.
+    /// Claude Code gave no limits and there is no recent report to use for this refresh.
     ClaudeAskFailed,
     /// No official Codex app with its command-line tool.
     CodexMissing,
@@ -122,6 +123,20 @@ pub fn limiting_window(windows: &[UsageWindow]) -> Option<&UsageWindow> {
         Some(lowest) if lowest.remaining_percent <= window.remaining_percent => Some(lowest),
         _ => Some(window),
     })
+}
+
+/// Claude's account-wide week is the overview; a spent model quota still belongs in the details.
+/// Without the week, prefer an account-wide limit, then any known model limit. Codex keeps its lowest limit.
+pub fn display_window(provider: Provider, windows: &[UsageWindow]) -> Option<&UsageWindow> {
+    if provider == Provider::Claude {
+        if let Some(weekly) = windows.iter().find(|window| window.identifier == "seven_day" && window.remaining_percent.is_some()) {
+            return Some(weekly);
+        }
+        if let Some(overall) = windows.iter().filter(|window| window.name.model.is_none() && window.remaining_percent.is_some()).min_by_key(|window| window.remaining_percent) {
+            return Some(overall);
+        }
+    }
+    limiting_window(windows)
 }
 
 /// "주간 96% 남음 · 5시간 75% 남음" for the menu.

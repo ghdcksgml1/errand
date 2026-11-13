@@ -261,11 +261,16 @@ impl AppState {
 
     pub fn mood(&self, provider: Provider, now: Timestamp) -> Mood {
         let slot = &self.usage[provider];
-        let recent = self.last_resets(provider).values().any(|reset| {
-            let age = now.duration_since(*reset);
+        let windows = if provider == Provider::Claude {
+            usage::display_window(provider, &slot.windows).map(std::slice::from_ref).unwrap_or_default()
+        } else {
+            &slot.windows
+        };
+        let recent = windows.iter().filter_map(|window| self.history.last_reset(provider, &window.identifier)).any(|reset| {
+            let age = now.duration_since(reset);
             age >= SignedDuration::ZERO && age < RECENT_RESET
         });
-        usage::mood(&slot.windows, slot.failure.is_some(), recent)
+        usage::mood(windows, slot.failure.is_some(), recent)
     }
 }
 
@@ -284,9 +289,9 @@ pub enum Msg {
     PickAvatar(Avatar),
     /// The editor's shuffle: a new random character.
     ShuffleAvatar,
-    /// The timer, a refresh button or the menu.
+    /// At launch and every two minutes, fetch fresh limits from both services.
     RefreshUsage,
-    /// The person pressed refresh, so Claude Code is asked too. Nothing automatic sends this.
+    /// The person pressed refresh; uses the same live reads as the timer.
     AskUsage,
     /// At launch and once a day.
     CheckForUpdate,
@@ -310,7 +315,7 @@ pub enum Msg {
     ToggleTray,
     /// The menu bar or the widget's right-click: how much of the widget shows from now on.
     SetWidgetMode(WidgetMode),
-    /// The simple widget's counts: every task's line, or back to those that call.
+    /// The simple widget's counts: every task's line, or back to calls and opened answers.
     ToggleLines,
     /// The pointer came onto the character-only widget, or left it and the simple widget over it.
     PointerOnBadge(bool),
@@ -388,7 +393,7 @@ pub enum Msg {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     FetchUsage(Provider),
-    /// Reads Claude's usage after asking Claude Code, which only a press of refresh does.
+    /// Reads Claude's usage after asking Claude Code, on the timer or a press of refresh.
     AskClaudeCode,
     FetchRelease,
     /// Downloads this release and puts it in place of the app, which then starts again.
@@ -514,11 +519,7 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             vec![Effect::SaveAvatar(state.profile.avatar.clone())]
         }
         Msg::ShuffleAvatar => vec![Effect::NewAvatarSeed],
-        Msg::RefreshUsage => refresh_usage(state),
-        Msg::AskUsage => refresh_usage(state)
-            .into_iter()
-            .map(|effect| if effect == Effect::FetchUsage(Provider::Claude) { Effect::AskClaudeCode } else { effect })
-            .collect(),
+        Msg::RefreshUsage | Msg::AskUsage => refresh_usage(state),
         Msg::CheckForUpdate => {
             if matches!(state.update, UpdateState::Installing(_)) { vec![] } else { vec![Effect::FetchRelease] }
         }
@@ -1203,7 +1204,10 @@ fn refresh_usage(state: &mut AppState) -> Vec<Effect> {
     let shown = state.shown_providers();
     state.fetching = shown.iter().copied().collect();
     let mut effects = vec![Effect::ReadProfile];
-    effects.extend(shown.into_iter().map(Effect::FetchUsage));
+    effects.extend(shown.into_iter().map(|provider| match provider {
+        Provider::Claude => Effect::AskClaudeCode,
+        Provider::Codex => Effect::FetchUsage(provider),
+    }));
     effects
 }
 

@@ -1,6 +1,6 @@
 //! The smaller widgets for small screens. The simple one is a line of counts and small batteries under a one-line
-//! card for each task that calls the person; the smallest is the person's character alone, with a badge counting
-//! those tasks. Both stand in the dock's corner, so changing between them only changes the size.
+//! card for each task that calls the person or has been read but not checked off; the smallest is the person's
+//! character alone, with a badge counting tasks that call. Both stand in the dock's corner.
 
 use super::dock::{AvatarView, count_pill, replace_tracking_area};
 use super::kit::{self, Action, FlippedView, Weight, color, digits_font, grey, icon_image, label, ns, rect};
