@@ -1,7 +1,7 @@
 //! Starting the app: one instance at a time, the Dual Codex records moved over, messages delivered on the
 //! main thread, and the timers that keep usage, accounts and tasks current.
 
-use super::dashboard::Dashboard;
+use super::journal::Journal;
 use super::kit::ns;
 use super::status::StatusMenu;
 use super::widget::Widget;
@@ -75,7 +75,7 @@ pub struct MacShell {
     defaults: Retained<NSUserDefaults>,
     status: StatusMenu,
     widget: Rc<RefCell<Widget>>,
-    dashboard: Dashboard,
+    journal: Journal,
     settings: super::settings::Settings,
     on_menu: Rc<dyn Fn(MenuAction)>,
     hidden: bool,
@@ -115,8 +115,8 @@ impl MacShell {
                 }
             }
         });
-        let dashboard = Dashboard::new(mtm, poster.clone(), language);
-        MacShell { settings: super::settings::Settings::new(mtm, poster.clone(), language), mtm, status: StatusMenu::new(mtm), widget, dashboard, poster, defaults, on_menu, hidden, language }
+        let journal = Journal::new(mtm, poster.clone(), language.window_title_journal());
+        MacShell { settings: super::settings::Settings::new(mtm, poster.clone(), language), mtm, status: StatusMenu::new(mtm), widget, journal, poster, defaults, on_menu, hidden, language }
     }
 
     pub fn widget_preferences(&self) -> WidgetPreferences {
@@ -167,7 +167,7 @@ impl Shell for MacShell {
         self.hidden = state.widget.hidden;
         self.status.render(view::status_icon(state, self.language), view::menu(state, !self.hidden, &context), &self.on_menu);
         self.widget.borrow_mut().render(state, &context);
-        self.dashboard.render(&view::dashboard(state, &context), self.mtm);
+        self.journal.render(&view::journal(state, &context));
         self.settings.render(&state.tasks);
     }
 
@@ -228,7 +228,7 @@ impl Shell for MacShell {
     }
 
     fn show_dashboard(&mut self) {
-        self.dashboard.show(self.mtm);
+        self.journal.show(self.mtm);
     }
 
     fn copy_text(&mut self, text: &str) {

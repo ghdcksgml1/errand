@@ -3,7 +3,7 @@
 
 use super::avatar_editor::AvatarEditor;
 use super::compact::{Character, CompactEvents, Simple};
-use super::dashboard::Dashboard;
+use super::journal::Journal;
 use super::details::Details;
 use super::dock::{Dock, DockEvents};
 use super::kit;
@@ -178,10 +178,10 @@ pub fn render(
             snapshot(&rooms.view, output)
         }
         PreviewKind::Dashboard => {
-            let mut dashboard = Dashboard::new(mtm, poster, language);
-            dashboard.window.setColorSpace(Some(&NSColorSpace::sRGBColorSpace()));
-            dashboard.render(&view::dashboard(state, &context), mtm);
-            snapshot(&dashboard.view, output)
+            let mut journal = Journal::new(mtm, poster, language.window_title_journal());
+            journal.window.setColorSpace(Some(&NSColorSpace::sRGBColorSpace()));
+            journal.render(&view::journal(state, &context));
+            journal.content().is_some_and(|content| snapshot(&content, output))
         }
         PreviewKind::Dock => {
             let events = DockEvents {

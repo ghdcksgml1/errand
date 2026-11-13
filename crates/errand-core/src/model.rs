@@ -201,7 +201,24 @@ pub struct AppState {
     pub avatar_editor_open: bool,
     pub rooms: RoomsState,
     pub update: UpdateState,
+    pub journal: JournalState,
 }
+
+/// The desktop window's records, read whole from the apps' transcripts while the window is open.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct JournalState {
+    pub records: Vec<crate::journal::WorkRecord>,
+    pub place: crate::journal::view::JournalPlace,
+    /// The window is on screen, so records are kept fresh.
+    pub open: bool,
+    pub scanning: bool,
+    pub scanned_at: Option<Timestamp>,
+}
+
+/// How far back the window reads: a year of heat map and the week it ends in.
+pub const JOURNAL_REACH: SignedDuration = SignedDuration::from_hours(24 * 372);
+/// While the window is open, records are read again at most this often, after the widget's own scans.
+const JOURNAL_REFRESH: SignedDuration = SignedDuration::from_secs(30);
 
 impl AppState {
     pub fn new(history: ResetHistory, records: SessionRecords, widget: WidgetPreferences, profile_name: String) -> AppState {
@@ -230,6 +247,7 @@ impl AppState {
             avatar_editor_open: false,
             rooms: RoomsState::default(),
             update: UpdateState::default(),
+            journal: JournalState::default(),
         }
     }
 
@@ -330,6 +348,20 @@ pub enum Msg {
     OpenApp(Provider),
     AppOpened { provider: Provider, result: Result<(), OpenError> },
     ShowDashboard,
+    /// The desktop window was closed.
+    JournalClosed,
+    JournalScanned(Vec<crate::journal::WorkRecord>),
+    JournalTab(crate::journal::view::JournalTab),
+    /// Forward (positive) or back through days, weeks or months.
+    JournalStep(i64),
+    JournalProject(Option<String>),
+    JournalSpan(crate::journal::view::ReportSpan),
+    /// Opens a task's detail, or closes it.
+    JournalOpen(Option<String>),
+    /// Puts the log on screen on the clipboard.
+    JournalCopy(String),
+    /// Opens a task in its app.
+    JournalOpenTask(String),
     /// The widget moved or the screens changed: nothing to update, only to draw again.
     Redraw,
     /// The menu: opens the list of rooms beside the dock.
@@ -425,6 +457,8 @@ pub enum Effect {
     FadeCard(String),
     ShowAlert(Alert),
     ShowDashboard,
+    /// Reads every record since this time, then sends `JournalScanned`.
+    ScanJournal(Timestamp),
     FetchRooms,
     /// Send this room the person's presence report, as this visible a room may hear it, then `RoomRead`.
     SyncRoom { room: String, visibility: Visibility },
@@ -591,7 +625,9 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             state.sessions.scanning = false;
             state.sessions.scan = rows;
             apply_sessions(state);
-            if unread_on_screen(&state.sessions).is_some() { vec![Effect::ReadAttention] } else { vec![] }
+            let mut effects = if unread_on_screen(&state.sessions).is_some() { vec![Effect::ReadAttention] } else { vec![] };
+            effects.extend(scan_journal(state, now, false));
+            effects
         }
         Msg::AttentionRead(attention) => {
             let mut effects = read_on_screen(state, attention, now);
@@ -1116,11 +1152,67 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
         Msg::ShowDashboard => {
             state.details_open = false;
             state.avatar_editor_open = false;
+            state.journal.open = true;
             let mut effects = vec![Effect::ShowDashboard, Effect::ReadAccounts];
             effects.extend(refresh_usage(state));
+            effects.extend(scan_journal(state, now, true));
             effects
         }
+        Msg::JournalClosed => {
+            state.journal.open = false;
+            state.journal.place.open = None;
+            vec![]
+        }
+        Msg::JournalScanned(records) => {
+            state.journal.scanning = false;
+            state.journal.records = records;
+            state.journal.scanned_at = Some(now);
+            vec![]
+        }
+        Msg::JournalTab(tab) => {
+            let place = &mut state.journal.place;
+            if place.tab != tab {
+                place.tab = tab;
+                place.back = 0;
+                place.project = None;
+            }
+            place.open = None;
+            vec![]
+        }
+        Msg::JournalStep(step) => {
+            let place = &mut state.journal.place;
+            place.back = (place.back - step).max(0);
+            place.project = None;
+            place.open = None;
+            vec![]
+        }
+        Msg::JournalProject(project) => {
+            state.journal.place.project = project;
+            vec![]
+        }
+        Msg::JournalSpan(span) => {
+            state.journal.place.span = span;
+            vec![]
+        }
+        Msg::JournalOpen(key) => {
+            state.journal.place.open = key;
+            vec![]
+        }
+        Msg::JournalCopy(text) => vec![Effect::Copy(text)],
+        Msg::JournalOpenTask(url) => vec![Effect::OpenUrl(url)],
     }
+}
+
+
+/// Reads the records again for the open window: at once when asked, else once they are a little old.
+fn scan_journal(state: &mut AppState, now: Timestamp, at_once: bool) -> Option<Effect> {
+    let journal = &mut state.journal;
+    let stale = journal.scanned_at.is_none_or(|scanned| now.duration_since(scanned) >= JOURNAL_REFRESH);
+    if !journal.open || journal.scanning || !(at_once || stale) {
+        return None;
+    }
+    journal.scanning = true;
+    Some(Effect::ScanJournal(now - JOURNAL_REACH))
 }
 
 /// Opens the list of rooms in place of the details or the character editor, reads it afresh, and tells the

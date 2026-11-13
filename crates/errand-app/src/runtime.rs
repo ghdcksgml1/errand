@@ -7,6 +7,7 @@ use errand_core::ports::{Poster, Shell};
 use errand_core::rooms::{self, Visibility};
 use errand_core::sessions::{SessionRecords, SessionRow};
 use errand_core::{PerProvider, Provider};
+use errand_io::journal_scan::JournalScanner;
 use errand_io::session_scan::SessionScanner;
 use errand_io::{claude, codex, stores};
 use std::collections::VecDeque;
@@ -22,6 +23,8 @@ pub struct Runtime {
     poster: Arc<dyn Poster>,
     /// The scan thread, which keeps the scanner's caches.
     scans: Sender<SessionRecords>,
+    /// The desktop window's thread, which keeps every transcript it read.
+    journal_scans: Sender<errand_core::Timestamp>,
     /// The rooms the person was in last time, until the first scan has counted their tasks.
     remembered: Option<Vec<(String, Visibility)>>,
 }
@@ -66,10 +69,25 @@ impl Runtime {
                 }
             })
             .expect("the session scan thread starts");
+        let (journal_scans, journal_requests) = mpsc::channel::<errand_core::Timestamp>();
+        let mut journal = JournalScanner::new(platform.sessions.clone());
+        let journal_poster = poster.clone();
+        thread::Builder::new()
+            .name("errand-journal".to_owned())
+            .spawn(move || {
+                while let Ok(mut since) = journal_requests.recv() {
+                    // Requests that queued while reading come to one read.
+                    while let Ok(later) = journal_requests.try_recv() {
+                        since = later;
+                    }
+                    journal_poster.post(Msg::JournalScanned(journal.scan(since)));
+                }
+            })
+            .expect("the journal scan thread starts");
         let remembered = Some(stores::load_joined_rooms(&platform.joined_rooms));
         Runtime {
             title_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            state, platform: Arc::new(platform), shell, poster, scans, remembered }
+            state, platform: Arc::new(platform), shell, poster, scans, journal_scans, remembered }
     }
 
     fn task_effect(&mut self, effect: errand_core::tasks::Effect) -> Option<Msg> {
@@ -222,6 +240,10 @@ impl Runtime {
             Effect::ReadAccounts => Some(Msg::AccountsRead(self.read_accounts())),
             Effect::ScanSessions(records) => {
                 let _ = self.scans.send(records);
+                None
+            }
+            Effect::ScanJournal(since) => {
+                let _ = self.journal_scans.send(since);
                 None
             }
             Effect::ReadAttention => Some(Msg::AttentionRead(self.platform.attention())),

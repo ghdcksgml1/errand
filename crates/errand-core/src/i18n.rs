@@ -38,7 +38,7 @@ impl Language {
         self.pick("ko", "en")
     }
 
-    fn pick(self, korean: &'static str, english: &'static str) -> &'static str {
+    pub(crate) fn pick(self, korean: &'static str, english: &'static str) -> &'static str {
         match self {
             Language::Korean => korean,
             Language::English => english,
@@ -726,6 +726,11 @@ impl Language {
         self.pick("Errand · 사용량", "Errand · Usage")
     }
 
+    /// The desktop window, which keeps the person's work by day, week and month.
+    pub fn window_title_journal(self) -> &'static str {
+        self.pick("Errand · 작업 기록", "Errand · Work records")
+    }
+
     pub fn tray_window_title(self) -> &'static str {
         self.pick("Errand · 내가 시킨 작업", "Errand · My tasks")
     }
@@ -1264,7 +1269,7 @@ impl Language {
     }
 
     pub fn dashboard_item(self) -> &'static str {
-        self.pick("계정 창 열기", "Open Usage Window")
+        self.pick("작업 기록 열기", "Open Work Records")
     }
 
     pub fn widget_item(self, visible: bool) -> &'static str {

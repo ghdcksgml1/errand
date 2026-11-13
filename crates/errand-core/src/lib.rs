@@ -6,6 +6,7 @@ pub mod avatar;
 pub mod format;
 pub mod i18n;
 pub mod icons;
+pub mod journal;
 pub mod json;
 pub mod layout;
 pub mod model;

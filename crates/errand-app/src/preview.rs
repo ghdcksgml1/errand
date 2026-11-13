@@ -190,6 +190,7 @@ pub fn state(arguments: &[String], now: Timestamp, language: Language) -> AppSta
     if let Some(screen) = screen {
         state.rooms.screen = screen;
     }
+    add_journal(&mut state, arguments, now, language);
     state
 }
 
@@ -306,4 +307,123 @@ pub fn add_sessions(state: &mut AppState, arguments: &[String], now: Timestamp, 
     if has("--preview-pending") {
         update(state, Msg::ToggleComplete("claude:preview-1".to_owned()), now);
     }
+}
+
+/// The desktop window's records: sample work around today, or with `--preview-journal-real` this Mac's own.
+/// `--preview-journal-week`, `-month` and `-report` pick the view, `--preview-journal-detail` opens a task, and
+/// `--preview-journal-back` looks one period back.
+fn add_journal(state: &mut AppState, arguments: &[String], now: Timestamp, language: Language) {
+    use errand_core::journal::view::JournalTab;
+    let has = |flag: &str| arguments.iter().any(|argument| argument == flag);
+    state.journal.records = if has("--preview-journal-real") {
+        errand_io::journal_scan::JournalScanner::new(Platform::current(language).sessions.clone()).scan(now - errand_core::model::JOURNAL_REACH)
+    } else {
+        sample_journal(now, language)
+    };
+    state.journal.scanned_at = Some(now);
+    state.journal.open = true;
+    state.journal.place.tab = if has("--preview-journal-week") {
+        JournalTab::Week
+    } else if has("--preview-journal-month") {
+        JournalTab::Month
+    } else if has("--preview-journal-report") {
+        JournalTab::Report
+    } else {
+        JournalTab::Day
+    };
+    if has("--preview-journal-back") {
+        state.journal.place.back = 1;
+    }
+    if has("--preview-journal-detail") {
+        let today = now.to_zoned(format::local_zone()).date();
+        state.journal.place.open = state
+            .journal
+            .records
+            .iter()
+            .filter(|record| record.started_at().is_some_and(|start| start.to_zoned(format::local_zone()).date() == today) && !record.commits.is_empty())
+            .chain(state.journal.records.iter())
+            .next()
+            .map(|record| record.key.clone());
+    }
+}
+
+fn sample_journal(now: Timestamp, language: Language) -> Vec<errand_core::journal::WorkRecord> {
+    use errand_core::journal::{Commit, FileChange, PullRequest, WorkRecord, WorkTurn};
+    let zone = format::local_zone();
+    let today = now.to_zoned(zone.clone()).date();
+    let at = |days: i64, hour: i8, minute: i8| -> Timestamp {
+        let date = today.checked_sub(jiff::Span::new().days(days)).unwrap_or(today);
+        date.at(hour, minute, 0, 0).to_zoned(zone.clone()).map(|zoned| zoned.timestamp()).unwrap_or(now)
+    };
+    let say = |korean: &'static str, english: &'static str| words(language, korean, english).to_owned();
+    let turn = |asked: Timestamp, minutes: Option<i64>, ask: String, result: String| WorkTurn {
+        asked_at: asked,
+        ask,
+        finished_at: minutes.map(|minutes| asked + SignedDuration::from_mins(minutes)),
+        result: (!result.is_empty()).then_some(result),
+        aborted: false,
+    };
+    let record = |key: &str, provider: Provider, project: &str, title: String, turns: Vec<WorkTurn>| WorkRecord {
+        key: key.to_owned(),
+        provider,
+        title,
+        folder: format!("/Users/me/code/{project}"),
+        branch: None,
+        url: Some(format!("claude://code/continue?session={key}")),
+        turns,
+        commits: Vec::new(),
+        pull_requests: Vec::new(),
+        files: Vec::new(),
+    };
+    let mut login = record("sample:login", Provider::Claude, "shop-web", say("로그인 화면 리팩터링", "Refactor the sign-in screen"), vec![
+        turn(at(0, 9, 12), Some(13), say("로그인 화면을 훅 기반으로 바꿔줘", "Move the sign-in screen onto hooks"), say("폼 상태와 검증을 useLoginForm 훅으로 옮겼어요. 파일 4개를 고쳤어요.", "Moved form state and checks into a useLoginForm hook, across four files.")),
+        turn(at(0, 9, 25), Some(9), say("에러 문구도 하나로 맞춰줘", "Make the error messages match too"), say("흩어져 있던 에러 문구 5개를 messages.ts로 모았어요.", "Gathered five scattered error messages into messages.ts.")),
+        turn(at(0, 9, 38), Some(2), say("커밋해줘", "Commit it"), say("커밋 2개를 남겼어요. 푸시는 하지 않았어요.", "Left two commits, not pushed.")),
+    ]);
+    login.branch = Some("feature/login-hook".to_owned());
+    login.commits = vec![
+        Commit { sha: "a1f3c2e".to_owned(), message: say("로그인 폼 상태를 useLoginForm으로 분리", "Move sign-in form state into useLoginForm"), at: at(0, 9, 39) },
+        Commit { sha: "7be09d4".to_owned(), message: say("로그인 에러 문구를 한곳에 모음", "Keep sign-in error messages in one place"), at: at(0, 9, 40) },
+    ];
+    login.files = vec![
+        FileChange { path: "/Users/me/code/shop-web/src/pages/Login.tsx".to_owned(), added: 48, removed: 112, created: false },
+        FileChange { path: "/Users/me/code/shop-web/src/hooks/useLoginForm.ts".to_owned(), added: 86, removed: 0, created: true },
+        FileChange { path: "/Users/me/code/shop-web/src/i18n/messages.ts".to_owned(), added: 14, removed: 3, created: false },
+    ];
+    let mut checks = record("sample:checks", Provider::Codex, "payments-api", say("입력값 검증 추가", "Add input checks"), vec![
+        turn(at(0, 10, 5), Some(26), say("결제 요청에 금액 검증 붙여줘", "Check the amount on payment requests"), say("금액과 통화 검증, 테스트 12개를 더했어요.", "Added amount and currency checks with twelve tests.")),
+    ]);
+    checks.commits = vec![Commit { sha: "9c0ffee".to_owned(), message: say("결제 금액과 통화 검증", "Check payment amount and currency"), at: at(0, 10, 30) }];
+    checks.pull_requests = vec![PullRequest { number: 48, url: "https://github.com/me/payments-api/pull/48".to_owned(), at: at(0, 10, 31) }];
+    let mut tests = record("sample:tests", Provider::Claude, "shop-web", say("로그인 테스트 고치기", "Fix the sign-in tests"), vec![
+        turn(at(0, 11, 20), Some(32), say("실패하는 로그인 테스트 고쳐줘", "Fix the failing sign-in tests"), say("만료된 토큰 목업을 고쳐 테스트 3개를 통과시켰어요.", "Fixed the expired-token mock; three tests pass again.")),
+    ]);
+    tests.commits = vec![Commit { sha: "3c9e1b0".to_owned(), message: say("만료 토큰 목업 고침", "Fix the expired-token mock"), at: at(0, 11, 51) }];
+    let deploy = record("sample:deploy", Provider::Claude, "deploy-config", say("배포 설정 정리", "Tidy the deploy settings"), vec![
+        turn(now - SignedDuration::from_mins(40), None, say("develop에 커밋하고 푸시해줘", "Commit and push to develop"), String::new()),
+    ]);
+    let mut records = vec![login, checks, tests, deploy];
+    // Days back, start, minutes, service, project, and the title in both languages.
+    type Earlier = (i64, i8, i8, i64, Provider, &'static str, &'static str, &'static str);
+    let earlier: [Earlier; 12] = [
+        (1, 9, 40, 23, Provider::Codex, "deploy-config", "CI 캐시 설정 정리", "Tidy the CI cache"),
+        (1, 13, 5, 12, Provider::Claude, "shop-web", "사용 설명서 고치기", "Update the guide"),
+        (1, 14, 20, 16, Provider::Claude, "payments-api", "영수증 PDF 글꼴", "Receipt PDF fonts"),
+        (1, 16, 30, 54, Provider::Claude, "shop-web", "대시보드 차트 추가", "Add a dashboard chart"),
+        (2, 11, 0, 52, Provider::Claude, "payments-api", "웹훅 서명 검증", "Verify webhook signatures"),
+        (2, 15, 10, 41, Provider::Codex, "shop-web", "상품 목록 무한 스크롤", "Infinite product list"),
+        (3, 10, 20, 15, Provider::Codex, "shop-web", "결제 페이지 접근성 점검", "Checkout accessibility pass"),
+        (3, 11, 50, 37, Provider::Claude, "payments-api", "환불 API 응답 정리", "Tidy refund responses"),
+        (3, 17, 45, 18, Provider::Claude, "shop-web", "장바구니 수량 버그", "Cart quantity bug"),
+        (8, 10, 30, 30, Provider::Claude, "shop-web", "이미지 지연 로딩", "Lazy-load images"),
+        (9, 13, 15, 44, Provider::Codex, "payments-api", "정산 배치 재시도", "Retry settlement batches"),
+        (16, 16, 40, 21, Provider::Claude, "deploy-config", "스테이징 도메인 연결", "Connect the staging domain"),
+    ];
+    for (index, (days, hour, minute, minutes, provider, project, korean, english)) in earlier.into_iter().enumerate() {
+        let title = words(language, korean, english).to_owned();
+        let mut item = record(&format!("sample:earlier-{index}"), provider, project, title.clone(), vec![turn(at(days, hour, minute), Some(minutes), title, say("마쳤어요.", "Done."))]);
+        item.commits = vec![Commit { sha: format!("{:07x}", 0xabc000 + index), message: words(language, korean, english).to_owned(), at: at(days, hour, minute) + SignedDuration::from_mins(minutes) }];
+        records.push(item);
+    }
+    records
 }

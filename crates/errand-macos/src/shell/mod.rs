@@ -5,7 +5,7 @@ mod app;
 mod avatar_editor;
 pub mod battery;
 mod compact;
-mod dashboard;
+mod journal;
 pub mod settings;
 mod details;
 mod dock;

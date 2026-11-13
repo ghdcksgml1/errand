@@ -1530,3 +1530,27 @@ fn personal_card(
         sub_tasks: vec![],
     }
 }
+
+/// The desktop window: the records, with the widget's live states and small batteries.
+pub fn journal(state: &AppState, context: &ViewContext) -> crate::journal::view::Screen {
+    use crate::journal::view::{Journal, Live, MiniBattery};
+    let visible = state.sessions.records.visible(state.sessions.scan.clone());
+    let live: std::collections::HashMap<String, Live> = visible
+        .iter()
+        .map(|session| {
+            let question = session.row.question.as_ref().and_then(|question| question.questions.first().cloned());
+            (session.row.key.clone(), Live { state: SessionState::of(session), question })
+        })
+        .collect();
+    let usage = state
+        .shown_providers()
+        .into_iter()
+        .map(|provider| {
+            let vm = battery(state, provider, context);
+            MiniBattery { provider, level: vm.level, percent: vm.percent, low: vm.low }
+        })
+        .collect();
+    let journal = Journal { records: &state.journal.records, live: &live, now: context.now, zone: &context.zone, language: context.language };
+    let loading = state.journal.scanned_at.is_none();
+    journal.screen(&state.journal.place, usage, loading, state.profile.avatar.clone())
+}
