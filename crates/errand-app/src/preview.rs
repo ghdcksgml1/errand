@@ -5,8 +5,8 @@ use crate::platform::Platform;
 use errand_core::format::{self, timestamp_from_seconds};
 use errand_core::model::{AccountInfo, AppState, Msg, Profile, WidgetPreferences, update};
 use errand_core::ports::RoomService;
-use errand_core::rooms::{self, Invite, Role, RoomError, RoomMember, RoomSummary, RoomsScreen};
 use errand_core::reset_history::ResetHistory;
+use errand_core::rooms::{self, Invite, Role, RoomError, RoomMember, RoomSummary, RoomsScreen};
 use errand_core::sessions::{Question, SessionRecords, SessionRow, TaskCounts, VisibleSession};
 use errand_core::update::Release;
 use errand_core::usage::{Reading, UsageError, UsageWindow, claude, codex};
@@ -86,6 +86,51 @@ pub fn state(arguments: &[String], now: Timestamp, language: Language) -> AppSta
     let compact = ["--preview-simple", "--preview-simple-open", "--preview-badge", "--preview-badge-open"].iter().any(|flag| has(flag));
     if has("--preview-tray") || compact {
         add_sessions(&mut state, arguments, now, language);
+    }
+    if has("--preview-task-form") || has("--preview-personal-task") {
+        use errand_core::tasks::{self, Attachment};
+        let attachments = vec![Attachment {
+            id: "sample.png".into(),
+            name: "메신저 확인 요청.png".into(),
+            bytes: 184_320,
+            image: false,
+        }];
+        if has("--preview-task-form") {
+            tasks::update(
+                &mut state.tasks,
+                tasks::Msg::Drop(vec![tasks::Input::Png(vec![])]),
+                now,
+            );
+            let token = state.tasks.draft.as_ref().unwrap().token;
+            tasks::update(
+                &mut state.tasks,
+                tasks::Msg::Imported {
+                    token,
+                    result: Ok(attachments),
+                },
+                now,
+            );
+            tasks::update(
+                &mut state.tasks,
+                tasks::Msg::Title("온보딩 문서 수정안 확인하기".into()),
+                now,
+            );
+            tasks::update(
+                &mut state.tasks,
+                tasks::Msg::Memo("금요일 회의 전에 의견 보내기".into()),
+                now,
+            );
+            state.tasks.draft.as_mut().unwrap().generating = false;
+        } else {
+            state.tasks.records.push(tasks::Task {
+                id: "manual:preview".into(),
+                title: "온보딩 문서 수정안 확인하기".into(),
+                memo: "금요일 회의 전에 의견 보내기".into(),
+                attachments,
+                created: now,
+                done: false,
+            });
+        }
     }
     // The sample rooms: `--preview-rooms` lists them beside the dock. With `--preview-room` the person is in the
     // late-night room and their team's, the late-night one open under the profile; `--preview-private-room`

@@ -15,6 +15,8 @@ pub mod preview;
 mod rooms;
 pub mod spinner;
 pub mod status;
+pub mod task_drop;
+mod task_form;
 mod tray;
 mod widget;
 

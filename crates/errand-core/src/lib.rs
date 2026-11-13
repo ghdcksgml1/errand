@@ -14,6 +14,7 @@ pub mod provider;
 pub mod reset_history;
 pub mod rooms;
 pub mod sessions;
+pub mod tasks;
 pub mod theme;
 pub mod update;
 pub mod usage;

@@ -51,7 +51,9 @@ fn run_app(arguments: &[String], language: Language) {
         let has = |flag: &str| arguments.iter().any(|argument| argument == flag);
         let in_room = has("--preview-room") || has("--preview-private-room");
         let character = arguments.iter().position(|argument| argument == "--preview-character").and_then(|index| arguments.get(index + 1));
-        let kind = if let Some(character) = character {
+        let kind = if has("--preview-task-form") {
+            shell::preview::PreviewKind::TaskForm
+        } else if let Some(character) = character {
             shell::preview::PreviewKind::Character(errand_core::avatar::Avatar::named(character))
         } else if has("--preview-simple") || has("--preview-simple-open") {
             shell::preview::PreviewKind::Simple { open: has("--preview-simple-open") }
