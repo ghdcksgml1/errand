@@ -5,7 +5,7 @@ use crate::avatar::{Avatar, CLOTHES, PARTS};
 use crate::format::{date_or_waiting, elapsed, month_day_time, relative_time, stopwatch, timestamp_from_seconds};
 use crate::i18n::Language;
 use crate::layout::{self, DockShape, MEMBER_ROWS, TrayFold};
-use crate::model::{AppState, COMPLETION_DELAY, Notice};
+use crate::model::{AppState, COMPLETION_DELAY, Notice, WidgetMode};
 use crate::provider::Provider;
 use crate::rooms::{INVITE_PAGE, Invite, Joined, Member, NAME_LENGTH, Presence, Role, RoomMember, RoomSummary, RoomsScreen, RoomsState, TAGLINE_LENGTH, Visibility, grouped, invite_code};
 use crate::sessions::{SessionState, TaskCounts, VisibleSession, families};
@@ -491,6 +491,98 @@ pub fn tray(state: &AppState, context: &ViewContext, max_height: f64) -> TrayVm 
         })
         .collect();
     TrayVm { cards, fold }
+}
+
+/// Tasks that wait on the person: an answer to look at, a question, or work that went quiet.
+fn calls(session: &VisibleSession) -> bool {
+    matches!(SessionState::of(session), SessionState::New | SessionState::Asking | SessionState::Stalled)
+}
+
+/// With nothing on errand, the person's character and a word stand where the counts would.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IdleVm {
+    pub avatar: Avatar,
+    pub words: &'static str,
+}
+
+/// The simple widget: one line of counts and a small battery per service, under a one-line card for each task
+/// that calls the person. With the list open, every task has a line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SimpleVm {
+    /// Questions, answers to check and running work. Answers already opened are counted only when nothing else is.
+    pub pills: Vec<PillVm>,
+    pub batteries: Vec<BatteryVm>,
+    pub idle: Option<IdleVm>,
+    /// Questions first, then the rest as the cards would stack. Sub-tasks get lines of their own.
+    pub lines: Vec<CardVm>,
+    pub open: bool,
+    pub counts_tooltip: &'static str,
+    /// The counts and every battery, as VoiceOver reads the line and the character-only widget's tooltip says.
+    pub summary: String,
+}
+
+pub fn simple(state: &AppState, context: &ViewContext, open: bool) -> SimpleVm {
+    let language = context.language;
+    let sessions = &state.sessions;
+    let (counts, asking) = (sessions.counts(), sessions.asking());
+    let calling = TaskCounts { new: counts.new - asking, seen: 0, ..counts };
+    let seen = if calling == TaskCounts::default() && asking == 0 { counts.seen } else { 0 };
+    let pills = header_pills(TaskCounts { seen, ..calling }, asking, language);
+    let batteries: Vec<BatteryVm> = state.shown_providers().into_iter().map(|provider| battery(state, provider, context)).collect();
+    let deadline = |session: &VisibleSession| sessions.pending.get(&session.row.key).copied();
+    // A checked line stays for its 되돌리기, as a card does.
+    let mut shown: Vec<&VisibleSession> = sessions.shown.iter().filter(|session| open || calls(session) || deadline(session).is_some()).collect();
+    // Questions first, then the rest that call, then running and opened work, each as the cards would stack.
+    shown.sort_by_key(|session| match SessionState::of(session) {
+        SessionState::Asking => 0,
+        _ if calls(session) => 1,
+        _ => 2,
+    });
+    let lines = shown
+        .into_iter()
+        .map(|session| {
+            let vm = card(session, deadline(session), true, layout::LINE_HEIGHT, context);
+            if session.row.parent.is_some() { CardVm { accessibility_label: language.sub_task_label(&vm.accessibility_label), ..vm } } else { vm }
+        })
+        .collect();
+    let mut said: Vec<String> = pills.iter().map(|pill| pill.words.clone()).collect();
+    said.extend(batteries.iter().map(|battery| format!("{} {}", battery.provider.title(), battery.percent)));
+    SimpleVm {
+        idle: sessions.shown.is_empty().then(|| IdleVm { avatar: Avatar::named(&state.profile.avatar), words: language.no_errands() }),
+        summary: said.join(" · "),
+        counts_tooltip: language.simple_counts_tooltip(open),
+        pills,
+        batteries,
+        lines,
+        open,
+    }
+}
+
+/// The character-only widget: the person's character, a badge counting the tasks that call them, an arc turning
+/// round it while work is under way, and a red battery on its edge when a service runs low.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BadgeVm {
+    pub avatar: Avatar,
+    /// Orange while a question waits, else blue.
+    pub count: Option<(usize, Rgb)>,
+    pub running: bool,
+    pub low: bool,
+    pub tooltip: String,
+}
+
+pub fn badge(state: &AppState, context: &ViewContext) -> BadgeVm {
+    let sessions = &state.sessions;
+    let open: Vec<&VisibleSession> = sessions.shown.iter().filter(|session| !sessions.pending.contains_key(&session.row.key)).collect();
+    let calling = open.iter().filter(|session| calls(session)).count();
+    let tint = if sessions.asking() > 0 { theme::ASKING } else { theme::NEW_RESULT };
+    let line = simple(state, context, false);
+    BadgeVm {
+        avatar: Avatar::named(&state.profile.avatar),
+        count: (calling > 0).then_some((calling, tint)),
+        running: open.iter().any(|session| SessionState::of(session) == SessionState::Running),
+        low: line.batteries.iter().any(|battery| battery.low),
+        tooltip: line.summary,
+    }
 }
 
 fn sub_task(session: &VisibleSession, deadline: Option<Timestamp>, context: &ViewContext) -> CardVm {
@@ -1174,6 +1266,7 @@ pub enum MenuAction {
     ResetWidgetPosition,
     ToggleService(Provider),
     ShowRooms,
+    SetWidgetMode(WidgetMode),
     InstallUpdate,
     Quit,
 }
@@ -1266,6 +1359,9 @@ pub fn menu(state: &AppState, widget_visible: bool, context: &ViewContext) -> Ve
     entries.push(refresh);
     entries.push(item(language.dashboard_item(), MenuAction::ShowDashboard, Some('0')));
     entries.push(item(language.rooms_item(), MenuAction::ShowRooms, None));
+    entries.push(MenuEntry::Separator);
+    entries.extend(widget_modes(state, language).into_iter().map(MenuEntry::Item));
+    entries.push(MenuEntry::Separator);
     entries.push(item(language.widget_item(widget_visible), MenuAction::ToggleWidget, Some('p')));
     entries.push(item(language.reset_widget_item(), MenuAction::ResetWidgetPosition, None));
     entries.push(MenuEntry::Separator);
@@ -1287,6 +1383,23 @@ pub fn menu(state: &AppState, widget_visible: bool, context: &ViewContext) -> Ve
     entries.push(MenuEntry::Separator);
     entries.push(item(language.quit_item(), MenuAction::Quit, Some('q')));
     entries
+}
+
+/// The three sizes the widget comes in, the one showing checked: in the menu bar's menu and the widget's own.
+pub fn widget_modes(state: &AppState, language: Language) -> Vec<MenuItemVm> {
+    WidgetMode::ALL
+        .into_iter()
+        .map(|mode| MenuItemVm {
+            title: language.widget_mode_item(mode).to_owned(),
+            action: Some(MenuAction::SetWidgetMode(mode)),
+            key: None,
+            enabled: true,
+            indent: 0,
+            tooltip: None,
+            icon: None,
+            checked: state.widget.mode == mode,
+        })
+        .collect()
 }
 
 /// The menu bar glyph: one small battery per service, filled to what remains.

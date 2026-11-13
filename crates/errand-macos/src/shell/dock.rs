@@ -48,6 +48,8 @@ pub struct DockEvents {
     pub show_rooms: Rc<dyn Fn()>,
     /// The update beside the profile.
     pub update: Rc<dyn Fn()>,
+    /// The right-click menu anywhere but on a member's row: how much of the widget shows.
+    pub mode_menu: Rc<dyn Fn() -> Option<Retained<NSMenu>>>,
 }
 
 /// Hover tracking over the view's visible part, whether or not Errand is the active app.
@@ -282,10 +284,11 @@ define_class!(
             true
         }
 
-        /// The dock takes clicks for itself, so a right-click on a room member's row opens that row's menu here.
+        /// The dock takes clicks for itself, so a right-click on a room member's row opens that row's menu here;
+        /// anywhere else, the widget's own.
         #[unsafe(method_id(menuForEvent:))]
         fn menu_for_event(&self, event: &NSEvent) -> Option<Retained<NSMenu>> {
-            self.row_menu(event)
+            self.row_menu(event).or_else(|| (self.ivars().events.mode_menu)())
         }
 
         #[unsafe(method(mouseDown:))]

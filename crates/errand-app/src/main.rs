@@ -53,6 +53,10 @@ fn run_app(arguments: &[String], language: Language) {
         let character = arguments.iter().position(|argument| argument == "--preview-character").and_then(|index| arguments.get(index + 1));
         let kind = if let Some(character) = character {
             shell::preview::PreviewKind::Character(errand_core::avatar::Avatar::named(character))
+        } else if has("--preview-simple") || has("--preview-simple-open") {
+            shell::preview::PreviewKind::Simple { open: has("--preview-simple-open") }
+        } else if has("--preview-badge") || has("--preview-badge-open") {
+            shell::preview::PreviewKind::Badge { open: has("--preview-badge-open") }
         } else if has("--preview-rooms") {
             shell::preview::PreviewKind::Rooms
         } else if has("--preview-tray") {

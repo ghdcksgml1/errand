@@ -138,6 +138,35 @@ pub struct Attention {
     pub idle: SignedDuration,
 }
 
+/// How much of the widget shows. Smaller screens can keep it to one line, or to the person's character alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WidgetMode {
+    /// The dock with the task cards stacked on it.
+    #[default]
+    Full,
+    /// One line of counts and batteries, under a one-line card for each task that calls the person.
+    Simple,
+    /// The person's character; the simple widget shows over it while the pointer rests on it.
+    Character,
+}
+
+impl WidgetMode {
+    pub const ALL: [WidgetMode; 3] = [WidgetMode::Full, WidgetMode::Simple, WidgetMode::Character];
+
+    /// How the choice is kept between launches.
+    pub fn storage_key(self) -> &'static str {
+        match self {
+            WidgetMode::Full => "full",
+            WidgetMode::Simple => "simple",
+            WidgetMode::Character => "character",
+        }
+    }
+
+    pub fn from_storage_key(key: &str) -> Option<WidgetMode> {
+        WidgetMode::ALL.into_iter().find(|mode| mode.storage_key() == key)
+    }
+}
+
 /// What the person chose about what Errand shows; it survives relaunch.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WidgetPreferences {
@@ -146,6 +175,7 @@ pub struct WidgetPreferences {
     pub collapsed: bool,
     /// Services the person does not use: shown nowhere, their usage not read and their tasks left out.
     pub hidden_services: PerProvider<bool>,
+    pub mode: WidgetMode,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -161,6 +191,10 @@ pub struct AppState {
     pub profile: Profile,
     pub sessions: SessionsState,
     pub widget: WidgetPreferences,
+    /// The simple widget lists every task, not only those that call: its counts were clicked.
+    pub lines_open: bool,
+    /// The pointer rests on the character-only widget, so the simple widget shows over it.
+    pub badge_open: bool,
     pub details_open: bool,
     /// The character editor beside the dock; it, the details and the rooms take turns.
     pub avatar_editor_open: bool,
@@ -188,6 +222,8 @@ impl AppState {
                 pointer_on_cards: false,
             },
             widget,
+            lines_open: false,
+            badge_open: false,
             details_open: false,
             avatar_editor_open: false,
             rooms: RoomsState::default(),
@@ -209,9 +245,9 @@ impl AppState {
         Provider::ALL.into_iter().filter(|provider| self.shows(*provider)).collect()
     }
 
-    /// The card stack is on screen.
+    /// The card stack is on screen; the smaller widgets have none.
     pub fn tray_visible(&self) -> bool {
-        !self.widget.hidden && !self.widget.collapsed && !self.sessions.shown.is_empty()
+        !self.widget.hidden && self.widget.mode == WidgetMode::Full && !self.widget.collapsed && !self.sessions.shown.is_empty()
     }
 
     /// When each of a service's limits was seen to reset, by window identifier.
@@ -272,6 +308,12 @@ pub enum Msg {
     CardFaded(String),
     PointerOnCards(bool),
     ToggleTray,
+    /// The menu bar or the widget's right-click: how much of the widget shows from now on.
+    SetWidgetMode(WidgetMode),
+    /// The simple widget's counts: every task's line, or back to those that call.
+    ToggleLines,
+    /// The pointer came onto the character-only widget, or left it and the simple widget over it.
+    PointerOnBadge(bool),
     ToggleDetails,
     CloseDetails,
     SetWidgetHidden(bool),
@@ -584,6 +626,28 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
         Msg::ToggleTray => {
             state.widget.collapsed = !state.widget.collapsed;
             vec![Effect::SaveWidgetPreferences]
+        }
+        Msg::SetWidgetMode(mode) => {
+            state.widget.mode = mode;
+            // Picked from the menu while hidden, the widget comes back in its new size.
+            state.widget.hidden = false;
+            state.lines_open = false;
+            state.badge_open = false;
+            // The editor points at the profile, which only the full widget has.
+            state.avatar_editor_open = false;
+            apply_sessions(state);
+            vec![Effect::SaveWidgetPreferences]
+        }
+        Msg::ToggleLines => {
+            state.lines_open = !state.lines_open;
+            vec![]
+        }
+        Msg::PointerOnBadge(on) => {
+            state.badge_open = on && state.widget.mode == WidgetMode::Character;
+            if !on {
+                state.lines_open = false;
+            }
+            vec![]
         }
         Msg::ToggleDetails => {
             state.details_open = !state.details_open;
@@ -1176,8 +1240,8 @@ fn read_sub_tasks(sessions: &SessionsState, card: &str) -> Vec<String> {
 fn apply_sessions(state: &mut AppState) {
     let scan = state.sessions.scan.iter().filter(|row| state.shows(row.provider)).cloned().collect();
     let visible = state.sessions.records.visible(scan);
+    let tray_visible = state.tray_visible();
     let sessions = &mut state.sessions;
-    let tray_visible = !state.widget.hidden && !state.widget.collapsed && !sessions.shown.is_empty();
     sessions.held = false;
     if sessions.pointer_on_cards && tray_visible {
         let in_place: Vec<VisibleSession> = sessions

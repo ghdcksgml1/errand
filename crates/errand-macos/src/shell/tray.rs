@@ -63,7 +63,7 @@ fn sub_task_chip(width: f64, text: &str, mark: ChipMark) -> NSRect {
 }
 
 /// What sits before a state's words: a running chip's icon is the spinner laid over its spot.
-fn chip_mark(state: SessionState) -> ChipMark<'static> {
+pub(super) fn chip_mark(state: SessionState) -> ChipMark<'static> {
     if state == SessionState::Running { ChipMark::Spinner } else { ChipMark::Icon(state.icon()) }
 }
 
@@ -498,7 +498,7 @@ pub struct CardEvents {
     pub language: Language,
 }
 
-fn undo_button(vm: &CardVm, frame: NSRect, events: &CardEvents, mtm: MainThreadMarker) -> (Retained<NSButton>, Retained<Action>) {
+pub(super) fn undo_button(vm: &CardVm, frame: NSRect, events: &CardEvents, mtm: MainThreadMarker) -> (Retained<NSButton>, Retained<Action>) {
     let undo = NSButton::new(mtm);
     undo.setTitle(&ns(events.language.undo()));
     undo.setBordered(false);
@@ -517,13 +517,13 @@ fn undo_button(vm: &CardVm, frame: NSRect, events: &CardEvents, mtm: MainThreadM
 }
 
 /// Opens the session a card or a line stands for.
-fn open_session(vm: &CardVm, events: &CardEvents) -> Rc<dyn Fn()> {
+pub(super) fn open_session(vm: &CardVm, events: &CardEvents) -> Rc<dyn Fn()> {
     let (poster, key) = (events.poster.clone(), vm.key.clone());
     Rc::new(move || poster.post(Msg::OpenSession(key.clone())))
 }
 
 /// The circle that checks off a card or a line.
-fn check_button(vm: &CardVm, frame: NSRect, events: &CardEvents, mtm: MainThreadMarker) -> (Retained<CheckButton>, Retained<Action>) {
+pub(super) fn check_button(vm: &CardVm, frame: NSRect, events: &CardEvents, mtm: MainThreadMarker) -> (Retained<CheckButton>, Retained<Action>) {
     let pending = vm.countdown.is_some();
     let check: Retained<CheckButton> = {
         let this = CheckButton::alloc(mtm).set_ivars(CheckIvars { checked: Cell::new(pending), hovering: Cell::new(false) });
@@ -745,7 +745,7 @@ fn card_itself(vm: &CardVm, width: f64, events: &CardEvents, mtm: MainThreadMark
     (view, actions)
 }
 
-fn finish(view: &NSView, vm: &CardVm, language: Language) {
+pub(super) fn finish(view: &NSView, vm: &CardVm, language: Language) {
     view.setIdentifier(Some(&ns(&vm.key)));
     view.setAccessibilityElement(true);
     view.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
@@ -755,7 +755,7 @@ fn finish(view: &NSView, vm: &CardVm, language: Language) {
 }
 
 /// A checked card's title, struck through and muted.
-fn struck(title: &str, label: &NSTextField) -> Retained<NSAttributedString> {
+pub(super) fn struck(title: &str, label: &NSTextField) -> Retained<NSAttributedString> {
     let text = NSMutableAttributedString::from_nsstring(&ns(title));
     let range = NSRange::new(0, ns(title).length());
     unsafe {

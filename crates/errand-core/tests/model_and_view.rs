@@ -5,7 +5,7 @@
 
 use errand_core::avatar::{Avatar, Part};
 use errand_core::format::timestamp_from_seconds;
-use errand_core::model::{Alert, AppState, Attention, COMPLETION_DELAY, Effect, Msg, Notice, OpenError, Profile, WidgetPreferences, update};
+use errand_core::model::{Alert, AppState, Attention, COMPLETION_DELAY, Effect, Msg, Notice, OpenError, Profile, WidgetMode, WidgetPreferences, update};
 use errand_core::rooms::Visibility;
 use errand_core::reset_history::ResetHistory;
 use errand_core::sessions::text::PICTURE;
@@ -182,6 +182,78 @@ fn scanned(state: &mut AppState, rows: Vec<SessionRow>) {
 }
 
 #[test]
+fn the_simple_widget_lines_up_only_what_calls() {
+    let mut state = state();
+    let mut seen = row("codex:seen", Provider::Codex, 400.0, Some(390.0));
+    seen.seen_in_app = true;
+    let mut asking = row("claude:asking", Provider::Claude, 50.0, None);
+    asking.question = Some(Question { id: "toolu_1".to_owned(), asked_at: at(NOW - 30.0), questions: vec!["어느 안으로 할까요?".to_owned()] });
+    scanned(&mut state, vec![row("claude:new", Provider::Claude, 100.0, Some(90.0)), row("codex:running", Provider::Codex, 200.0, None), seen, asking]);
+    let simple = view::simple(&state, &context(), false);
+    let keys = |simple: &view::SimpleVm| simple.lines.iter().map(|line| line.key.clone()).collect::<Vec<_>>();
+    assert_eq!(keys(&simple), ["claude:asking", "claude:new"], "the question first, then the answer to read; running and opened work wait in the counts");
+    assert_eq!(simple.pills.iter().map(|pill| pill.words.as_str()).collect::<Vec<_>>(), ["답변 필요 1개", "확인할 것 1개", "진행 중 1개"], "opened answers are not counted on the line");
+    assert!(simple.lines.iter().all(|line| line.compact && line.tooltip.contains("클릭해서 열기")), "a line's tooltip says what the folded card would");
+    assert_eq!(simple.idle, None);
+    let open = view::simple(&state, &context(), true);
+    assert_eq!(keys(&open), ["claude:asking", "claude:new", "codex:running", "codex:seen"], "open, every task has a line, those that call first");
+
+    // Checked, a line stays for its 되돌리기.
+    update(&mut state, Msg::ToggleComplete("claude:new".to_owned()), at(NOW));
+    let checked = view::simple(&state, &context(), false);
+    assert!(checked.lines.iter().any(|line| line.key == "claude:new" && line.countdown.is_some()));
+
+    let badge = view::badge(&state, &context());
+    assert_eq!(badge.count, Some((1, theme::ASKING)), "the badge counts what still calls, orange while a question waits");
+    assert!(badge.running && !badge.low);
+}
+
+#[test]
+fn nothing_on_errand_leaves_the_character_on_the_line() {
+    let state = state();
+    let simple = view::simple(&state, &context(), false);
+    assert!(simple.pills.is_empty() && simple.lines.is_empty());
+    assert_eq!(simple.idle.map(|idle| idle.words), Some("맡긴 일 없음"));
+    let badge = view::badge(&state, &context());
+    assert_eq!((badge.count, badge.running), (None, false));
+}
+
+#[test]
+fn only_opened_answers_still_show_their_count_on_the_line() {
+    let mut state = state();
+    let mut seen = row("codex:seen", Provider::Codex, 400.0, Some(390.0));
+    seen.seen_in_app = true;
+    scanned(&mut state, vec![seen]);
+    let simple = view::simple(&state, &context(), false);
+    assert_eq!(simple.pills.iter().map(|pill| pill.words.as_str()).collect::<Vec<_>>(), ["확인함 1개"], "so the line still has something to click for the list");
+    assert!(simple.lines.is_empty() && simple.idle.is_none());
+}
+
+#[test]
+fn the_widget_size_is_chosen_from_the_menu_and_kept() {
+    let mut state = state();
+    scanned(&mut state, vec![row("claude:new", Provider::Claude, 100.0, Some(90.0))]);
+    state.widget.hidden = true;
+    let titles = |state: &AppState| view::widget_modes(state, Language::Korean).into_iter().map(|item| (item.title, item.checked)).collect::<Vec<_>>();
+    assert_eq!(titles(&state), [("크게 보기".to_owned(), true), ("간단히 보기".to_owned(), false), ("캐릭터만".to_owned(), false)]);
+    assert_eq!(update(&mut state, Msg::SetWidgetMode(WidgetMode::Character), at(NOW)), [Effect::SaveWidgetPreferences]);
+    assert!(!state.widget.hidden, "picked from the menu, a hidden widget comes back");
+    assert!(!state.tray_visible(), "the smaller widgets have no card stack");
+    assert_eq!(titles(&state)[2], ("캐릭터만".to_owned(), true));
+    update(&mut state, Msg::PointerOnBadge(true), at(NOW));
+    update(&mut state, Msg::ToggleLines, at(NOW));
+    assert!(state.badge_open && state.lines_open);
+    update(&mut state, Msg::PointerOnBadge(false), at(NOW));
+    assert!(!state.badge_open && !state.lines_open, "leaving folds the list too");
+    update(&mut state, Msg::SetWidgetMode(WidgetMode::Simple), at(NOW));
+    update(&mut state, Msg::PointerOnBadge(true), at(NOW));
+    assert!(!state.badge_open, "only the character opens on the pointer");
+    update(&mut state, Msg::SetWidgetMode(WidgetMode::Full), at(NOW));
+    assert!(state.tray_visible());
+    assert_eq!(WidgetMode::ALL.map(|mode| WidgetMode::from_storage_key(mode.storage_key())), WidgetMode::ALL.map(Some));
+}
+
+#[test]
 fn the_header_counts_add_up_to_the_stack() {
     let mut state = state();
     let mut seen = row("codex:seen", Provider::Codex, 400.0, Some(390.0));
@@ -298,6 +370,9 @@ fn the_menu_and_details_list_codex_and_claude_only() {
             "사용량 새로고침",
             "계정 창 열기",
             "작업방",
+            "크게 보기",
+            "간단히 보기",
+            "캐릭터만",
             "플로팅 위젯 숨기기",
             "플로팅 위젯 위치 초기화",
             "Codex 표시",
@@ -472,6 +547,9 @@ fn english_reads_the_same_state_in_english() {
             "Refresh Usage",
             "Open Usage Window",
             "Work Rooms",
+            "Full Widget",
+            "Simple Widget",
+            "Character Only",
             "Show Floating Widget",
             "Reset Widget Position",
             "Show Codex",

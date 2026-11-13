@@ -13,8 +13,8 @@ fn main() {
 #[cfg(target_os = "macos")]
 mod widget {
     use errand_core::avatar::{Avatar, CLOTHES, Part};
-    use errand_core::layout::{DOCK_PADDING, STACK_WIDTH};
-    use errand_core::model::{AppState, Effect, Msg, Profile, WidgetPreferences, update};
+    use errand_core::layout::{self, DOCK_PADDING, STACK_WIDTH};
+    use errand_core::model::{AppState, Effect, Msg, Profile, WidgetMode, WidgetPreferences, update};
     use errand_core::ports::Poster;
     use errand_core::reset_history::ResetHistory;
     use errand_core::rooms::{Face, Member, Role, Room, RoomSummary, Visibility};
@@ -450,6 +450,7 @@ mod widget {
         korean(&mut t, mtm, defaults);
         english(&mut t, mtm, defaults);
         hiding(&mut t, mtm, defaults);
+        modes(&mut t, mtm, defaults);
         rooms(&mut t, mtm, defaults);
         private_rooms(&mut t, mtm, defaults);
         room_tabs(&mut t, mtm, defaults);
@@ -1319,7 +1320,11 @@ mod widget {
             let target = hit(&window, at).expect("something under the click");
             unsafe { msg_send![&*target, menuForEvent: &*event] }
         };
-        t.check(rows.len() == 2 && menu_at(&rows[0]).is_none(), "The owner's own row has no menu");
+        let own = menu_at(&rows[0]).map(|menu| (0..menu.numberOfItems()).filter_map(|index| menu.itemAtIndex(index)).map(|item| item.title().to_string()).collect::<Vec<_>>());
+        t.check(
+            rows.len() == 2 && own.as_ref().is_some_and(|titles| !titles.iter().any(|title| title == "내보내기")),
+            &format!("The owner's own row offers no turning out, only the widget's own menu: {own:?}"),
+        );
         let menu = menu_at(&rows[1]);
         t.check(
             menu.as_ref().is_some_and(|menu| menu.itemAtIndex(0).is_some_and(|item| item.title().to_string() == "내보내기")),
@@ -1496,6 +1501,109 @@ mod widget {
             !stored_preferences(defaults).hidden_services.codex && h.performed(|effect| *effect == Effect::FetchUsage(Provider::Codex)) == 1,
             "Showing it again is kept, and its usage is read at once",
         );
+        h.send(Msg::SetWidgetHidden(true));
+    }
+
+    /// The smaller widgets: one line under the tasks that call, or the character alone with that line over it while
+    /// the pointer rests on it. Each keeps the dock's corner, and the choice is kept for the next launch.
+    fn modes(t: &mut Checks, mtm: MainThreadMarker, defaults: &Retained<NSUserDefaults>) {
+        let mut h = Harness::new(mtm, defaults, Language::Korean);
+        let (panel, tray_panel) = {
+            let widget = h.widget.borrow();
+            (widget.panel.clone(), widget.tray_panel.clone())
+        };
+        h.send(Msg::SetWidgetHidden(false));
+        let weekly = window("codex-week", WEEK, 72, Some(WEEKLY_RESET));
+        h.send(Msg::UsageRead { provider: Provider::Codex, result: Ok(vec![weekly].into()) });
+        let answered = row("claude:answered", Provider::Claude, "로그인 화면 리팩터링", "커밋해줘", h.ago(900), Some(h.ago(300)));
+        let running = row("codex:running", Provider::Codex, "API 캐시 정리", "캐시 꺼줘", h.ago(200), None);
+        h.send(Msg::SessionsScanned(vec![answered, running]));
+        let screen = panel.screen().expect("the dock is on a screen").visibleFrame();
+        h.park(NSPoint::new(max_x(screen) - STACK_WIDTH - 40.0, screen.origin.y + 40.0), true, mtm);
+        let full = panel.frame();
+        t.check(tray_panel.isVisible(), "The full widget stacks the cards on the dock");
+
+        h.send(Msg::SetWidgetMode(WidgetMode::Simple));
+        let simple = panel.frame();
+        let content = panel.contentView().expect("the widget's view");
+        let lines = |content: &NSView| of_class(content, "ErrandLineCard").iter().filter_map(|line| line.identifier()).map(|key| key.to_string()).collect::<Vec<_>>();
+        t.check(!same(&content, &h.dock()) && !tray_panel.isVisible(), "Simple, the widget is one line and no card stack");
+        t.check(lines(&content) == ["claude:answered"], &format!("Only the answer waiting to be read has a line: {:?}", lines(&content)));
+        t.check(
+            (simple.size.height - layout::simple_height(1)).abs() < 0.5 && (max_x(simple) - max_x(full)).abs() < 0.5 && (simple.origin.y - full.origin.y).abs() < 0.5,
+            &format!("The simple widget keeps the dock's bottom-right corner: {full:?} then {simple:?}"),
+        );
+        t.check(stored_preferences(defaults).mode == WidgetMode::Simple, "The simple widget is kept for the next launch");
+        let strip = first(&content, "ErrandStripView").expect("the simple widget's line");
+        t.check(spoken(&strip).contains("진행 중 1개") && spoken(&strip).contains("Codex 72%"), &format!("The line says the counts and the usage: {}", spoken(&strip)));
+        click(&strip, NSPoint::new(16.0, 20.0));
+        h.pump();
+        let content = panel.contentView().expect("the widget's view");
+        t.check(lines(&content) == ["claude:answered", "codex:running"], &format!("A click on the counts lines up every task: {:?}", lines(&content)));
+        t.check((panel.frame().size.height - layout::simple_height(2)).abs() < 0.5, "The widget grows upward by the new line");
+        let strip = first(&content, "ErrandStripView").expect("the simple widget's line");
+        click(&strip, NSPoint::new(16.0, 20.0));
+        h.pump();
+        t.check(lines(&panel.contentView().expect("the widget's view")).len() == 1, "Another click folds back to the tasks that call");
+        let strip = first(&panel.contentView().expect("the widget's view"), "ErrandStripView").expect("the simple widget's line");
+        click(&strip, NSPoint::new(STACK_WIDTH - 30.0, 20.0));
+        h.pump();
+        t.check(h.state.details_open && h.widget.borrow().details_panel.isVisible(), "A click on the batteries opens the usage details");
+        h.send(Msg::CloseDetails);
+
+        h.send(Msg::SetWidgetMode(WidgetMode::Character));
+        let character = panel.frame();
+        let content = panel.contentView().expect("the widget's view");
+        let badge = first(&content, "ErrandBadgeView").expect("the character");
+        t.check(
+            (character.size.width - layout::BADGE_SIZE).abs() < 0.5 && (max_x(character) - max_x(full)).abs() < 0.5 && (character.origin.y - full.origin.y).abs() < 0.5,
+            &format!("The character sits in the dock's bottom-right corner: {character:?}"),
+        );
+        t.check(first(&badge, "ErrandRunningArcView").is_some_and(|arc| !arc.isHidden()), "Work under way turns an arc round the character");
+        t.check(tooltip(&badge).contains("확인할 것 1개"), &format!("The character's tooltip counts what calls: {}", tooltip(&badge)));
+        content.mouseEntered(&pointer(NSEventType::MouseEntered, &panel));
+        h.pump();
+        let open = panel.frame();
+        let content = panel.contentView().expect("the widget's view");
+        t.check(first(&content, "ErrandStripView").is_some() && lines(&content) == ["claude:answered"], "The pointer on the character brings the simple widget over it");
+        t.check(
+            (max_x(open) - max_x(character)).abs() < 0.5 && (open.origin.y - character.origin.y).abs() < 0.5 && open.size.height > character.size.height,
+            &format!("It opens upward and leftward, the character staying under the pointer: {character:?} then {open:?}"),
+        );
+        let badge_now = first(&content, "ErrandBadgeView").expect("the character");
+        t.check(
+            (max_x(badge_now.convertRect_toView(badge_now.bounds(), None)) - max_x(content.bounds())).abs() < 0.5,
+            "The character stays at the open widget's right end",
+        );
+        h.send(Msg::PointerOnBadge(false));
+        t.check((panel.frame().size.height - layout::BADGE_SIZE).abs() < 0.5, "Left, it folds back to the character");
+
+        let menu = badge_now.menuForEvent(&pointer(NSEventType::MouseEntered, &panel)).expect("the widget's own menu");
+        let titles: Vec<String> = (0..menu.numberOfItems()).filter_map(|index| menu.itemAtIndex(index)).map(|item| item.title().to_string()).collect();
+        let checked: Vec<bool> = (0..menu.numberOfItems()).filter_map(|index| menu.itemAtIndex(index)).map(|item| item.state() == objc2_app_kit::NSControlStateValueOn).collect();
+        t.check(titles == ["크게 보기", "간단히 보기", "캐릭터만"] && checked == [false, false, true], &format!("A right-click offers the three sizes: {titles:?} {checked:?}"));
+        menu.performActionForItemAtIndex(0);
+        h.pump();
+        t.check(same(&panel.contentView().expect("the widget's view"), &h.dock()) && h.state.widget.mode == WidgetMode::Full, "Picking 크게 보기 brings the dock back");
+        t.check((max_x(panel.frame()) - max_x(full)).abs() < 0.5 && (panel.frame().size.height - full.size.height).abs() < 0.5, "The dock comes back where it was");
+        let dock_menu = h.dock().menuForEvent(&pointer(NSEventType::MouseEntered, &panel)).map(|menu| menu.numberOfItems());
+        t.check(dock_menu == Some(3), "The dock has the same right-click menu");
+
+        // Parked on the left half, the widget keeps its left edge instead.
+        h.park(NSPoint::new(screen.origin.x + 40.0, screen.origin.y + 40.0), true, mtm);
+        let left = panel.frame();
+        h.send(Msg::SetWidgetMode(WidgetMode::Character));
+        t.check((panel.frame().origin.x - left.origin.x).abs() < 0.5, &format!("On the left, the character keeps the dock's left edge: {left:?} then {:?}", panel.frame()));
+        h.send(Msg::PointerOnBadge(true));
+        let content = panel.contentView().expect("the widget's view");
+        let badge_now = first(&content, "ErrandBadgeView").expect("the character");
+        t.check(
+            (panel.frame().origin.x - left.origin.x).abs() < 0.5 && badge_now.frame().origin.x.abs() < 0.5,
+            "Opened on the left, it grows rightward with the character at its left end",
+        );
+        h.send(Msg::PointerOnBadge(false));
+        h.send(Msg::SetWidgetMode(WidgetMode::Full));
+        t.check((panel.frame().origin.x - left.origin.x).abs() < 0.5, "Back to full, the dock keeps its left edge");
         h.send(Msg::SetWidgetHidden(true));
     }
 

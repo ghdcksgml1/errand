@@ -34,6 +34,29 @@ pub const CARD_GAP: f64 = 8.0;
 pub const MORE_BAR_HEIGHT: f64 = 30.0;
 /// From the default position, how far the dock sits from the screen's right and bottom edges.
 pub const SCREEN_MARGIN: f64 = 24.0;
+/// The simple widget's own line: the counts and a small battery per service.
+pub const STRIP_HEIGHT: f64 = 40.0;
+/// A task's one-line card over the simple widget's line, and the space between two of them.
+pub const LINE_HEIGHT: f64 = 36.0;
+pub const LINE_GAP: f64 = 6.0;
+/// Between the last one-line card and the line under it.
+pub const LINES_FOOT: f64 = 8.0;
+/// The character-only widget: its circle, with room around it for the badges on its edge.
+pub const BADGE_SIZE: f64 = 64.0;
+pub const BADGE_CIRCLE: f64 = 56.0;
+
+/// How many one-line cards fit over the simple widget's line in `height`; the counts still count the rest.
+pub fn lines_that_fit(height: f64) -> usize {
+    ((height - STRIP_HEIGHT - LINES_FOOT + LINE_GAP) / (LINE_HEIGHT + LINE_GAP)).floor().max(0.0) as usize
+}
+
+/// The simple widget with this many one-line cards over its line.
+pub fn simple_height(lines: usize) -> f64 {
+    match lines {
+        0 => STRIP_HEIGHT,
+        count => count as f64 * LINE_HEIGHT + (count - 1) as f64 * LINE_GAP + LINES_FOOT + STRIP_HEIGHT,
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rect {
