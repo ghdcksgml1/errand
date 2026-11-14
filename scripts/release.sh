@@ -15,6 +15,7 @@ rm -f "$archive"
 /usr/bin/ditto -c -k --keepParent "$app" "$archive"
 xcrun notarytool submit "$archive" --keychain-profile "$ERRAND_NOTARY_PROFILE" --wait
 xcrun stapler staple "$app"
+python3 scripts/build_privacy.py check "$app"
 rm "$archive"
 /usr/bin/ditto -c -k --keepParent "$app" "$archive"
 /usr/bin/codesign --verify --deep --strict "$app"

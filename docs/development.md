@@ -62,6 +62,8 @@ xcrun notarytool store-credentials errand-notary
 
 `scripts/release.sh`가 Intel과 Apple Silicon을 함께 담아 서명하고 공증받은 `dist/Errand-<버전>.zip`을 만듭니다. 인증서 이름은 `security find-identity -v -p codesigning`에서 확인합니다.
 
+`scripts/build.sh`와 `scripts/release.sh`는 홈·Cargo·Rustup·소스 경로를 익명 경로로 치환합니다. 공백이 있는 경로와 기존 Rust 플래그도 유지하며, 완성된 앱에 원래 경로가 남으면 실패합니다. 직접 `cargo build`한 결과에는 이 검사가 적용되지 않으므로 배포는 이 스크립트로 진행합니다.
+
 ```sh
 ERRAND_SIGN_IDENTITY='Developer ID Application: 이름 (팀 ID)' ERRAND_NOTARY_PROFILE=errand-notary zsh scripts/release.sh
 ```
