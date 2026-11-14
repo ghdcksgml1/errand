@@ -367,6 +367,8 @@ pub enum Msg {
     JournalTab(crate::journal::view::JournalTab),
     /// Forward (positive) or back through days, weeks or months.
     JournalStep(i64),
+    /// Goes straight to a day, a week or a month: the view, and how far back from the present.
+    JournalShow { tab: crate::journal::view::JournalTab, back: i64 },
     JournalProject(Option<String>),
     JournalSpan(crate::journal::view::ReportSpan),
     /// Opens a task's detail, or closes it.
@@ -1244,6 +1246,15 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
         Msg::JournalStep(step) => {
             let place = &mut state.journal.place;
             place.back = (place.back - step).max(0);
+            place.project = None;
+            place.open = None;
+            place.recap = None;
+            vec![]
+        }
+        Msg::JournalShow { tab, back } => {
+            let place = &mut state.journal.place;
+            place.tab = tab;
+            place.back = back.max(0);
             place.project = None;
             place.open = None;
             place.recap = None;

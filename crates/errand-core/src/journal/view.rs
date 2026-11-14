@@ -25,6 +25,8 @@ pub enum JournalTab {
 
 impl JournalTab {
     pub const ALL: [JournalTab; 4] = [JournalTab::Day, JournalTab::Week, JournalTab::Month, JournalTab::Report];
+    /// The views the window offers: a report's figures follow whichever of these is on screen.
+    pub const SHOWN: [JournalTab; 3] = [JournalTab::Day, JournalTab::Week, JournalTab::Month];
 
     pub fn name(self, language: Language) -> &'static str {
         match self {
@@ -153,6 +155,38 @@ pub fn translate_label(translate: &Translate, language: Language) -> &'static st
         Translate::Shown => language.pick("원문 보기", "Show original"),
         Translate::Original => language.pick("번역 보기", "Show translation"),
     }
+}
+
+/// A span of minutes in words: "1시간 22분", "45m". Never less than a minute.
+pub(crate) fn minutes_text(minutes: i64, language: Language) -> String {
+    let minutes = minutes.max(1);
+    let (hours, rest) = (minutes / 60, minutes % 60);
+    match (language, hours, rest) {
+        (Language::Korean, 0, _) => format!("{rest}분"),
+        (Language::Korean, _, 0) => format!("{hours}시간"),
+        (Language::Korean, _, _) => format!("{hours}시간 {rest}분"),
+        (Language::English, 0, _) => format!("{rest}m"),
+        (Language::English, _, 0) => format!("{hours}h"),
+        (Language::English, _, _) => format!("{hours}h {rest}m"),
+    }
+}
+
+/// Minutes as figures: hours and minutes large, their units small.
+pub(crate) fn duration_parts(minutes: i64, language: Language) -> Vec<StatPart> {
+    let minutes = minutes.max(0);
+    let (hours, rest) = (minutes / 60, minutes % 60);
+    let (h, m) = (language.pick("시간", "h"), language.pick("분", "m"));
+    let part = |text: String, small: bool| StatPart { text, small };
+    match hours {
+        0 => vec![part(rest.to_string(), false), part(m.into(), true)],
+        _ => vec![part(hours.to_string(), false), part(h.into(), true), part(format!(" {rest}"), false), part(m.into(), true)],
+    }
+}
+
+/// The names of the date line's counts: what was finished, what waits for an answer, the agents' time, and
+/// the commits and pull requests.
+pub(crate) fn stat_names(language: Language) -> [&'static str; 4] {
+    [language.pick("끝낸 일", "Done"), language.pick("답변 필요", "Needs answer"), language.pick("AI 작업", "AI time"), language.pick("커밋 · PR", "Commits · PRs")]
 }
 
 /// A live state worth calling out on a record, as the widget's chips do.
@@ -561,16 +595,7 @@ impl Journal<'_> {
     }
 
     pub(crate) fn duration(&self, span: SignedDuration) -> String {
-        let minutes = span.as_mins().max(1);
-        let (hours, rest) = (minutes / 60, minutes % 60);
-        match (self.language, hours, rest) {
-            (Language::Korean, 0, _) => format!("{rest}분"),
-            (Language::Korean, _, 0) => format!("{hours}시간"),
-            (Language::Korean, _, _) => format!("{hours}시간 {rest}분"),
-            (Language::English, 0, _) => format!("{rest}m"),
-            (Language::English, _, 0) => format!("{hours}h"),
-            (Language::English, _, _) => format!("{hours}h {rest}m"),
-        }
+        minutes_text(span.as_mins(), self.language)
     }
 
     pub(crate) fn marks(&self, commits: usize, pulls: &[u32]) -> String {
@@ -677,7 +702,7 @@ impl Journal<'_> {
     }
 
     /// A task's time that day: from and to with its working time, or since when while it runs.
-    fn task_time(&self, record: &WorkRecord, from: Timestamp, to: Timestamp) -> String {
+    pub(crate) fn task_time(&self, record: &WorkRecord, from: Timestamp, to: Timestamp) -> String {
         let turns: Vec<_> = record.turns_between(from, to).collect();
         let first = turns.first().map(|turn| turn.asked_at).unwrap_or(from);
         let unanswered = turns.last().is_some_and(|turn| turn.finished_at.is_none());
@@ -698,21 +723,14 @@ impl Journal<'_> {
     }
 
     /// Finished that day: the day's last request answered, and nothing live about it.
-    fn finished_on(&self, record: &WorkRecord, from: Timestamp, to: Timestamp) -> bool {
+    pub(crate) fn finished_on(&self, record: &WorkRecord, from: Timestamp, to: Timestamp) -> bool {
         let last = record.turns_between(from, to).last();
         last.is_some_and(|turn| turn.finished_at.is_some()) && !matches!(self.callout_by(record, to), Some(Callout::Running | Callout::Asking))
     }
 
     /// A span as figures: hours and minutes large, their units small.
     fn duration_parts(&self, span: SignedDuration) -> Vec<StatPart> {
-        let minutes = span.as_mins().max(0);
-        let (hours, rest) = (minutes / 60, minutes % 60);
-        let (h, m) = (self.language.pick("시간", "h"), self.language.pick("분", "m"));
-        let part = |text: String, small: bool| StatPart { text, small };
-        match hours {
-            0 => vec![part(rest.to_string(), false), part(m.into(), true)],
-            _ => vec![part(hours.to_string(), false), part(h.into(), true), part(format!(" {rest}"), false), part(m.into(), true)],
-        }
+        duration_parts(span.as_mins(), self.language)
     }
 
     /// The counts on the day's and the week's date lines.
@@ -723,11 +741,12 @@ impl Journal<'_> {
         let worked: SignedDuration = records.iter().flat_map(|record| record.turns_between(from, to)).filter_map(|turn| turn.duration()).fold(SignedDuration::ZERO, |total, span| total + span);
         let commits: usize = records.iter().map(|record| record.commits.iter().filter(|commit| commit.at >= from && commit.at < to).count()).sum();
         let pulls: usize = records.iter().map(|record| record.pull_requests.iter().filter(|pull| pull.at >= from && pull.at < to).count()).sum();
-        let mut stats = vec![Stat { label: self.language.pick("끝낸 일", "Done").into(), parts: plain(finished.to_string()), asking: false }];
+        let names = stat_names(self.language);
+        let mut stats = vec![Stat { label: names[0].into(), parts: plain(finished.to_string()), asking: false }];
         if asking > 0 {
-            stats.push(Stat { label: self.language.pick("답변 필요", "Needs answer").into(), parts: plain(asking.to_string()), asking: true });
+            stats.push(Stat { label: names[1].into(), parts: plain(asking.to_string()), asking: true });
         }
-        let mut label = self.language.pick("AI 작업", "AI time").to_owned();
+        let mut label = names[2].to_owned();
         if let Some(before) = versus {
             let difference = (worked - before).as_mins();
             if difference.abs() >= 30 {
@@ -742,7 +761,7 @@ impl Journal<'_> {
         }
         stats.push(Stat { label, parts: self.duration_parts(worked), asking: false });
         if commits + pulls > 0 {
-            stats.push(Stat { label: self.language.pick("커밋 · PR", "Commits · PRs").into(), parts: plain(format!("{commits} · {pulls}")), asking: false });
+            stats.push(Stat { label: names[3].into(), parts: plain(format!("{commits} · {pulls}")), asking: false });
         }
         stats
     }
@@ -1502,6 +1521,20 @@ pub enum Body {
     Report(ReportView),
 }
 
+/// What the page draws under the date line: the map of the week on screen, or of the week that holds the day on
+/// screen, or each week of the month, and what goes with it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapScreen {
+    pub weeks: Vec<super::map::MapView>,
+    /// The day the map is opened on, from its Monday.
+    pub day: Option<usize>,
+    /// Each day's summary as it stands, for the days with work, by the day's place from Monday.
+    pub drafts: Vec<(usize, Draft)>,
+    pub year: super::map::YearView,
+    /// The heading over a month's weeks: "11월 정리". Empty on a day or a week.
+    pub title: String,
+}
+
 /// The words the window draws besides the records themselves.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Words {
@@ -1541,6 +1574,14 @@ pub struct Words {
     pub carried: &'static str,
     pub kinds: &'static str,
     pub no_summary: &'static str,
+    pub tasks: &'static str,
+    pub peak: &'static str,
+    pub whole_week: &'static str,
+    pub nothing_that_day: &'static str,
+    pub replay: &'static str,
+    pub stop: &'static str,
+    pub selected: &'static str,
+    pub nothing_selected: &'static str,
 }
 
 impl Words {
@@ -1583,6 +1624,14 @@ impl Words {
             carried: pick("다음 주로 넘어가는 일", "Carried to next week"),
             kinds: pick("일의 종류", "Kinds of work"),
             no_summary: pick("정리 전", "Not summed up"),
+            tasks: pick("작업", "Tasks"),
+            peak: pick("가장 많이 맡긴 때", "Busiest hour"),
+            whole_week: pick("한 주", "Week"),
+            nothing_that_day: pick("이날은 맡긴 일이 없어요.", "Nothing was asked that day."),
+            replay: pick("다시 보기", "Replay"),
+            stop: pick("멈춤", "Stop"),
+            selected: pick("선택한 구간", "Selection"),
+            nothing_selected: pick("이 구간에는 맡긴 일이 없어요.", "Nothing was asked in this stretch."),
         }
     }
 }
@@ -1604,6 +1653,8 @@ pub struct Screen {
     pub spans: Vec<(ReportSpan, &'static str)>,
     pub usage: Vec<MiniBattery>,
     pub body: Body,
+    /// The map and its cards, for whichever view is on screen.
+    pub map: MapScreen,
     pub detail: Option<DetailView>,
     /// The week's recap cards, while they are open.
     pub recap: Option<RecapView>,
@@ -1618,6 +1669,46 @@ pub struct Screen {
 }
 
 impl Journal<'_> {
+    fn map_screen(&self, place: &JournalPlace) -> MapScreen {
+        let today = self.today();
+        let (weeks, day) = match place.tab {
+            JournalTab::Day => {
+                let date = today.checked_sub(place.back.days()).unwrap_or(today);
+                let offset = date.weekday().to_monday_zero_offset() as i64;
+                (vec![self.map(date.checked_sub(offset.days()).unwrap_or(date))], Some(offset as usize))
+            }
+            JournalTab::Week => (vec![self.map(self.monday(place.back))], None),
+            JournalTab::Month | JournalTab::Report => (self.month_maps(place.back), None),
+        };
+        let drafts = match (place.tab, weeks.first()) {
+            (JournalTab::Day | JournalTab::Week, Some(map)) => map
+                .days
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| match day {
+                    Some(day) => day == *index,
+                    None => map.tasks.iter().any(|task| task.day == *index),
+                })
+                .map(|(index, head)| {
+                    let (from, to) = (self.start_of(head.date), self.start_of(head.date.tomorrow().unwrap_or(head.date)));
+                    (index, self.draft(head.date, &self.within(from, to), from, to))
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let title = match (place.tab, weeks.first()) {
+            (JournalTab::Month | JournalTab::Report, Some(first)) => {
+                let month = self.month_name(first.days[3].date.month());
+                match self.language {
+                    Language::Korean => format!("{month} 정리"),
+                    Language::English => format!("{month} summary"),
+                }
+            }
+            _ => String::new(),
+        };
+        MapScreen { weeks, day, drafts, year: self.year(), title }
+    }
+
     pub fn screen(&self, place: &JournalPlace, usage: Vec<MiniBattery>, loading: bool, avatar: String) -> Screen {
         let body = match place.tab {
             JournalTab::Day => Body::Day(self.day(place)),
@@ -1627,10 +1718,11 @@ impl Journal<'_> {
         };
         Screen {
             place: place.clone(),
-            tabs: JournalTab::ALL.iter().map(|tab| (*tab, tab.name(self.language))).collect(),
+            tabs: JournalTab::SHOWN.iter().map(|tab| (*tab, tab.name(self.language))).collect(),
             spans: ReportSpan::ALL.iter().map(|span| (*span, span.name(self.language))).collect(),
             usage,
             body,
+            map: self.map_screen(place),
             detail: place.open.as_deref().and_then(|key| self.detail(key)),
             recap: (place.tab == JournalTab::Week && place.recap.is_some()).then(|| self.recap(place)),
             log: self.log(place),
