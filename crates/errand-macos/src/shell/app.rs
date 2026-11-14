@@ -1,7 +1,7 @@
 //! Starting the app: one instance at a time, the Dual Codex records moved over, messages delivered on the
 //! main thread, and the timers that keep usage, accounts and tasks current.
 
-use super::dashboard::Dashboard;
+use super::journal::Journal;
 use super::kit::ns;
 use super::status::StatusMenu;
 use super::widget::Widget;
@@ -75,7 +75,7 @@ pub struct MacShell {
     defaults: Retained<NSUserDefaults>,
     status: StatusMenu,
     widget: Rc<RefCell<Widget>>,
-    dashboard: Dashboard,
+    journal: Journal,
     settings: super::settings::Settings,
     on_menu: Rc<dyn Fn(MenuAction)>,
     hidden: bool,
@@ -115,8 +115,8 @@ impl MacShell {
                 }
             }
         });
-        let dashboard = Dashboard::new(mtm, poster.clone(), language);
-        MacShell { settings: super::settings::Settings::new(mtm, poster.clone(), language), mtm, status: StatusMenu::new(mtm), widget, dashboard, poster, defaults, on_menu, hidden, language }
+        let journal = Journal::new(mtm, poster.clone(), language.window_title_journal());
+        MacShell { settings: super::settings::Settings::new(mtm, poster.clone(), language), mtm, status: StatusMenu::new(mtm), widget, journal, poster, defaults, on_menu, hidden, language }
     }
 
     pub fn widget_preferences(&self) -> WidgetPreferences {
@@ -167,7 +167,7 @@ impl Shell for MacShell {
         self.hidden = state.widget.hidden;
         self.status.render(view::status_icon(state, self.language), view::menu(state, !self.hidden, &context), &self.on_menu);
         self.widget.borrow_mut().render(state, &context);
-        self.dashboard.render(&view::dashboard(state, &context), self.mtm);
+        self.journal.render(&view::journal(state, &context));
         self.settings.render(&state.tasks);
     }
 
@@ -228,7 +228,45 @@ impl Shell for MacShell {
     }
 
     fn show_dashboard(&mut self) {
-        self.dashboard.show(self.mtm);
+        self.journal.show(self.mtm);
+    }
+
+    fn edit_summary(&mut self, date: jiff::civil::Date, text: &str) {
+        let (title, note, save, cancel) = match self.language {
+            Language::Korean => ("요약 고치기", "한 줄에 하나씩 고쳐 주세요. \"프로젝트 · 내용\"으로 쓰고, 줄을 지우면 빠져요.", "저장", "취소"),
+            Language::English => ("Edit the summary", "One item per line, as \"project · words\". Delete a line to drop it.", "Save", "Cancel"),
+        };
+        let (text, poster) = (text.to_owned(), self.poster.clone());
+        // Outside the message being handled, since a modal alert runs its own loop.
+        DispatchQueue::main().exec_async(move || {
+            let Some(mtm) = MainThreadMarker::new() else { return };
+            let alert = NSAlert::new(mtm);
+            alert.setMessageText(&ns(title));
+            alert.setInformativeText(&ns(note));
+            alert.addButtonWithTitle(&ns(save));
+            alert.addButtonWithTitle(&ns(cancel));
+            let frame = objc2_foundation::NSRect::new(objc2_foundation::NSPoint::new(0.0, 0.0), objc2_foundation::NSSize::new(520.0, 280.0));
+            let scroll = objc2_app_kit::NSScrollView::initWithFrame(objc2_app_kit::NSScrollView::alloc(mtm), frame);
+            scroll.setHasVerticalScroller(true);
+            scroll.setBorderType(objc2_app_kit::NSBorderType::BezelBorder);
+            let editor = objc2_app_kit::NSTextView::initWithFrame(objc2_app_kit::NSTextView::alloc(mtm), frame);
+            editor.setRichText(false);
+            editor.setAllowsUndo(true);
+            editor.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize(13.0)));
+            editor.setString(&ns(&text));
+            editor.setVerticallyResizable(true);
+            editor.setHorizontallyResizable(false);
+            if let Some(container) = unsafe { editor.textContainer() } {
+                container.setWidthTracksTextView(true);
+            }
+            scroll.setDocumentView(Some(&editor));
+            alert.setAccessoryView(Some(&scroll));
+            alert.layout();
+            alert.window().makeFirstResponder(Some(&editor));
+            if alert.runModal() == objc2_app_kit::NSAlertFirstButtonReturn {
+                poster.post(Msg::JournalSummaryEdited { date, text: editor.string().to_string() });
+            }
+        });
     }
 
     fn copy_text(&mut self, text: &str) {

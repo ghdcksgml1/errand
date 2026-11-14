@@ -122,11 +122,16 @@ fn claudes_card_says_when_claude_code_spoke_and_not_when_errand_looked() {
     update(&mut state, Msg::UsageRead { provider: Provider::Claude, result: Ok(Reading { windows, reported_at: Some(at(NOW - 3600.0)) }) }, at(NOW));
     read(&mut state, Provider::Codex, Ok(vec![window("codex/primary", WEEK, Some(72), Some(WEEKLY_RESET))]));
     let details = view::details(&state, &context());
-    assert_eq!(details.cards[0].data_status, "최신 사용량 · 조회 10/15 15:00");
-    assert_eq!(details.cards[1].data_status, "Claude Code 기준 10/15 14:00", "reading the record just now says nothing about how fresh it is");
-    assert_eq!(view::details(&state, &english()).cards[1].data_status, "From Claude Code, 10/15 14:00");
+    assert_eq!(details.cards[0].data_status, "10/15 15:00 기준");
+    assert_eq!(details.cards[1].data_status, "10/15 14:00 기준", "reading the record just now says nothing about how fresh it is");
+    assert_eq!(details.cards[1].data_status_tooltip, "Claude Code가 마지막으로 알려 준 값이에요.", "and whose time that is");
+    assert_eq!(view::details(&state, &english()).cards[1].data_status, "As of 10/15 14:00");
+    // What is left, and how long until it refills, with the date beside it.
+    let weekly = &details.cards[0].quotas[0];
+    assert_eq!((weekly.title.as_str(), weekly.value.as_str(), weekly.value_note), ("주간 한도", "72%", "남음"));
+    assert_eq!((weekly.next_reset.as_str(), weekly.reset_at.as_str(), weekly.last_reset.as_deref()), ("3일 18시간 뒤 초기화", "10/19 09:00", None), "nothing is said of a refill Errand has not seen");
     read(&mut state, Provider::Claude, Err(UsageError::ClaudeNotHeard));
-    assert_eq!(view::details(&state, &context()).cards[1].data_status, "갱신 실패 · 이전 값 · 조회 10/15 15:00", "a failed read says so first");
+    assert_eq!(view::details(&state, &context()).cards[1].data_status, "갱신 실패 · 이전 값 · 10/15 15:00 확인", "a failed read says so first");
 }
 
 #[test]
@@ -147,7 +152,8 @@ fn a_rollover_reads_as_a_fresh_refill_for_a_minute() {
     assert_eq!(state.mood(Provider::Codex, at(NOW + 10.0)), Mood::Reset);
     assert_eq!(state.mood(Provider::Codex, at(NOW + 61.0)), Mood::Healthy);
     let card = view::account_card(&state, Provider::Codex, &ViewContext { now: at(NOW + 10.0), ..context() });
-    assert!(card.quotas[0].last_reset.starts_with("초기화 감지   "), "{:?}", card.quotas[0]);
+    assert!(card.quotas[0].last_reset.as_deref().is_some_and(|last| last.starts_with("지난 초기화 10/15 ")), "{:?}", card.quotas[0]);
+    assert_eq!(card.quotas[0].next_reset, "6일 23시간 뒤 초기화");
     assert_eq!(view::dashboard(&state, &ViewContext { now: at(NOW + 10.0), ..context() }).moods[0], "새 한도가 열렸어요");
 }
 
@@ -376,7 +382,7 @@ fn the_menu_and_details_list_codex_and_claude_only() {
             "Claude 열기 · person@example.com",
             "사용량 조회 중…",
             "사용량 새로고침",
-            "계정 창 열기",
+            "작업 기록 열기",
             "설정…",
             "작업방",
             "크게 보기",
@@ -400,7 +406,7 @@ fn the_menu_and_details_list_codex_and_claude_only() {
     assert_eq!(launches, [MenuAction::OpenApp(Provider::Codex), MenuAction::OpenApp(Provider::Claude)]);
     let details = view::details(&state, &context());
     assert_eq!(details.cards.iter().map(|card| card.provider).collect::<Vec<_>>(), Provider::ALL);
-    assert_eq!((details.cards[0].status.as_str(), details.cards[0].open_title), ("Codex 로그인 필요 · 실행 중", "창 보기"));
+    assert_eq!((details.cards[0].status.as_str(), details.cards[0].open_title), ("Codex 로그인 필요 · 실행 중", "열기"));
     assert_eq!(details.cards[1].empty.as_ref().unwrap().0, "사용량 정보가 없어요");
     assert_eq!(view::status_icon(&state, Language::Korean).tooltip, "Codex 확인 중 · Claude 확인 중");
 }
@@ -518,8 +524,9 @@ fn english_reads_the_same_state_in_english() {
     assert_eq!((failed.percent.as_str(), failed.detail.as_str()), ("Unknown", "Check failed · reset unknown"));
     assert!(failed.tooltip.ends_with("Press refresh to get it from Claude Code.\nIf you use it in Terminal, python3 scripts/connect_claude.py\nkeeps it up to date."));
     let details = view::details(&state, &english());
-    assert_eq!(details.cards[0].quotas[0].next_reset, "Next reset   10/19 09:00");
-    assert_eq!(details.cards[0].quotas[0].last_reset, "Reset seen   Not recorded yet");
+    assert_eq!((details.cards[0].quotas[0].title.as_str(), details.cards[0].quotas[0].value_note), ("Weekly limit", "left"));
+    assert_eq!((details.cards[0].quotas[0].next_reset.as_str(), details.cards[0].quotas[0].reset_at.as_str()), ("Resets in 3d 18h", "10/19 09:00"));
+    assert_eq!(details.cards[0].quotas[0].last_reset, None);
     assert_eq!(details.cards[1].empty.as_ref().unwrap().0, "Couldn't get usage");
     assert_eq!(details.cards[1].status, "Sign in to Claude Code");
 
@@ -555,7 +562,7 @@ fn english_reads_the_same_state_in_english() {
             "Open Claude",
             "Couldn't check usage",
             "Refresh Usage",
-            "Open Usage Window",
+            "Open Work Records",
             "Settings…",
             "Work Rooms",
             "Full Widget",
@@ -822,7 +829,7 @@ fn claude_overviews_follow_the_overall_week_even_when_a_model_is_spent() {
         "all limits stay available in the details"
     );
     assert_eq!(
-        details.quotas[2].value, "0% 남음",
+        details.quotas[2].value, "0%",
         "the model's exhausted quota stays visible"
     );
 

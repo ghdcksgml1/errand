@@ -140,13 +140,31 @@ pub fn generate(
         }
     }
     prompt.push_str("\nReturn {\"title\":\"...\",\"memo\":\"...\"} only.");
+    let output = ask(executable, provider, model, &prompt, SCHEMA, &images, job.path(), cancel, Duration::from_secs(75))?;
+    validate_suggestion(&output)
+}
+/// One request to a local CLI with tools off, answered as JSON that follows `schema`. `job` is an empty folder the
+/// request runs in.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ask(
+    executable: &Path,
+    provider: Provider,
+    model: &str,
+    prompt: &str,
+    schema: &str,
+    images: &[(std::path::PathBuf, Vec<u8>)],
+    job: &Path,
+    cancel: &AtomicBool,
+    timeout: Duration,
+) -> Result<Value, String> {
+    if !valid_model(model) { return Err(FAILED.into()) }
     let mut command = Command::new(executable);
-    command.current_dir(job.path());
+    command.current_dir(job);
     let output = match provider {
         Provider::Codex => {
-            let schema = job.path().join("schema.json");
-            fs::write(&schema, SCHEMA).map_err(|_| FAILED)?;
-            let output = job.path().join("answer.json");
+            let schema_path = job.join("schema.json");
+            fs::write(&schema_path, schema).map_err(|_| FAILED)?;
+            let output = job.join("answer.json");
             command
                 .args([
                     "exec",
@@ -171,15 +189,15 @@ pub fn generate(
                     "project_doc_max_bytes=0",
                     "--output-schema",
                 ])
-                .arg(schema)
+                .arg(schema_path)
                 .arg("--output-last-message")
                 .arg(&output);
             if !model.is_empty() { command.arg("--model").arg(model); }
-            for (path, _) in &images {
+            for (path, _) in images {
                 command.arg("--image").arg(path);
             }
             command.arg("-");
-            run(command, prompt.as_bytes(), cancel, Duration::from_secs(75))?;
+            run(command, prompt.as_bytes(), cancel, timeout)?;
             let bytes = fs::read(output).map_err(|_| FAILED)?;
             serde_json::from_slice::<Value>(&bytes).map_err(|_| FAILED)?
         }
@@ -205,7 +223,7 @@ pub fn generate(
                 "stream-json",
                 "--verbose",
                 "--json-schema",
-                SCHEMA,
+                schema,
             ]);
             if !model.is_empty() { command.arg("--model").arg(model); }
             let mut content = vec![json!({"type": "text", "text": prompt})];
@@ -217,7 +235,7 @@ pub fn generate(
             )
             .map_err(|_| FAILED)?;
             input.push(b'\n');
-            let bytes = run(command, &input, cancel, Duration::from_secs(75))?;
+            let bytes = run(command, &input, cancel, timeout)?;
             let result = String::from_utf8_lossy(&bytes)
                 .lines()
                 .filter_map(|line| serde_json::from_str::<Value>(line).ok())
@@ -238,7 +256,7 @@ pub fn generate(
                 .ok_or(FAILED)?
         }
     };
-    validate_suggestion(&output)
+    Ok(output)
 }
 fn validate_title(value: &Value) -> Result<String, String> {
     let title = value["title"].as_str().ok_or(FAILED)?.trim();

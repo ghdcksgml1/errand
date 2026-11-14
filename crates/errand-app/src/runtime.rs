@@ -7,6 +7,7 @@ use errand_core::ports::{Poster, Shell};
 use errand_core::rooms::{self, Visibility};
 use errand_core::sessions::{SessionRecords, SessionRow};
 use errand_core::{PerProvider, Provider};
+use errand_io::journal_scan::JournalScanner;
 use errand_io::session_scan::SessionScanner;
 use errand_io::{claude, codex, stores};
 use std::collections::VecDeque;
@@ -22,6 +23,8 @@ pub struct Runtime {
     poster: Arc<dyn Poster>,
     /// The scan thread, which keeps the scanner's caches.
     scans: Sender<SessionRecords>,
+    /// The desktop window's thread, which keeps every transcript it read.
+    journal_scans: Sender<errand_core::Timestamp>,
     /// The rooms the person was in last time, until the first scan has counted their tasks.
     remembered: Option<Vec<(String, Visibility)>>,
 }
@@ -54,6 +57,13 @@ impl Runtime {
             Ok(settings) => state.tasks.settings = settings,
             Err(error) => state.tasks.settings_error = Some(error),
         }
+        state.journal.language = Some(platform.language);
+        state.journal.summaries.auto = state.tasks.settings.summaries;
+        state.journal.nudged = errand_io::summaries::load_nudged(&platform.session_tray.with_file_name("nudged"));
+        match errand_io::summaries::load(&platform.session_tray.with_file_name("summaries")) {
+            Ok(kept) => state.journal.summaries.days = kept.into_iter().map(|summary| (summary.date, summary)).collect(),
+            Err(_) => state.journal.summaries.unreadable = true,
+        }
         let (scans, requests) = mpsc::channel::<SessionRecords>();
         let mut scanner = SessionScanner::new(platform.sessions.clone());
         let scan_poster = poster.clone();
@@ -66,10 +76,25 @@ impl Runtime {
                 }
             })
             .expect("the session scan thread starts");
+        let (journal_scans, journal_requests) = mpsc::channel::<errand_core::Timestamp>();
+        let mut journal = JournalScanner::new(platform.sessions.clone());
+        let journal_poster = poster.clone();
+        thread::Builder::new()
+            .name("errand-journal".to_owned())
+            .spawn(move || {
+                while let Ok(mut since) = journal_requests.recv() {
+                    // Requests that queued while reading come to one read.
+                    while let Ok(later) = journal_requests.try_recv() {
+                        since = later;
+                    }
+                    journal_poster.post(Msg::JournalScanned(journal.scan(since)));
+                }
+            })
+            .expect("the journal scan thread starts");
         let remembered = Some(stores::load_joined_rooms(&platform.joined_rooms));
         Runtime {
             title_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            state, platform: Arc::new(platform), shell, poster, scans, remembered }
+            state, platform: Arc::new(platform), shell, poster, scans, journal_scans, remembered }
     }
 
     fn task_effect(&mut self, effect: errand_core::tasks::Effect) -> Option<Msg> {
@@ -222,6 +247,45 @@ impl Runtime {
             Effect::ReadAccounts => Some(Msg::AccountsRead(self.read_accounts())),
             Effect::ScanSessions(records) => {
                 let _ = self.scans.send(records);
+                None
+            }
+            Effect::ScanJournal(since) => {
+                let _ = self.journal_scans.send(since);
+                None
+            }
+            Effect::Summarize { input, provider, model } => {
+                let poster = self.poster.clone();
+                let executable = self.platform.title_cli(provider);
+                thread::spawn(move || {
+                    let cancel = std::sync::atomic::AtomicBool::new(false);
+                    let date = input.date;
+                    let result = errand_io::summaries::summarize(executable.as_deref(), provider, &model, &input, errand_io::now(), &cancel);
+                    poster.post(Msg::JournalSummarized { date, result });
+                });
+                None
+            }
+            Effect::SaveSummary(summary) => {
+                // A summary that could not be written is still on screen, and is made again next time.
+                let _ = errand_io::summaries::save(&self.platform.session_tray.with_file_name("summaries"), &summary);
+                None
+            }
+            Effect::EditSummary { date, text } => {
+                self.shell.edit_summary(date, &text);
+                None
+            }
+            Effect::SaveNudged(date) => {
+                let _ = errand_io::summaries::save_nudged(&self.platform.session_tray.with_file_name("nudged"), date);
+                None
+            }
+            Effect::DeleteSummaries => Some(Msg::JournalSummariesDeleted(errand_io::summaries::delete_all(&self.platform.session_tray.with_file_name("summaries")))),
+            Effect::TranslateJournal { key, texts, language, provider, model } => {
+                let poster = self.poster.clone();
+                let executable = self.platform.title_cli(provider);
+                thread::spawn(move || {
+                    let cancel = std::sync::atomic::AtomicBool::new(false);
+                    let result = errand_io::translate::translate(executable.as_deref(), provider, &model, &texts, language, &cancel);
+                    poster.post(Msg::JournalTranslated { key, result });
+                });
                 None
             }
             Effect::ReadAttention => Some(Msg::AttentionRead(self.platform.attention())),

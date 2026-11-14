@@ -237,6 +237,16 @@ pub fn rooms_placement(dock: Rect, screen: Rect, visible: &[Rect], shape: DockSh
     popover_placement(dock, screen, visible, ROOMS_WIDTH + POPOVER_TAIL, ROOMS_HEIGHT, aim)
 }
 
+/// The pet's morning bubble, without its tail.
+pub const NUDGE_WIDTH: f64 = 316.0;
+pub const NUDGE_HEIGHT: f64 = 118.0;
+
+/// The morning bubble, its tail at the character: in the profile row on the full widget, else where `aim` says.
+pub fn nudge_placement(dock: Rect, screen: Rect, visible: &[Rect], shape: DockShape, aim: Option<f64>) -> DetailPlacement {
+    let aim = aim.unwrap_or(profile_top(shape) + PROFILE_HEIGHT / 2.0);
+    popover_placement(dock, screen, visible, NUDGE_WIDTH + POPOVER_TAIL, NUDGE_HEIGHT, aim)
+}
+
 /// The character editor, its tail at the person's character.
 pub fn avatar_editor_placement(dock: Rect, screen: Rect, visible: &[Rect], shape: DockShape) -> DetailPlacement {
     let aim = profile_top(shape) + PROFILE_HEIGHT / 2.0;

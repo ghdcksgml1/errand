@@ -7,6 +7,7 @@ pub mod api;
 pub mod claude;
 pub mod codex;
 pub mod rooms;
+pub mod journal_scan;
 pub mod session_scan;
 pub mod stores;
 
@@ -23,3 +24,6 @@ pub mod task_title;
 pub mod tasks;
 
 pub mod task_settings;
+
+pub mod translate;
+pub mod summaries;

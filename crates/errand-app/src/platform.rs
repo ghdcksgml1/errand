@@ -23,6 +23,8 @@ pub struct Platform {
     pub joined_rooms: PathBuf,
     /// The rooms on errand-backend, or where `ERRAND_ROOMS_API` says.
     pub rooms: Arc<dyn RoomService>,
+    /// The language Errand speaks, which the desktop window's summaries are written in.
+    pub language: Language,
 }
 
 /// The language the computer's person reads, as far as Errand speaks it.
@@ -98,6 +100,7 @@ impl Platform {
             joined_rooms: paths.joined_rooms(),
             rooms,
             home: paths.home,
+            language,
         }
     }
 

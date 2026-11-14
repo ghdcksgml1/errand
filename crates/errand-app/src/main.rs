@@ -67,10 +67,22 @@ fn run_app(arguments: &[String], language: Language) {
             shell::preview::PreviewKind::Tray
         } else if has("--preview-details") {
             shell::preview::PreviewKind::Details
+        } else if has("--preview-nudge") {
+            shell::preview::PreviewKind::Nudge
         } else if has("--preview-avatar") {
             shell::preview::PreviewKind::AvatarEditor
         } else if has("--preview-floating") || in_room {
             shell::preview::PreviewKind::Dock
+        } else if has("--preview-journal-drive") {
+            shell::preview::PreviewKind::DashboardDrive
+        } else if has("--preview-journal-hover") {
+            shell::preview::PreviewKind::DashboardPose(shell::preview::Pose::Hover)
+        } else if has("--preview-journal-zoom") {
+            shell::preview::PreviewKind::DashboardPose(shell::preview::Pose::Zoom)
+        } else if has("--preview-journal-replay") {
+            shell::preview::PreviewKind::DashboardPose(shell::preview::Pose::Replay)
+        } else if has("--preview-journal-select") {
+            shell::preview::PreviewKind::DashboardPose(shell::preview::Pose::Select)
         } else {
             shell::preview::PreviewKind::Dashboard
         };

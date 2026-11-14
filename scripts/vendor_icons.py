@@ -14,6 +14,8 @@ ICONS = [
     "circle-check", "circle-question-mark", "circle-slash", "clock", "corner-down-right", "external-link",
     "folder", "layout-dashboard", "list-todo", "loader-circle", "refresh-cw", "timer", "x", "undo-2", "battery-warning",
     "chevron-left", "chevron-right", "shuffle", "users", "lock", "plus", "message-circle-question-mark", "paperclip",
+    "copy", "git-commit-horizontal", "git-pull-request", "list-checks", "git-branch", "file",
+    "pencil", "rotate-ccw-clock", "download",
 ]
 
 

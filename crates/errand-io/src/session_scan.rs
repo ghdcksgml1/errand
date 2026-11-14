@@ -229,7 +229,7 @@ impl SessionScanner {
 }
 
 /// The names in a folder; nothing when it cannot be read.
-fn list(folder: &Path) -> Vec<String> {
+pub(crate) fn list(folder: &Path) -> Vec<String> {
     let Ok(entries) = fs::read_dir(folder) else { return Vec::new() };
     entries.flatten().filter_map(|entry| entry.file_name().into_string().ok()).collect()
 }
@@ -251,7 +251,7 @@ fn last_newline(data: &[u8]) -> usize {
 }
 
 /// The number a name starts with, as Foundation's `integerValue` reads it; 0 without one.
-fn leading_integer(text: &str) -> i64 {
+pub(crate) fn leading_integer(text: &str) -> i64 {
     let text = text.trim_start();
     let (sign, digits) = match text.strip_prefix('-') {
         Some(rest) => (-1, rest),
@@ -263,7 +263,7 @@ fn leading_integer(text: &str) -> i64 {
 
 /// Opens Codex's database without creating its `-wal` or `-shm` files. A live database with a WAL is read
 /// read-only; a checkpointed one is read as an immutable snapshot.
-fn open_read_only(path: &Path) -> Option<Connection> {
+pub(crate) fn open_read_only(path: &Path) -> Option<Connection> {
     let wal = PathBuf::from(format!("{}-wal", path.display())).exists();
     let options: &[&str] = if wal { &["mode=ro", "immutable=1"] } else { &["immutable=1"] };
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NO_MUTEX;
@@ -303,7 +303,7 @@ fn text(value: ValueRef<'_>) -> Option<String> {
 
 /// The person's threads and explicitly spawned agents, plus the threads Codex has marked read.
 /// Guardian, review and other internal agents stay out; a structured spawn source names a real parent.
-fn codex_threads(db: &Connection, since: i64) -> (Vec<CodexThread>, HashSet<String>) {
+pub(crate) fn codex_threads(db: &Connection, since: i64) -> (Vec<CodexThread>, HashSet<String>) {
     let query = "SELECT id, rollout_path, COALESCE(NULLIF(name, ''), NULLIF(title, ''), first_user_message), first_user_message, cwd, updated_at, source, thread_source \
                  FROM threads WHERE updated_at >= ?";
     let mut threads = Vec::new();

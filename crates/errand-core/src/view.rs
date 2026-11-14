@@ -2,7 +2,7 @@
 //! here; the platform shells only draw it, so macOS and Windows show the same widget.
 
 use crate::avatar::{Avatar, CLOTHES, PARTS};
-use crate::format::{date_or_waiting, elapsed, month_day_time, relative_time, stopwatch, timestamp_from_seconds};
+use crate::format::{elapsed, month_day_time, relative_time, stopwatch, timestamp_from_seconds};
 use crate::i18n::Language;
 use crate::layout::{self, DockShape, MEMBER_ROWS, TrayFold};
 use crate::model::{AppState, COMPLETION_DELAY, Notice, WidgetMode};
@@ -707,16 +707,24 @@ fn card(session: &VisibleSession, deadline: Option<Timestamp>, compact: bool, he
     vm
 }
 
-/// One quota row on an account card.
+/// One limit on an account card.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QuotaVm {
+    /// "주간 한도".
     pub title: String,
     pub remaining: Option<i64>,
+    /// "72%", or that the share left is not known.
     pub value: String,
+    /// "남음" beside a share; nothing beside "확인 불가".
+    pub value_note: &'static str,
     pub value_color: Rgb,
     pub accent: Rgb,
+    /// "3일 18시간 뒤 초기화", or that the time is not known.
     pub next_reset: String,
-    pub last_reset: String,
+    /// The date that is: "10/19 09:00". Empty where the line above already is the date, or there is none.
+    pub reset_at: String,
+    /// "지난 초기화 10/12 09:02", once Errand has seen this limit refill.
+    pub last_reset: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -744,15 +752,22 @@ pub fn account_card(state: &AppState, provider: Provider, context: &ViewContext)
     let quotas = windows
         .iter()
         .map(|window| {
-            let next = window.valid_reset().and_then(timestamp_from_seconds).map(|at| month_day_time(at, &context.zone));
+            let reset = window.valid_reset().and_then(timestamp_from_seconds);
+            let date = reset.map(|at| month_day_time(at, &context.zone));
+            // How long from now, while it is still to come.
+            let until = reset.map(|at| context.now.duration_until(at).as_mins()).filter(|minutes| *minutes > 0).map(|minutes| language.from_now(minutes));
+            let accent = theme::usage(window.remaining_percent, failure.is_some());
             QuotaVm {
-                title: language.window_title(&window.name),
+                title: language.limit_title(&language.window_title(&window.name)),
                 remaining: window.remaining_percent,
-                value: window.remaining_percent.map_or_else(|| language.unknown().to_owned(), |left| language.percent_left(left)),
-                value_color: if failure.is_some() { theme::MUTED } else { theme::INK },
-                accent: theme::usage(window.remaining_percent, failure.is_some()),
-                next_reset: language.next_reset(next.as_deref()),
-                last_reset: language.reset_seen(&date_or_waiting(last_resets.get(&window.identifier).copied(), &context.zone, language)),
+                value: window.remaining_percent.map_or_else(|| language.unknown().to_owned(), |left| format!("{left}%")),
+                value_note: if window.remaining_percent.is_some() { language.left() } else { "" },
+                // Red when little is left, as the dock's battery says it.
+                value_color: if failure.is_some() { theme::MUTED } else if accent == theme::LOW { theme::LOW } else { theme::INK },
+                accent,
+                next_reset: language.resets_in(until.as_deref(), date.as_deref()),
+                reset_at: date.filter(|_| until.is_some()).unwrap_or_default(),
+                last_reset: last_resets.get(&window.identifier).copied().map(|at| language.last_reset(&month_day_time(at, &context.zone))),
             }
         })
         .collect();
@@ -764,25 +779,25 @@ pub fn account_card(state: &AppState, provider: Provider, context: &ViewContext)
         None if windows.is_empty() => language.no_data(),
         None => language.up_to_date(),
     };
-    let mut data_status = status.to_owned();
     let slot = &state.usage[provider];
-    if let (Some(reported), None) = (slot.reported_at, &failure) {
-        data_status = language.reported_at(&month_day_time(reported, &context.zone));
-    } else if let Some(fetched) = slot.fetched_at {
-        data_status = language.checked_at(&data_status, &month_day_time(fetched, &context.zone));
-    }
-    if windows.len() > 1 {
-        data_status = language.limit_count(&data_status, windows.len());
-    }
+    // What the values are as of: Claude Code's own time for its limits, else when Errand last looked.
+    let (data_status, note) = match (slot.reported_at, slot.fetched_at, &failure) {
+        (Some(reported), _, None) => (language.as_of(&month_day_time(reported, &context.zone)), Some(language.reported_note())),
+        (_, Some(fetched), None) if status == language.up_to_date() => (language.as_of(&month_day_time(fetched, &context.zone)), None),
+        (_, Some(fetched), _) => (language.checked_at(status, &month_day_time(fetched, &context.zone)), None),
+        _ => (status.to_owned(), None),
+    };
+    // Two limits show whole; with more, the card scrolls, so it says how many there are.
+    let data_status = if windows.len() > 2 { language.limit_count(&data_status, windows.len()) } else { data_status };
     AccountCardVm {
         provider,
         status: if account.running { language.running_status(label) } else { label.to_owned() },
-        open_title: language.open_button(account.running),
+        open_title: language.open_button(),
         open_enabled: !state.launching,
         compact: windows.len() > 1,
         quotas,
         empty,
-        data_status_tooltip: failure.clone().unwrap_or_else(|| data_status.clone()),
+        data_status_tooltip: failure.clone().unwrap_or_else(|| note.map_or_else(|| data_status.clone(), str::to_owned)),
         data_status_failed: failure.is_some(),
         data_status,
     }
@@ -1529,4 +1544,88 @@ fn personal_card(
         accessibility_label: format!("{chip}: {}", task.title),
         sub_tasks: vec![],
     }
+}
+
+/// The sessions waiting on the person's answer now, by key and title.
+pub(crate) fn waiting_on_person(state: &AppState) -> Vec<(String, String)> {
+    let visible = state.sessions.records.visible(state.sessions.scan.clone());
+    visible.iter().filter(|session| SessionState::of(session) == SessionState::Asking).map(|session| (session.row.key.clone(), session.row.title.clone())).collect()
+}
+
+/// The pet's morning bubble.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NudgeVm {
+    pub title: String,
+    pub note: String,
+    pub see: &'static str,
+    /// Shown when something waits on the person's answer.
+    pub answer: Option<&'static str>,
+    pub later: &'static str,
+}
+
+/// What the pet says in the morning about the last day's work, while the bubble is due.
+pub fn nudge(state: &AppState, context: &ViewContext) -> Option<NudgeVm> {
+    let day = state.journal.nudge?;
+    let summary = state.journal.summaries.days.get(&day)?;
+    let language = context.language;
+    let pick = |korean: &'static str, english: &'static str| language.pick(korean, english);
+    let today = context.now.to_zoned(context.zone.clone()).date();
+    let mut keys: Vec<&str> = summary.done.iter().filter_map(|item| item.key.as_deref()).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    let count = keys.len().max(1);
+    let yesterday = today.yesterday().ok() == Some(day);
+    let weekday = |korean: bool| {
+        let index = day.weekday().to_sunday_zero_offset() as usize;
+        if korean { ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"][index] } else { ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][index] }
+    };
+    let title = match (language, yesterday) {
+        (crate::Language::Korean, true) => format!("어제 정리 · 끝낸 일 {count}개"),
+        (crate::Language::Korean, false) => format!("{} 정리 · 끝낸 일 {count}개", weekday(true)),
+        (crate::Language::English, true) => format!("Yesterday's summary · {count} done"),
+        (crate::Language::English, false) => format!("{}'s summary · {count} done", weekday(false)),
+    };
+    let waiting = waiting_on_person(state);
+    let note = match (waiting.first(), language) {
+        (Some((_, title)), crate::Language::Korean) => format!("답변 필요 {}개 · {title}", waiting.len()),
+        (Some((_, title)), crate::Language::English) => format!("{} need your answer · {title}", waiting.len()),
+        (None, _) => summary.done.first().map(|item| item.text.clone()).unwrap_or_default(),
+    };
+    Some(NudgeVm {
+        title,
+        note,
+        see: pick("보기", "Open"),
+        answer: (!waiting.is_empty()).then(|| pick("답변하기", "Answer")),
+        later: pick("나중에", "Later"),
+    })
+}
+
+/// The widget's live state for each session it shows, by key, as the desktop window reads them.
+pub(crate) fn journal_live(state: &AppState) -> std::collections::HashMap<String, crate::journal::view::Live> {
+    use crate::journal::view::Live;
+    let visible = state.sessions.records.visible(state.sessions.scan.clone());
+    visible
+        .iter()
+        .map(|session| {
+            let question = session.row.question.as_ref().and_then(|question| question.questions.first().cloned());
+            (session.row.key.clone(), Live { state: SessionState::of(session), question })
+        })
+        .collect()
+}
+
+/// The desktop window: the records, with the widget's live states and small batteries.
+pub fn journal(state: &AppState, context: &ViewContext) -> crate::journal::view::Screen {
+    use crate::journal::view::{Journal, MiniBattery};
+    let live = journal_live(state);
+    let usage = state
+        .shown_providers()
+        .into_iter()
+        .map(|provider| {
+            let vm = battery(state, provider, context);
+            MiniBattery { provider, level: vm.level, percent: vm.percent, low: vm.low }
+        })
+        .collect();
+    let journal = Journal { records: &state.journal.records, live: &live, translations: &state.journal.translations, summaries: &state.journal.summaries, now: context.now, zone: &context.zone, language: context.language };
+    let loading = state.journal.scanned_at.is_none();
+    journal.screen(&state.journal.place, usage, loading, state.profile.avatar.clone())
 }

@@ -6,7 +6,7 @@
 
 use super::rooms::{DockRooms, MemberRow, RoomTab, TabStrip};
 use super::battery::{BatteryView, dock_battery_width};
-use super::kit::{self, Action, CHIP_ICON, FlippedView, PressableView, Weight, color, digits_font, fitting_width, grey, icon_image, label, ns, rect};
+use super::kit::{self, Action, CHIP_ICON, FlippedView, PressableView, Weight, color, digits_font, fitting_width, icon_image, label, ns, rect};
 use super::spinner::SpinningIconView;
 use errand_core::avatar::Avatar;
 use errand_core::{Language, Provider};
@@ -356,9 +356,9 @@ define_class!(
             let card = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(kit::inset(bounds, 1.0, 1.0), 16.0, 16.0);
             color(theme::WHITE).setFill();
             card.fill();
-            grey(0.84, 1.0).setStroke();
+            color(theme::OUTLINE).setStroke();
             card.stroke();
-            grey(0.91, 1.0).setFill();
+            color(theme::HAIRLINE).setFill();
             if self.ivars().header.borrow().as_ref().is_some_and(|header| !header.isHidden()) {
                 NSBezierPath::fillRect(rect(12.0, HEADER_HEIGHT, bounds.size.width - 24.0, 1.0));
             }

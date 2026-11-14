@@ -3,9 +3,9 @@
 //! under the open tab, its people in thin rows saying no more than the folded task header; beside the dock, a
 //! bubble like the usage details listing the rooms on cards like the task cards.
 
-use super::details::{PopoverView, button};
+use super::details::{PopoverView, button, cover_button, primary_button};
 use super::dock::{AvatarView, RemoveMember, count_pill, replace_tracking_area, tinted_icon};
-use super::kit::{self, Action, CHIP_ICON, FlippedView, Weight, color, digits_font, fitting_width, grey, label, ns, rect, text_width};
+use super::kit::{self, Action, CHIP_ICON, FlippedView, Weight, color, digits_font, fitting_width, label, ns, rect, text_width};
 use super::spinner::SpinningIconView;
 use super::tray::{ChipMark, chip_icon_frame, chip_rect, draw_card, draw_chip};
 use errand_core::layout::{self, DOCK_PADDING, DockShape, MEMBER_ROW_HEIGHT, MEMBERS_INSET, ROOM_TAB_HEIGHT, STACK_WIDTH};
@@ -197,7 +197,7 @@ define_class!(
                 kit::paint(theme::INK.alpha(0.035)).setFill();
                 capsule.fill();
             }
-            grey(0.86, 1.0).setStroke();
+            color(theme::EDGE).setStroke();
             capsule.setLineWidth(1.0);
             capsule.stroke();
         }
@@ -412,6 +412,31 @@ define_class!(
         fn draw_rect(&self, _dirty: NSRect) {
             kit::paint(OPEN_FILL).setFill();
             NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(self.bounds(), 11.0, 11.0).fill();
+        }
+    }
+);
+
+define_class!(
+    /// A box on one of the rooms' screens, for a link or a way further in: a white card, as the room cards are.
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "ErrandRoomBox"]
+    pub struct BoxView;
+
+    impl BoxView {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {
+            let card = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(kit::inset(self.bounds(), 0.5, 0.5), 12.0, 12.0);
+            color(theme::WHITE).setFill();
+            card.fill();
+            color(theme::EDGE).setStroke();
+            card.setLineWidth(1.0);
+            card.stroke();
         }
     }
 );
@@ -1023,7 +1048,7 @@ impl Rooms {
                     let (poster, name, tagline) = (self.poster.clone(), fields[0].clone(), fields[1].clone());
                     move || poster.post(Msg::CreateRoom { name: name.stringValue().to_string(), tagline: tagline.stringValue().to_string() })
                 };
-                let (go, action) = button(create.button, "", false, rect(14.0, bottom - 20.0 - 32.0, width - 28.0, 32.0), submit, mtm);
+                let (go, action) = primary_button(create.button, "", false, rect(14.0, bottom - 20.0 - 32.0, width - 28.0, 32.0), submit, mtm);
                 go.setKeyEquivalent(&ns("\r"));
                 go.setTag(SUBMIT_TAG);
                 let name = errand_core::rooms::clean_text(&fields[0].stringValue().to_string()).chars().count();
@@ -1127,7 +1152,7 @@ impl Rooms {
             Rc::new(move || poster.post(Msg::CheckInvite(field.stringValue().to_string())))
         };
         let run = check.clone();
-        let (go, action) = button(code.check, "", false, rect(width - 18.0 - 72.0, SCREEN_TOP + 23.0, 72.0, BUTTON_HEIGHT), move || run(), mtm);
+        let (go, action) = primary_button(code.check, "", false, rect(width - 18.0 - 72.0, SCREEN_TOP + 23.0, 72.0, BUTTON_HEIGHT), move || run(), mtm);
         self.body.addSubview(&go);
         self.form_actions.push(action);
         let run = check.clone();
@@ -1199,7 +1224,7 @@ impl Rooms {
     fn lay_invite(&mut self, vm: &RoomsVm, invite: &InviteVm, mtm: MainThreadMarker) {
         let (width, height) = (layout::ROOMS_WIDTH, layout::ROOMS_HEIGHT);
         self.lay_header(vm, invite.title, &invite.subtitle, mtm);
-        let boxed: Retained<MembersView> = unsafe { msg_send![MembersView::alloc(mtm), initWithFrame: rect(14.0, SCREEN_TOP - 4.0, width - 28.0, 58.0)] };
+        let boxed: Retained<BoxView> = unsafe { msg_send![BoxView::alloc(mtm), initWithFrame: rect(14.0, SCREEN_TOP - 4.0, width - 28.0, 58.0)] };
         let host = label(&invite.host, 12.5, Weight::Semibold, if invite.link.is_some() { theme::INK } else { theme::MUTED }, mtm);
         host.setFrame(rect(14.0, 10.0, width - 56.0, 18.0));
         boxed.addSubview(&host);
@@ -1209,7 +1234,7 @@ impl Rooms {
         self.body.addSubview(&boxed);
         let mut y = SCREEN_TOP + 64.0;
         let room = invite.room.clone();
-        let (copy, action) = button(invite.copy_link, if invite.copied { "check" } else { "" }, false, rect(14.0, y, width - 28.0, 32.0), self.post(|| Msg::CopyInviteLink), mtm);
+        let (copy, action) = primary_button(invite.copy_link, if invite.copied { "check" } else { "" }, false, rect(14.0, y, width - 28.0, 32.0), self.post(|| Msg::CopyInviteLink), mtm);
         copy.setKeyEquivalent(&ns("\r"));
         copy.setEnabled(invite.link.is_some() && !invite.busy);
         self.body.addSubview(&copy);
@@ -1259,7 +1284,7 @@ impl Rooms {
         // Everyone the room lets in, a step further.
         let members_room = room.clone();
         let entry_frame = rect(14.0, height - 14.0 - 28.0 - 12.0 - 40.0, width - 28.0, 40.0);
-        let boxed: Retained<MembersView> = unsafe { msg_send![MembersView::alloc(mtm), initWithFrame: entry_frame] };
+        let boxed: Retained<BoxView> = unsafe { msg_send![BoxView::alloc(mtm), initWithFrame: entry_frame] };
         let icon = tinted_icon("users", 13.0, theme::INK, mtm);
         icon.setFrameOrigin(NSPoint::new(14.0, 13.5));
         boxed.addSubview(&icon);
@@ -1270,18 +1295,16 @@ impl Rooms {
         chevron.setFrameOrigin(NSPoint::new(entry_frame.size.width - 26.0, 14.0));
         boxed.addSubview(&chevron);
         self.body.addSubview(&boxed);
-        let (entry, action) = button("", "", false, entry_frame, self.post(move || Msg::ShowMembers(members_room.clone())), mtm);
-        entry.setBordered(false);
-        entry.setTransparent(true);
+        let (entry, action) = cover_button(entry_frame, self.post(move || Msg::ShowMembers(members_room.clone())), mtm);
         entry.setAccessibilityLabel(Some(&ns(invite.members)));
         self.body.addSubview(&entry);
         self.actions.push(action);
         // Deleting the room is out of the way, at the bottom, and asks first.
         let quit_room = room.clone();
-        let (remove, action) = button(invite.remove_room, "", false, rect(18.0, height - 14.0 - 28.0, text_width(invite.remove_room, &kit::font(12.0, Weight::Medium)).ceil() + 4.0, 28.0), self.post(move || Msg::AskQuitRoom(quit_room.clone())), mtm);
+        let (remove, action) = button(invite.remove_room, "", false, rect(14.0, height - 14.0 - 28.0, text_width(invite.remove_room, &kit::font(12.0, Weight::Semibold)).ceil() + 28.0, 28.0), self.post(move || Msg::AskQuitRoom(quit_room.clone())), mtm);
         remove.setBordered(false);
         remove.setContentTintColor(Some(&color(theme::LOW)));
-        let attributes = kit::attributes(&kit::font(12.0, Weight::Medium), Some(&color(theme::LOW)));
+        let attributes = kit::attributes(&kit::font(12.0, Weight::Semibold), Some(&color(theme::LOW)));
         let title = unsafe { NSAttributedString::initWithString_attributes(NSAttributedString::alloc(), &ns(invite.remove_room), Some(&attributes)) };
         remove.setAttributedTitle(&title);
         self.body.addSubview(&remove);
@@ -1399,7 +1422,8 @@ fn room_card(vm: &RoomCardVm, width: f64, buttons: &[CardButton], mtm: MainThrea
     for spec in buttons.iter().rev() {
         let button_width = if buttons.len() == 1 { 96.0 } else { CARD_BUTTON };
         let run = spec.run.clone();
-        let (made, action) = button(spec.title, spec.icon, spec.trailing, rect(right - button_width, 60.0, button_width, 28.0), move || run(), mtm);
+        let frame = rect(right - button_width, 60.0, button_width, 28.0);
+        let (made, action) = if spec.icon == "circle-arrow-right" { primary_button(spec.title, spec.icon, spec.trailing, frame, move || run(), mtm) } else { button(spec.title, spec.icon, spec.trailing, frame, move || run(), mtm) };
         made.setEnabled(spec.enabled);
         if let Some(tooltip) = &spec.tooltip {
             made.setToolTip(Some(&ns(tooltip)));
