@@ -129,7 +129,7 @@ fn sub_tasks_stay_when_their_card_folds() {
 #[test]
 fn every_icon_draws_inside_lucides_grid() {
     let names: Vec<&str> = icons::names().collect();
-    assert_eq!(names.len(), 36);
+    assert_eq!(names.len(), 39);
     for name in names {
         let outline = icons::outline(name).unwrap();
         let (low, high) = path::bounds(&outline).unwrap();

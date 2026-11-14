@@ -10,9 +10,11 @@ pub const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 pub struct AiSettings {
     pub provider: Provider,
     pub models: PerProvider<String>,
+    /// Finished days in the desktop window are summed up on their own.
+    pub summaries: bool,
 }
 impl Default for AiSettings {
-    fn default() -> Self { Self { provider: Provider::Codex, models: PerProvider::default() } }
+    fn default() -> Self { Self { provider: Provider::Codex, models: PerProvider::default(), summaries: true } }
 }
 impl AiSettings {
     pub fn model(&self) -> &str { &self.models[self.provider] }

@@ -2,7 +2,9 @@
 //! The desktop window draws its days, weeks, months and reports from these. Nothing here is stored by
 //! Errand; a record lasts as long as the app's own transcript does.
 
+pub mod metro;
 mod parse;
+pub mod summary;
 pub mod view;
 
 pub use parse::{read_claude, read_codex};

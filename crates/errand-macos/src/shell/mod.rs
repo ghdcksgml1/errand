@@ -6,6 +6,7 @@ mod avatar_editor;
 pub mod battery;
 mod compact;
 mod journal;
+mod nudge;
 pub mod settings;
 mod details;
 mod dock;

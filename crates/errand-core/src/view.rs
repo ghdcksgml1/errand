@@ -1531,17 +1531,77 @@ fn personal_card(
     }
 }
 
-/// The desktop window: the records, with the widget's live states and small batteries.
-pub fn journal(state: &AppState, context: &ViewContext) -> crate::journal::view::Screen {
-    use crate::journal::view::{Journal, Live, MiniBattery};
+/// The sessions waiting on the person's answer now, by key and title.
+pub(crate) fn waiting_on_person(state: &AppState) -> Vec<(String, String)> {
     let visible = state.sessions.records.visible(state.sessions.scan.clone());
-    let live: std::collections::HashMap<String, Live> = visible
+    visible.iter().filter(|session| SessionState::of(session) == SessionState::Asking).map(|session| (session.row.key.clone(), session.row.title.clone())).collect()
+}
+
+/// The pet's morning bubble.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NudgeVm {
+    pub title: String,
+    pub note: String,
+    pub see: &'static str,
+    /// Shown when something waits on the person's answer.
+    pub answer: Option<&'static str>,
+    pub later: &'static str,
+}
+
+/// What the pet says in the morning about the last day's work, while the bubble is due.
+pub fn nudge(state: &AppState, context: &ViewContext) -> Option<NudgeVm> {
+    let day = state.journal.nudge?;
+    let summary = state.journal.summaries.days.get(&day)?;
+    let language = context.language;
+    let pick = |korean: &'static str, english: &'static str| language.pick(korean, english);
+    let today = context.now.to_zoned(context.zone.clone()).date();
+    let mut keys: Vec<&str> = summary.done.iter().filter_map(|item| item.key.as_deref()).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    let count = keys.len().max(1);
+    let yesterday = today.yesterday().ok() == Some(day);
+    let weekday = |korean: bool| {
+        let index = day.weekday().to_sunday_zero_offset() as usize;
+        if korean { ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"][index] } else { ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][index] }
+    };
+    let title = match (language, yesterday) {
+        (crate::Language::Korean, true) => format!("어제 정리 · 끝낸 일 {count}개"),
+        (crate::Language::Korean, false) => format!("{} 정리 · 끝낸 일 {count}개", weekday(true)),
+        (crate::Language::English, true) => format!("Yesterday's summary · {count} done"),
+        (crate::Language::English, false) => format!("{}'s summary · {count} done", weekday(false)),
+    };
+    let waiting = waiting_on_person(state);
+    let note = match (waiting.first(), language) {
+        (Some((_, title)), crate::Language::Korean) => format!("답변 필요 {}개 · {title}", waiting.len()),
+        (Some((_, title)), crate::Language::English) => format!("{} need your answer · {title}", waiting.len()),
+        (None, _) => summary.done.first().map(|item| item.text.clone()).unwrap_or_default(),
+    };
+    Some(NudgeVm {
+        title,
+        note,
+        see: pick("보기", "Open"),
+        answer: (!waiting.is_empty()).then(|| pick("답변하기", "Answer")),
+        later: pick("나중에", "Later"),
+    })
+}
+
+/// The widget's live state for each session it shows, by key, as the desktop window reads them.
+pub(crate) fn journal_live(state: &AppState) -> std::collections::HashMap<String, crate::journal::view::Live> {
+    use crate::journal::view::Live;
+    let visible = state.sessions.records.visible(state.sessions.scan.clone());
+    visible
         .iter()
         .map(|session| {
             let question = session.row.question.as_ref().and_then(|question| question.questions.first().cloned());
             (session.row.key.clone(), Live { state: SessionState::of(session), question })
         })
-        .collect();
+        .collect()
+}
+
+/// The desktop window: the records, with the widget's live states and small batteries.
+pub fn journal(state: &AppState, context: &ViewContext) -> crate::journal::view::Screen {
+    use crate::journal::view::{Journal, MiniBattery};
+    let live = journal_live(state);
     let usage = state
         .shown_providers()
         .into_iter()
@@ -1550,7 +1610,7 @@ pub fn journal(state: &AppState, context: &ViewContext) -> crate::journal::view:
             MiniBattery { provider, level: vm.level, percent: vm.percent, low: vm.low }
         })
         .collect();
-    let journal = Journal { records: &state.journal.records, live: &live, translations: &state.journal.translations, now: context.now, zone: &context.zone, language: context.language };
+    let journal = Journal { records: &state.journal.records, live: &live, translations: &state.journal.translations, summaries: &state.journal.summaries, now: context.now, zone: &context.zone, language: context.language };
     let loading = state.journal.scanned_at.is_none();
     journal.screen(&state.journal.place, usage, loading, state.profile.avatar.clone())
 }

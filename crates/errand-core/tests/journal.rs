@@ -87,7 +87,7 @@ fn codex_turns_patches_and_printed_commits() {
 }
 
 mod views {
-    use errand_core::journal::view::{Callout, Journal, JournalPlace, JournalTab, Live};
+    use errand_core::journal::view::{Callout, Draft, Journal, JournalPlace, JournalTab, Live};
     use errand_core::journal::{Commit, PullRequest, WorkRecord, WorkTurn};
     use errand_core::sessions::SessionState;
     use errand_core::{Language, Provider};
@@ -119,7 +119,7 @@ mod views {
 
     fn journal<'a>(records: &'a [WorkRecord], live: &'a HashMap<String, Live>, zone: &'a TimeZone) -> Journal<'a> {
         // 16:10 in Seoul on Friday 13 November 2026.
-        Journal { records, live, translations: Box::leak(Box::default()), now: at("2026-11-13T07:10:00Z"), zone, language: Language::Korean }
+        Journal { records, live, translations: Box::leak(Box::default()), summaries: Box::leak(Box::default()), now: at("2026-11-13T07:10:00Z"), zone, language: Language::Korean }
     }
 
     #[test]
@@ -129,23 +129,32 @@ mod views {
         let zone = TimeZone::get("Asia/Seoul").unwrap();
         let day = journal(&records, &live, &zone).day(&JournalPlace::default());
         assert_eq!((day.masthead.big.as_str(), day.masthead.top.as_str(), day.masthead.bottom.as_str()), ("13", "금요일", "2026년 11월"));
-        assert_eq!(day.cards.iter().map(|card| card.title.as_str()).collect::<Vec<_>>(), ["배포 설정 정리", "입력값 검증 추가", "로그인 화면 리팩터링"]);
-        assert_eq!(day.cards[0].callout, Some(Callout::Running));
-        assert!(day.cards[0].line.starts_with("작업 중 · 2시간"));
-        assert_eq!(day.cards[2].time, "09:12 – 09:40 · 28분");
-        assert_eq!(day.cards[2].marks, "커밋 1");
-        assert_eq!(day.cards[1].marks, "PR #48");
-        let pills: Vec<_> = day.masthead.pills.iter().map(|pill| pill.text.as_str()).collect();
-        assert_eq!(pills, ["진행 중 1", "커밋 1", "PR 1"]);
-        assert_eq!(day.filters.iter().map(|(_, name, count)| (name.as_str(), *count)).collect::<Vec<_>>(), [("전체", 3), ("deploy-config", 1), ("payments-api", 1), ("shop-web", 1)]);
+        assert_eq!(day.tasks.iter().map(|task| task.title.as_str()).collect::<Vec<_>>(), ["배포 설정 정리", "입력값 검증 추가", "로그인 화면 리팩터링"]);
+        assert_eq!(day.tasks[0].callout, Some(Callout::Running));
+        assert_eq!(day.tasks[0].meta, "deploy-config · 14:02부터");
+        assert_eq!(day.tasks[2].meta, "shop-web · 09:12 – 09:40 · 28분 · 커밋 1");
+        assert_eq!(day.tasks[1].meta, "payments-api · 10:05 – 10:31 · 26분 · PR #48");
+        // The date line counts instead of pills: finished work, AI time, then commits and pull requests.
+        assert!(day.masthead.pills.is_empty());
+        let stats: Vec<(String, String)> = day.masthead.stats.iter().map(|stat| (stat.label.clone(), stat.parts.iter().map(|part| part.text.as_str()).collect())).collect();
+        assert_eq!(stats, [("끝낸 일".to_owned(), "2".to_owned()), ("AI 작업".to_owned(), "54분".to_owned()), ("커밋 · PR".to_owned(), "1 · 1".to_owned())]);
         assert_eq!((day.axis.first, day.axis.last), (8, 18));
         assert!(day.axis.now.is_some() && day.masthead.can_go_forward == false);
-        assert!(day.bars.iter().all(|bar| bar.start < bar.end && bar.lane == 0));
+        assert!(day.bars.iter().all(|bar| bar.start < bar.end && bar.lane == 0 && bar.waiting.is_none()));
+        // Finished work and no summary yet: before the evening, the card offers to make one now.
+        assert!(matches!(&day.draft, Draft::Offer(note, _) if note == "끝낸 작업 2개 · 저녁 6시에 자동 정리"));
 
-        let filtered = journal(&records, &live, &zone).day(&JournalPlace { project: Some("shop-web".into()), ..Default::default() });
-        assert_eq!(filtered.cards.len(), 1);
         let yesterday = journal(&records, &live, &zone).day(&JournalPlace { back: 1, ..Default::default() });
-        assert_eq!((yesterday.masthead.big.as_str(), yesterday.cards.len(), yesterday.masthead.can_go_forward), ("12", 1, true));
+        assert_eq!((yesterday.masthead.big.as_str(), yesterday.tasks.len(), yesterday.masthead.can_go_forward), ("12", 1, true));
+        assert!(matches!(&yesterday.draft, Draft::Offer(note, _) if note == "끝낸 작업 1개를 아직 정리하지 않았어요."));
+
+        // Work waiting on the person's answer ends where the agent stopped, and the wait runs on to now.
+        let asking = HashMap::from([("claude:c".to_owned(), Live { state: SessionState::Asking, question: Some("어느 브랜치에?".into()) })]);
+        let day = journal(&records, &asking, &zone).day(&JournalPlace::default());
+        let bar = day.bars.iter().find(|bar| bar.key == "claude:c").unwrap();
+        assert!(bar.waiting.is_some_and(|until| until > bar.end));
+        assert_eq!(day.masthead.stats[1].label, "답변 필요");
+        assert!(day.masthead.stats[1].asking);
     }
 
     #[test]
@@ -156,10 +165,16 @@ mod views {
         let journal = journal(&records, &live, &zone);
         let week = journal.week(&JournalPlace { tab: JournalTab::Week, ..Default::default() });
         assert_eq!((week.masthead.big.as_str(), week.masthead.top.as_str(), week.masthead.bottom.as_str()), ("9–15", "11월", "이번 주"));
-        assert_eq!(week.rows.iter().map(|row| row.label.as_str()).collect::<Vec<_>>(), ["월 9", "화 10", "수 11", "목 12", "금 13", "토 14", "일 15"]);
-        assert!(week.rows[4].today && week.rows[4].now.is_some());
-        assert_eq!(week.projects[0].name, "shop-web");
-        assert_eq!(week.projects[0].lines.iter().map(|line| line.when.as_str()).collect::<Vec<_>>(), ["금 09:12", "목 16:30"]);
+        // Days with work only, oldest first; before a summary, a day reads as its tasks.
+        assert_eq!(week.days.iter().map(|day| (day.day.as_str(), day.label.as_str())).collect::<Vec<_>>(), [("목", "11월 12일"), ("금", "11월 13일")]);
+        assert!(week.days[1].today);
+        assert_eq!(week.days[1].note.as_deref(), Some("정리 전"));
+        assert_eq!(week.days[1].lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>(), ["로그인 화면 리팩터링", "입력값 검증 추가", "배포 설정 정리"]);
+        assert!(week.report.is_empty() && week.carried.is_empty() && week.kinds.is_empty(), "nothing summed up yet");
+        assert_eq!(week.recap.as_ref().map(|recap| recap.button.as_str()), Some("지금까지 보기"), "Friday 16:10 is before the recap is ready");
+        let recap = journal.recap(&JournalPlace { tab: JournalTab::Week, recap: Some(1), ..Default::default() });
+        assert_eq!(recap.position, "2 / 5", "no kind card without summaries");
+        assert!(matches!(&recap.cards[1], errand_core::journal::view::RecapCard::Finished { count: 3, .. }));
 
         let month = journal.month(&JournalPlace { tab: JournalTab::Month, ..Default::default() });
         assert_eq!(month.cells.len(), 35, "November 2026 starts on a Sunday and needs five weeks");
@@ -187,6 +202,51 @@ mod views {
     }
 
     #[test]
+    fn a_week_as_a_metro_map() {
+        let records = sample();
+        let live = HashMap::from([("claude:c".to_owned(), Live { state: SessionState::Running, question: None })]);
+        let zone = TimeZone::get("Asia/Seoul").unwrap();
+        let week = journal(&records, &live, &zone).week(&JournalPlace { tab: JournalTab::Week, ..Default::default() });
+        let metro = &week.metro;
+        assert_eq!(metro.title, "이번 주 노선도");
+        assert_eq!(metro.days.iter().map(|day| (day.label.as_str(), day.total.as_str())).collect::<Vec<_>>(), [("목요일 12일", "54분"), ("금요일 13일", "3시간 2분")]);
+        // Lines by the week's time; the running task counts up to now.
+        assert_eq!(metro.lines.iter().map(|line| (line.name.as_str(), line.colour)).collect::<Vec<_>>(), [("deploy-config", Some(0)), ("shop-web", Some(1)), ("payments-api", Some(2))]);
+        assert_eq!(metro.lines[1].legend, "shop-web · 작업 2개 · 1시간 22분");
+        // Each day the busiest line takes the top lane, so shop-web and deploy-config cross between Thursday and Friday.
+        assert_eq!(metro.lines.iter().map(|line| line.lanes.clone()).collect::<Vec<_>>(), [vec![1, 0], vec![0, 1], vec![2, 2]]);
+        // Names take turns above and below along a line; the pull request and the open task are marked.
+        let shop: Vec<Option<bool>> = metro.stops.iter().filter(|stop| stop.line == 1).map(|stop| stop.name_above).collect();
+        assert_eq!(shop, [Some(true), Some(false)]);
+        let checks = metro.stops.iter().find(|stop| stop.key == "codex:b").unwrap();
+        assert_eq!((checks.pull.as_deref(), checks.minutes, checks.day), (Some("PR #48"), 26, 1));
+        let deploy = metro.stops.iter().find(|stop| stop.key == "claude:c").unwrap();
+        assert!((deploy.at - (14.0 + 2.0 / 60.0 - 8.0) / 12.0).abs() < 1e-6);
+        assert_eq!((metro.lines[0].carried, metro.lines[1].carried), (1, 0));
+        assert_eq!(metro.terminal, "남은 일", "Friday 16:10 is before the week is done");
+        let asking = HashMap::from([("claude:c".to_owned(), Live { state: SessionState::Asking, question: None })]);
+        let week = journal(&records, &asking, &zone).week(&JournalPlace { tab: JournalTab::Week, ..Default::default() });
+        assert!(week.metro.stops.iter().find(|stop| stop.key == "claude:c").unwrap().asking);
+
+        // Past four colours the rest share a grey line, and a busy day names only its two longest stops per line.
+        let mut many = sample();
+        for (index, project) in ["docs", "infra", "mobile"].iter().enumerate() {
+            many.push(record(&format!("codex:p{index}"), Provider::Codex, &format!("/code/{project}"), project, vec![turn("2026-11-11T01:00:00Z", Some("2026-11-11T01:10:00Z"), "끝냈어요.")]));
+        }
+        for (index, minutes) in [5, 40, 20].iter().enumerate() {
+            let end = format!("2026-11-11T0{}:{minutes:02}:00Z", 2 + index);
+            many.push(record(&format!("claude:s{index}"), Provider::Claude, "/code/shop-web", "작은 일", vec![turn(&format!("2026-11-11T0{}:00:00Z", 2 + index), Some(&end), "끝냈어요.")]));
+        }
+        let week = journal(&many, &HashMap::new(), &zone).week(&JournalPlace { tab: JournalTab::Week, ..Default::default() });
+        let lines = &week.metro.lines;
+        assert_eq!(lines.len(), 5);
+        assert_eq!((lines[4].name.as_str(), lines[4].colour), ("그 밖 2개", None));
+        assert!(week.metro.stops.iter().all(|stop| stop.line < 5));
+        let wednesday_shop: Vec<(i64, Option<bool>)> = week.metro.stops.iter().filter(|stop| stop.day == 0 && stop.key.starts_with("claude:s")).map(|stop| (stop.minutes, stop.name_above)).collect();
+        assert_eq!(wednesday_shop, [(5, None), (40, Some(true)), (20, Some(false))]);
+    }
+
+    #[test]
     fn answers_in_another_language_can_be_translated_and_shown_as_written() {
         use errand_core::journal::view::{Translate, Translations, foreign};
         assert!(foreign("I installed it. The build is now in your Applications folder.", Language::Korean));
@@ -199,7 +259,7 @@ mod views {
         let records = vec![record("claude:e", Provider::Claude, "/code/shop-web", "로그인 훅", vec![turn("2026-11-13T02:00:00Z", Some("2026-11-13T02:30:00Z"), english), turn("2026-11-13T03:00:00Z", Some("2026-11-13T03:10:00Z"), "테스트를 고쳤어요.")])];
         let (live, zone) = (HashMap::new(), TimeZone::get("Asia/Seoul").unwrap());
         let mut translations = Translations::default();
-        let view = |translations: &Translations| Journal { records: &records, live: &live, translations, now: at("2026-11-13T07:10:00Z"), zone: &zone, language: Language::Korean }.detail("claude:e").unwrap();
+        let view = |translations: &Translations| Journal { records: &records, live: &live, translations, summaries: Box::leak(Box::default()), now: at("2026-11-13T07:10:00Z"), zone: &zone, language: Language::Korean }.detail("claude:e").unwrap();
 
         // Only the English answer is offered, and nothing changes until it comes back.
         assert_eq!(view(&translations).translate, Some(Translate::Offer(vec![english.to_owned()])));

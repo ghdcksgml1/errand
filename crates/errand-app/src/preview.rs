@@ -322,7 +322,7 @@ fn add_journal(state: &mut AppState, arguments: &[String], now: Timestamp, langu
     };
     state.journal.scanned_at = Some(now);
     state.journal.open = true;
-    state.journal.place.tab = if has("--preview-journal-week") {
+    state.journal.place.tab = if has("--preview-journal-week") || has("--preview-journal-recap") {
         JournalTab::Week
     } else if has("--preview-journal-month") {
         JournalTab::Month
@@ -333,6 +333,15 @@ fn add_journal(state: &mut AppState, arguments: &[String], now: Timestamp, langu
     };
     if has("--preview-journal-back") {
         state.journal.place.back = 1;
+    }
+    if has("--preview-journal-recap") {
+        state.journal.place.recap = Some(1);
+    }
+    state.journal.language = Some(language);
+    state.journal.summaries.days = sample_summaries(&state.journal.records, now, language, has("--preview-journal-unsummarized"));
+    if has("--preview-nudge") {
+        let today = now.to_zoned(format::local_zone()).date();
+        state.journal.nudge = today.yesterday().ok();
     }
     if has("--preview-journal-detail") {
         let today = now.to_zoned(format::local_zone()).date();
@@ -426,5 +435,61 @@ fn sample_journal(now: Timestamp, language: Language) -> Vec<errand_core::journa
         item.commits = vec![Commit { sha: format!("{:07x}", 0xabc000 + index), message: words(language, korean, english).to_owned(), at: at(days, hour, minute) + SignedDuration::from_mins(minutes) }];
         records.push(item);
     }
+    // A month ago today, for the day view's look back.
+    let month_ago = today.checked_sub(jiff::Span::new().months(1)).unwrap_or(today);
+    let then = month_ago.at(11, 0, 0, 0).to_zoned(zone.clone()).map(|zoned| zoned.timestamp()).unwrap_or(now);
+    let first = say("결제 페이지 첫 버전 만들기", "Build the first checkout page");
+    records.push(record("sample:month-ago", Provider::Claude, "shop-web", first.clone(), vec![turn(then, Some(40), first, say("마쳤어요.", "Done."))]));
     records
+}
+
+/// Summaries for the sample: today's, unless the preview asks for a day not summed up yet, and the three days
+/// before it, made from the same records so none reads as out of date.
+fn sample_summaries(records: &[errand_core::journal::WorkRecord], now: Timestamp, language: Language, skip_today: bool) -> std::collections::BTreeMap<jiff::civil::Date, errand_core::journal::summary::DaySummary> {
+    use errand_core::journal::summary::{DaySummary, Done, Kind, Left, Open, Summaries};
+    use errand_core::journal::view::Journal;
+    let zone = format::local_zone();
+    let today = now.to_zoned(zone.clone()).date();
+    let (live, translations, summaries) = (std::collections::HashMap::new(), Default::default(), Summaries::default());
+    let journal = Journal { records, live: &live, translations: &translations, summaries: &summaries, now, zone: &zone, language };
+    let say = |korean: &'static str, english: &'static str| words(language, korean, english).to_owned();
+    let done = |key: &str, project: &str, text: String, report: String, kind: Kind| Done { key: Some(key.to_owned()), project: project.to_owned(), text, report, kind };
+    let left = |key: &str, title: String, text: String, report: String, open: Open| Left { key: Some(key.to_owned()), title, text, report, open };
+    let summary = |back: i64, made: (i8, i8), done: Vec<Done>, left: Vec<Left>| {
+        let date = today.checked_sub(jiff::Span::new().days(back)).unwrap_or(today);
+        let made_at = date.at(made.0, made.1, 0, 0).to_zoned(zone.clone()).map(|zoned| zoned.timestamp()).unwrap_or(now).min(now);
+        (date, DaySummary { date, made_at, by: Provider::Codex, language, done, left, basis: journal.day_basis(date), edited: false })
+    };
+    let mut kept = std::collections::BTreeMap::new();
+    if !skip_today {
+        let (date, today_summary) = summary(0, (12, 10), vec![
+            done("sample:login", "shop-web", say("로그인 폼 상태를 훅으로 옮기고 에러 문구를 모았어요", "Moved sign-in form state into a hook and gathered the errors"), say("로그인 폼 상태를 훅으로 분리, 에러 문구 통합", "Sign-in form state moved into a hook"), Kind::Refactor),
+            done("sample:tests", "shop-web", say("토큰 목업을 고쳐 로그인 테스트 3개를 통과시켰어요", "Fixed the token mock; three sign-in tests pass"), say("만료 토큰 목업 수정, 로그인 테스트 3개 복구", "Token mock fixed, three sign-in tests pass"), Kind::Fix),
+            done("sample:checks", "payments-api", say("결제 금액·통화 검증과 테스트 12개를 더했어요", "Added payment amount and currency checks"), say("결제 금액·통화 검증 추가", "Payment amount and currency checks"), Kind::Feature),
+        ], vec![
+            left("sample:deploy", say("배포 설정 정리", "Tidy the deploy settings"), say("develop에 커밋하고 푸시하는 중이에요", "Committing and pushing to develop"), say("develop 반영", "Push to develop"), Open::Running),
+            left("sample:login", say("로그인 화면 리팩터링", "Refactor the sign-in screen"), say("커밋만 하고 푸시는 하지 않았어요", "Committed but not pushed"), say("로그인 화면 변경 푸시", "Push the sign-in changes"), Open::Todo),
+        ]);
+        kept.insert(date, today_summary);
+    }
+    let earlier: [(i64, &str, &str, &str, &str, Kind); 9] = [
+        (1, "sample:earlier-0", "deploy-config", "CI 캐시 설정을 정리했어요", "Tidied the CI cache settings", Kind::Config),
+        (1, "sample:earlier-1", "shop-web", "사용 설명서를 고쳤어요", "Updated the guide", Kind::Docs),
+        (1, "sample:earlier-2", "payments-api", "영수증 PDF 글꼴을 바꿨어요", "Changed the receipt PDF fonts", Kind::Fix),
+        (1, "sample:earlier-3", "shop-web", "대시보드 매출 차트를 더했어요", "Added a sales chart to the dashboard", Kind::Feature),
+        (2, "sample:earlier-4", "payments-api", "웹훅 서명 검증을 넣었어요", "Verified webhook signatures", Kind::Feature),
+        (2, "sample:earlier-5", "shop-web", "상품 목록에 무한 스크롤을 붙였어요", "Made the product list scroll endlessly", Kind::Feature),
+        (3, "sample:earlier-6", "shop-web", "결제 페이지 접근성 문제를 고쳤어요", "Fixed checkout accessibility issues", Kind::Fix),
+        (3, "sample:earlier-7", "payments-api", "환불 API 응답 형식을 맞췄어요", "Aligned the refund API responses", Kind::Refactor),
+        (3, "sample:earlier-8", "shop-web", "장바구니 수량 버그를 고쳤어요", "Fixed the cart quantity bug", Kind::Fix),
+    ];
+    for back in 1..=3 {
+        let lines = earlier.iter().filter(|line| line.0 == back).map(|(_, key, project, korean, english, kind)| done(key, project, words(language, korean, english).to_owned(), words(language, korean, english).to_owned(), *kind)).collect();
+        let (date, day) = summary(back, (19, 0), lines, Vec::new());
+        // Only days the sample has work on: the week view must not invent days.
+        if day.basis != errand_core::journal::summary::basis(&[], now, now) {
+            kept.insert(date, day);
+        }
+    }
+    kept
 }

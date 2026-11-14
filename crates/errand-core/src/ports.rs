@@ -68,6 +68,8 @@ pub trait Shell {
     /// Asks the question, and posts `Msg::Confirmed` with it if the person goes ahead.
     fn confirm(&mut self, confirm: &Confirm);
     fn show_dashboard(&mut self);
+    /// Shows a day's summary as text to edit, and posts `Msg::JournalSummaryEdited` if the person saves it.
+    fn edit_summary(&mut self, _date: jiff::civil::Date, _text: &str) {}
 }
 
 /// Work rooms, on the rooms server or from sample data. The report is all that leaves the computer.

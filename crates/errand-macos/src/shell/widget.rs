@@ -57,6 +57,9 @@ pub struct Widget {
     pub tray: Tray,
     pub rooms_panel: Retained<TypingPanel>,
     rooms: Rooms,
+    /// The pet's morning bubble about the last day's work.
+    pub nudge_panel: Retained<NSPanel>,
+    nudge: super::nudge::Nudge,
     poster: Arc<dyn Poster>,
     defaults: Retained<NSUserDefaults>,
     /// The dock's frame when a drag began, in core coordinates.
@@ -181,6 +184,9 @@ impl Widget {
             let rooms = Rooms::new(mtm, poster.clone());
             let rooms_panel = make_typing_panel(mtm, rooms.view.frame().size, language.rooms_title());
             rooms_panel.setContentView(Some(&rooms.view));
+            let nudge = super::nudge::Nudge::new(mtm, poster.clone());
+            let nudge_panel = make_panel(mtm, nudge.view.frame().size, if language == Language::Korean { "어제 한 일" } else { "Yesterday's work" });
+            nudge_panel.setContentView(Some(&nudge.view));
             let mut widget = Widget {
                 mtm,
                 panel,
@@ -202,6 +208,8 @@ impl Widget {
                 tray,
                 rooms_panel,
                 rooms,
+                nudge_panel,
+                nudge,
                 poster: poster.clone(),
                 defaults,
                 drag_origin: None,
@@ -291,6 +299,9 @@ impl Widget {
         if self.details_panel.isVisible() {
             self.place_details();
         }
+        if self.nudge_panel.isVisible() {
+            self.place_nudge();
+        }
         if self.avatar_editor_panel.isVisible() {
             self.place_avatar_editor();
         }
@@ -343,6 +354,14 @@ impl Widget {
             self.avatar_editor_panel.makeFirstResponder(None);
             self.avatar_editor_panel.orderOut(None);
         }
+    }
+
+    /// The morning bubble beside the widget, the tail at the character.
+    fn place_nudge(&self) {
+        let (dock, screen, visible) = (self.dock_frame(), self.main_screen(), visible_frames(self.mtm));
+        let placement = layout::nudge_placement(dock, screen, &visible, self.dock.shape(), self.compact_aim());
+        self.nudge_panel.setFrame_display(to_cocoa(placement.frame, primary_height(self.mtm)), true);
+        self.nudge.point(placement.tail_on_right, placement.tail_y);
     }
 
     fn place_avatar_editor(&self) {
@@ -455,6 +474,7 @@ impl Widget {
             self.close_avatar_editor();
             self.tray_panel.orderOut(None);
             self.rooms_panel.orderOut(None);
+            self.nudge_panel.orderOut(None);
             self.task_panel.set_typing(None);
             self.task_panel.orderOut(None);
             return;
@@ -511,6 +531,18 @@ impl Widget {
             self.task_form.render(&state.tasks, self.mtm);
             self.task_panel.set_typing(None);
             self.task_panel.orderOut(None);
+        }
+        // The morning bubble gives way to anything else open beside the widget.
+        let busy = state.tasks.open() || state.details_open || state.avatar_editor_open || state.rooms.open;
+        match view::nudge(state, context).filter(|_| !busy) {
+            Some(vm) => {
+                self.nudge.render(&vm);
+                self.place_nudge();
+                if !self.nudge_panel.isVisible() {
+                    self.nudge_panel.orderFrontRegardless();
+                }
+            }
+            None => self.nudge_panel.orderOut(None),
         }
         if state.tray_visible() {
             let max = layout::tray_max_height(self.dock_frame(), self.main_screen());

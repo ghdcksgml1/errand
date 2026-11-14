@@ -67,6 +67,8 @@ fn run_app(arguments: &[String], language: Language) {
             shell::preview::PreviewKind::Tray
         } else if has("--preview-details") {
             shell::preview::PreviewKind::Details
+        } else if has("--preview-nudge") {
+            shell::preview::PreviewKind::Nudge
         } else if has("--preview-avatar") {
             shell::preview::PreviewKind::AvatarEditor
         } else if has("--preview-floating") || in_room {

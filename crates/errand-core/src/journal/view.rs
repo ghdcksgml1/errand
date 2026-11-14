@@ -8,7 +8,7 @@ use crate::{Language, Provider};
 use jiff::civil::{Date, Weekday};
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp, ToSpan};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// How long a request with no answer, in a session the widget does not show, still counts as running.
 const UNANSWERED: SignedDuration = SignedDuration::from_hours(2);
@@ -75,6 +75,8 @@ pub struct JournalPlace {
     pub span: ReportSpan,
     /// The task whose detail is open.
     pub open: Option<String>,
+    /// The recap card on screen, over the week.
+    pub recap: Option<usize>,
 }
 
 /// The widget's live state for a task, where it shows one.
@@ -102,6 +104,7 @@ pub struct Journal<'a> {
     pub records: &'a [WorkRecord],
     pub live: &'a HashMap<String, Live>,
     pub translations: &'a Translations,
+    pub summaries: &'a super::summary::Summaries,
     pub now: Timestamp,
     pub zone: &'a TimeZone,
     pub language: Language,
@@ -195,6 +198,22 @@ pub struct Pill {
     pub text: String,
 }
 
+/// One piece of a count's figure: the number large, its unit small.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StatPart {
+    pub text: String,
+    pub small: bool,
+}
+
+/// A count at the end of the date line: a label over a large figure.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stat {
+    pub label: String,
+    pub parts: Vec<StatPart>,
+    /// Drawn in the answer-needed colour.
+    pub asking: bool,
+}
+
 /// The big number and the two lines beside it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Masthead {
@@ -202,6 +221,8 @@ pub struct Masthead {
     pub top: String,
     pub bottom: String,
     pub pills: Vec<Pill>,
+    /// Counts drawn large instead of the pills and the character, on the day and the week.
+    pub stats: Vec<Stat>,
     /// Forward goes nowhere past the present.
     pub can_go_forward: bool,
 }
@@ -216,6 +237,8 @@ pub struct Bar {
     pub lane: usize,
     pub label: String,
     pub callout: Option<Callout>,
+    /// For work waiting on the person's answer: how far the wait runs, to now.
+    pub waiting: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -227,65 +250,145 @@ pub struct HourAxis {
     pub now_text: String,
 }
 
-/// A task as a card.
+/// A task as a row in the day's list.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Card {
+pub struct TaskRow {
     pub key: String,
     pub provider: Provider,
     pub title: String,
-    pub ask: String,
-    pub line: String,
+    /// Project, time and marks.
+    pub meta: String,
     pub callout: Option<Callout>,
-    pub time: String,
+}
+
+/// A finished piece of work in a summary, with what it left behind.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DraftLine {
+    pub key: Option<String>,
     pub project: String,
-    pub marks: String,
+    pub text: String,
+    pub mark: String,
+}
+
+/// Something a summary says is left.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LeftLine {
+    pub key: Option<String>,
+    pub title: String,
+    pub text: String,
+    pub open: super::summary::Open,
+}
+
+/// A day's summary as the character hands it over.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DraftCard {
+    pub date: Date,
+    pub title: String,
+    pub chip: String,
+    pub note: String,
+    pub done: Vec<DraftLine>,
+    pub left: Vec<LeftLine>,
+    /// More work ended after it was made: the words, and whether it can be made again now.
+    pub stale: Option<(String, bool)>,
+    pub footer: String,
+    /// The day as a report to paste.
+    pub report: String,
+}
+
+/// Where the day's summary stands.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Draft {
+    /// Nothing finished that day yet.
+    Nothing(String),
+    /// Finished work with no summary: a note, and the button that makes one.
+    Offer(String, String),
+    Making(String),
+    /// Why it failed, and a button to try again when that can help.
+    Failed(String, Option<String>),
+    Ready(Box<DraftCard>),
+}
+
+/// The same day a month earlier, when there was work then.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BackThen {
+    pub label: String,
+    pub text: String,
+    /// Days back from the day on screen, to go there.
+    pub days: i64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DayView {
+    pub date: Date,
     pub masthead: Masthead,
     pub axis: HourAxis,
     pub bars: Vec<Bar>,
     pub lanes: usize,
-    /// Every project that day with its count, after "all".
-    pub filters: Vec<(Option<String>, String, usize)>,
-    pub cards: Vec<Card>,
+    pub draft: Draft,
+    pub tasks: Vec<TaskRow>,
+    pub back_then: Option<BackThen>,
 }
 
+/// One day of the week as the stitched page shows it: its summary's lines, or its tasks before one is made.
 #[derive(Clone, Debug, PartialEq)]
-pub struct WeekRow {
+pub struct WeekDay {
+    pub date: Date,
+    pub day: String,
     pub label: String,
+    pub lines: Vec<DraftLine>,
+    /// Lines left out to keep the day short.
+    pub more: usize,
+    /// "오늘 초안", "고침" or "정리 전": how far the day's summary is.
+    pub note: Option<String>,
+    /// The day's work across 08–19, as fractions, in its service's colour.
+    pub strip: Vec<(f64, f64, Provider)>,
     pub today: bool,
-    pub bars: Vec<Bar>,
-    pub lanes: usize,
-    pub now: Option<f64>,
 }
 
-/// A task as a line in its project's card.
+/// The way into the week's recap cards.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Line {
-    pub key: String,
-    pub provider: Provider,
+pub struct RecapEntry {
     pub title: String,
-    pub callout: Option<Callout>,
-    pub pull_request: Option<String>,
-    pub when: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ProjectCard {
-    pub name: String,
+    pub note: String,
+    pub button: String,
     pub count: usize,
-    pub marks: String,
-    pub lines: Vec<Line>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WeekView {
     pub masthead: Masthead,
-    pub axis: HourAxis,
-    pub rows: Vec<WeekRow>,
-    pub projects: Vec<ProjectCard>,
+    pub monday: Date,
+    pub title: String,
+    pub days: Vec<WeekDay>,
+    pub recap: Option<RecapEntry>,
+    pub carried_title: String,
+    pub carried: Vec<LeftLine>,
+    pub kinds: Vec<(String, usize)>,
+    /// The week as a report to paste; empty when no day is summed up.
+    pub report: String,
+    /// The week as a metro map of its projects and tasks.
+    pub metro: super::metro::MetroView,
+}
+
+/// One card of a week's recap.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RecapCard {
+    Cover { label: String, title: String, span: String, chips: Vec<String> },
+    Finished { label: String, count: usize, versus: String, waiting: usize, note: String },
+    Kind { label: String, top: String, of: String, kinds: Vec<(String, usize)> },
+    Busiest { label: String, day: String, note: String, days: Vec<(String, f64, bool)> },
+    Longest { label: String, provider: Provider, project: String, title: String, time: Vec<StatPart>, span: String, bar: Option<(f64, f64)> },
+    Carried { label: String, count: usize, items: Vec<(String, String, bool)>, save: String },
+}
+
+/// A week's recap: its cards and which one is on screen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecapView {
+    pub cards: Vec<RecapCard>,
+    pub index: usize,
+    pub position: String,
+    pub save_one: String,
+    pub save_all: String,
 }
 
 /// How a task shows in a calendar day: a dot in its service's colour, or a ring in a live state's.
@@ -390,39 +493,45 @@ pub struct DetailView {
 }
 
 impl Journal<'_> {
-    fn date(&self, at: Timestamp) -> Date {
+    pub(crate) fn date(&self, at: Timestamp) -> Date {
         at.to_zoned(self.zone.clone()).date()
     }
 
-    fn today(&self) -> Date {
+    pub(crate) fn today(&self) -> Date {
         self.date(self.now)
     }
 
-    fn start_of(&self, date: Date) -> Timestamp {
+    pub(crate) fn start_of(&self, date: Date) -> Timestamp {
         date.to_zoned(self.zone.clone()).map(|zoned| zoned.timestamp()).unwrap_or(self.now)
     }
 
-    fn clock(&self, at: Timestamp) -> String {
+    pub(crate) fn clock(&self, at: Timestamp) -> String {
         at.to_zoned(self.zone.clone()).strftime("%H:%M").to_string()
     }
 
-    fn callout(&self, record: &WorkRecord) -> Option<Callout> {
+    pub(crate) fn callout(&self, record: &WorkRecord) -> Option<Callout> {
         match self.live.get(&record.key) {
             Some(live) => Callout::of(live.state),
             None => self.running(record).then_some(Callout::Running),
         }
     }
 
+    /// The live state for a period that holds the task's latest request. A task worked on again after `to` was
+    /// at rest at the end of that period, whatever it is doing now.
+    pub(crate) fn callout_by(&self, record: &WorkRecord, to: Timestamp) -> Option<Callout> {
+        if record.turns.last().is_some_and(|turn| turn.asked_at < to) { self.callout(record) } else { None }
+    }
+
     /// Still at work: as the widget says, or, for a session it does not show, a request this recent with no answer
     /// yet. An older unanswered request stopped without a word.
-    fn running(&self, record: &WorkRecord) -> bool {
+    pub(crate) fn running(&self, record: &WorkRecord) -> bool {
         match self.live.get(&record.key) {
             Some(live) => matches!(Callout::of(live.state), Some(Callout::Running | Callout::Asking)),
             None => record.turns.last().is_some_and(|turn| turn.finished_at.is_none() && turn.asked_at.duration_until(self.now) < UNANSWERED),
         }
     }
 
-    fn weekday(&self, weekday: Weekday) -> &'static str {
+    pub(crate) fn weekday(&self, weekday: Weekday) -> &'static str {
         let index = weekday.to_sunday_zero_offset() as usize;
         match self.language {
             Language::Korean => ["일", "월", "화", "수", "목", "금", "토"][index],
@@ -430,28 +539,28 @@ impl Journal<'_> {
         }
     }
 
-    fn weekday_long(&self, weekday: Weekday) -> String {
+    pub(crate) fn weekday_long(&self, weekday: Weekday) -> String {
         match self.language {
             Language::Korean => format!("{}요일", self.weekday(weekday)),
             Language::English => ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][weekday.to_sunday_zero_offset() as usize].to_owned(),
         }
     }
 
-    fn month_name(&self, month: i8) -> String {
+    pub(crate) fn month_name(&self, month: i8) -> String {
         match self.language {
             Language::Korean => format!("{month}월"),
             Language::English => ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][(month - 1) as usize].to_owned(),
         }
     }
 
-    fn month_day(&self, date: Date) -> String {
+    pub(crate) fn month_day(&self, date: Date) -> String {
         match self.language {
             Language::Korean => format!("{}월 {}일", date.month(), date.day()),
             Language::English => format!("{} {}", self.month_name(date.month()), date.day()),
         }
     }
 
-    fn duration(&self, span: SignedDuration) -> String {
+    pub(crate) fn duration(&self, span: SignedDuration) -> String {
         let minutes = span.as_mins().max(1);
         let (hours, rest) = (minutes / 60, minutes % 60);
         match (self.language, hours, rest) {
@@ -464,7 +573,7 @@ impl Journal<'_> {
         }
     }
 
-    fn marks(&self, commits: usize, pulls: &[u32]) -> String {
+    pub(crate) fn marks(&self, commits: usize, pulls: &[u32]) -> String {
         let mut parts = Vec::new();
         if commits > 0 {
             parts.push(format!("{} {commits}", self.language.pick("커밋", "Commits")));
@@ -536,7 +645,7 @@ impl Journal<'_> {
         };
         let mut bars: Vec<Bar> = Vec::new();
         let mut lane_ends: Vec<f64> = Vec::new();
-        let mut spans: Vec<(&WorkRecord, Timestamp, Timestamp)> = records
+        let mut spans: Vec<(&WorkRecord, Timestamp, Timestamp, Option<Timestamp>)> = records
             .iter()
             .filter_map(|record| {
                 let turns: Vec<_> = record.turns_between(from, to).collect();
@@ -544,57 +653,197 @@ impl Journal<'_> {
                 let last_ask = turns.last()?.asked_at;
                 let end = turns.iter().filter_map(|turn| turn.finished_at).max().unwrap_or(begin).max(last_ask);
                 let running = turns.last().is_some_and(|turn| turn.finished_at.is_none()) && self.running(record);
-                Some((*record, begin, if running { self.now.min(to) } else { end.max(begin) }))
+                // Work waiting on the person ends where the agent last did something; the wait runs on to now.
+                let asking = self.callout(record) == Some(Callout::Asking);
+                let last_mark = record.commits.iter().filter(|commit| commit.at >= begin && commit.at < to).map(|commit| commit.at).max().unwrap_or(begin);
+                let end = if asking { end.max(last_mark) } else if running { self.now.min(to) } else { end.max(begin) };
+                Some((*record, begin, end, asking.then(|| self.now.min(to))))
             })
             .collect();
-        spans.sort_by_key(|(_, begin, _)| *begin);
-        for (record, begin, end) in spans {
-            let (start, end) = (place(begin), place(end).max(place(begin) + 0.004));
+        spans.sort_by_key(|(_, begin, _, _)| *begin);
+        for (record, begin, end, waiting) in spans {
+            let (start, end) = (place(begin), place(end).max(place(begin) + 0.012));
+            let waiting = waiting.map(place).filter(|until| *until > end);
+            let reach = waiting.unwrap_or(end);
             let lane = lane_ends.iter().position(|ends| *ends <= start).unwrap_or(lane_ends.len());
             if lane == lane_ends.len() {
-                lane_ends.push(end);
+                lane_ends.push(reach);
             } else {
-                lane_ends[lane] = end;
+                lane_ends[lane] = reach;
             }
-            bars.push(Bar { key: record.key.clone(), provider: record.provider, start, end, lane, label: preview(&record.title, 24), callout: self.callout(record) });
+            bars.push(Bar { key: record.key.clone(), provider: record.provider, start, end, lane, label: preview(&record.title, 24), callout: self.callout(record), waiting });
         }
         (bars, lane_ends.len().max(1))
     }
 
-    fn card(&self, record: &WorkRecord, from: Timestamp, to: Timestamp) -> Card {
+    /// A task's time that day: from and to with its working time, or since when while it runs.
+    fn task_time(&self, record: &WorkRecord, from: Timestamp, to: Timestamp) -> String {
         let turns: Vec<_> = record.turns_between(from, to).collect();
-        let last = turns.last().copied().or(record.turns.last());
-        let callout = self.callout(record);
-        let unanswered = last.is_some_and(|turn| turn.finished_at.is_none());
-        let running = unanswered && self.running(record);
-        let line = match (callout, last) {
-            (Some(Callout::Asking), _) => self.live.get(&record.key).and_then(|live| live.question.clone()).unwrap_or_default(),
-            (_, Some(turn)) if running => format!("{} · {}", self.language.pick("작업 중", "Working"), self.duration(turn.asked_at.duration_until(self.now))),
-            (_, Some(_)) if unanswered => self.language.pick("답이 기록되지 않았어요", "No answer recorded").to_owned(),
-            (_, Some(turn)) => turn.result.as_deref().map(|result| preview(result.lines().find(|line| !line.trim().is_empty()).unwrap_or(""), 90)).unwrap_or_default(),
-            _ => String::new(),
-        };
         let first = turns.first().map(|turn| turn.asked_at).unwrap_or(from);
+        let unanswered = turns.last().is_some_and(|turn| turn.finished_at.is_none());
         let finished = turns.iter().filter_map(|turn| turn.finished_at).max();
         let worked: SignedDuration = turns.iter().filter_map(|turn| turn.duration()).fold(SignedDuration::ZERO, |total, span| total + span);
-        let time = match finished {
-            _ if running => format!("{}{}", self.clock(first), self.language.pick("부터", " on")),
+        match finished {
+            _ if unanswered && self.running(record) => format!("{}{}", self.clock(first), self.language.pick("부터", " on")),
             Some(end) if !unanswered => format!("{} – {} · {}", self.clock(first), self.clock(end), self.duration(worked)),
             _ => self.clock(first),
-        };
+        }
+    }
+
+    fn task_row(&self, record: &WorkRecord, from: Timestamp, to: Timestamp) -> TaskRow {
         let commits = record.commits.iter().filter(|commit| commit.at >= from && commit.at < to).count();
         let pulls: Vec<u32> = record.pull_requests.iter().filter(|pull| pull.at >= from && pull.at < to).map(|pull| pull.number).collect();
-        Card {
-            key: record.key.clone(),
-            provider: record.provider,
-            title: record.title.clone(),
-            ask: last.map(|turn| preview(&turn.ask, 80)).unwrap_or_default(),
-            line,
-            callout,
-            time,
-            project: record.project().to_owned(),
-            marks: self.marks(commits, &pulls),
+        let meta = [record.project().to_owned(), self.task_time(record, from, to), self.marks(commits, &pulls)].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" · ");
+        TaskRow { key: record.key.clone(), provider: record.provider, title: record.title.clone(), meta, callout: self.callout(record) }
+    }
+
+    /// Finished that day: the day's last request answered, and nothing live about it.
+    fn finished_on(&self, record: &WorkRecord, from: Timestamp, to: Timestamp) -> bool {
+        let last = record.turns_between(from, to).last();
+        last.is_some_and(|turn| turn.finished_at.is_some()) && !matches!(self.callout_by(record, to), Some(Callout::Running | Callout::Asking))
+    }
+
+    /// A span as figures: hours and minutes large, their units small.
+    fn duration_parts(&self, span: SignedDuration) -> Vec<StatPart> {
+        let minutes = span.as_mins().max(0);
+        let (hours, rest) = (minutes / 60, minutes % 60);
+        let (h, m) = (self.language.pick("시간", "h"), self.language.pick("분", "m"));
+        let part = |text: String, small: bool| StatPart { text, small };
+        match hours {
+            0 => vec![part(rest.to_string(), false), part(m.into(), true)],
+            _ => vec![part(hours.to_string(), false), part(h.into(), true), part(format!(" {rest}"), false), part(m.into(), true)],
         }
+    }
+
+    /// The counts on the day's and the week's date lines.
+    fn stats(&self, records: &[&WorkRecord], from: Timestamp, to: Timestamp, versus: Option<SignedDuration>) -> Vec<Stat> {
+        let plain = |text: String| vec![StatPart { text, small: false }];
+        let finished = records.iter().filter(|record| self.finished_on(record, from, to)).count();
+        let asking = records.iter().filter(|record| self.callout_by(record, to) == Some(Callout::Asking)).count();
+        let worked: SignedDuration = records.iter().flat_map(|record| record.turns_between(from, to)).filter_map(|turn| turn.duration()).fold(SignedDuration::ZERO, |total, span| total + span);
+        let commits: usize = records.iter().map(|record| record.commits.iter().filter(|commit| commit.at >= from && commit.at < to).count()).sum();
+        let pulls: usize = records.iter().map(|record| record.pull_requests.iter().filter(|pull| pull.at >= from && pull.at < to).count()).sum();
+        let mut stats = vec![Stat { label: self.language.pick("끝낸 일", "Done").into(), parts: plain(finished.to_string()), asking: false }];
+        if asking > 0 {
+            stats.push(Stat { label: self.language.pick("답변 필요", "Needs answer").into(), parts: plain(asking.to_string()), asking: true });
+        }
+        let mut label = self.language.pick("AI 작업", "AI time").to_owned();
+        if let Some(before) = versus {
+            let difference = (worked - before).as_mins();
+            if difference.abs() >= 30 {
+                let span = self.duration(SignedDuration::from_mins(difference.abs()));
+                label = match (self.language, difference > 0) {
+                    (Language::Korean, true) => format!("{label} · 지난주보다 {span} 더"),
+                    (Language::Korean, false) => format!("{label} · 지난주보다 {span} 덜"),
+                    (Language::English, true) => format!("{label} · {span} more than last week"),
+                    (Language::English, false) => format!("{label} · {span} less than last week"),
+                };
+            }
+        }
+        stats.push(Stat { label, parts: self.duration_parts(worked), asking: false });
+        if commits + pulls > 0 {
+            stats.push(Stat { label: self.language.pick("커밋 · PR", "Commits · PRs").into(), parts: plain(format!("{commits} · {pulls}")), asking: false });
+        }
+        stats
+    }
+
+    /// The day's summary as it stands, or what stands in for it.
+    fn draft(&self, date: Date, records: &[&WorkRecord], from: Timestamp, to: Timestamp) -> Draft {
+        let summaries = self.summaries;
+        let today = date == self.today();
+        let making = summaries.making == Some(date);
+        if let Some(summary) = summaries.days.get(&date) {
+            let pick = |korean: &'static str, english: &'static str| self.language.pick(korean, english);
+            let made = self.clock(summary.made_at);
+            let chip = match (summary.edited, today) {
+                (true, _) => format!("{} · {made}", pick("고침", "Edited")),
+                (false, true) => format!("{} · {made}", pick("초안", "Draft")),
+                (false, false) => format!("{made} {}", pick("정리", "")).trim().to_owned(),
+            };
+            let stale = if making {
+                Some((pick("다시 정리하는 중…", "Summing up again…").to_owned(), false))
+            } else if summary.basis != self.day_basis(date) {
+                Some((pick("끝난 작업이 더 있어요", "More work has ended since").to_owned(), true))
+            } else {
+                None
+            };
+            let by = match (summary.by, self.language) {
+                (Provider::Codex, Language::Korean) => "Codex 요약",
+                (Provider::Claude, Language::Korean) => "Claude 요약",
+                (Provider::Codex, Language::English) => "Codex summary",
+                (Provider::Claude, Language::English) => "Claude summary",
+            };
+            return Draft::Ready(Box::new(DraftCard {
+                date,
+                title: if today { pick("오늘 정리", "Today's summary") } else { pick("이날 정리", "That day's summary") }.to_owned(),
+                chip,
+                note: match self.language {
+                    Language::Korean => format!("작업 {}개 기준 · 고친 내용은 주간 정리와 보고서에 반영돼요.", records.len()),
+                    Language::English => format!("From {} tasks · edits carry into the week and the reports.", records.len()),
+                },
+                done: summary.done.iter().map(|item| DraftLine { key: item.key.clone(), project: item.project.clone(), text: item.text.clone(), mark: self.summary_marks(date, item.key.as_deref()) }).collect(),
+                left: summary.left.iter().map(|item| LeftLine { key: item.key.clone(), title: item.title.clone(), text: item.text.clone(), open: item.open }).collect(),
+                stale,
+                footer: format!("{by} · {}", pick("이 Mac에만 저장", "Kept on this Mac")),
+                report: self.daily_report(summary),
+            }));
+        }
+        let finished = records.iter().filter(|record| self.finished_on(record, from, to)).count();
+        if making {
+            return Draft::Making(self.language.pick("정리하는 중…", "Summing up…").into());
+        }
+        if summaries.unreadable {
+            return Draft::Failed(self.language.pick("저장된 요약을 읽지 못했어요. 폴더 권한을 확인해 주세요.", "Could not read saved summaries. Check folder permissions.").into(), None);
+        }
+        if let Some(why) = summaries.failed.get(&date) {
+            let why = match why.split_once(" / ") {
+                Some((korean, english)) => if self.language == Language::Korean { korean } else { english },
+                None => why.as_str(),
+            };
+            return Draft::Failed(why.to_owned(), Some(self.language.pick("다시 시도", "Try again").into()));
+        }
+        if finished == 0 {
+            let note = if today {
+                self.language.pick("아직 끝낸 작업이 없어요.", "Nothing finished yet.")
+            } else {
+                self.language.pick("이날은 끝낸 작업이 없어요.", "Nothing was finished that day.")
+            };
+            return Draft::Nothing(note.into());
+        }
+        let note = match (self.language, today && summaries.auto) {
+            (Language::Korean, true) => format!("끝낸 작업 {finished}개 · 저녁 6시에 자동 정리"),
+            (Language::Korean, false) => format!("끝낸 작업 {finished}개를 아직 정리하지 않았어요."),
+            (Language::English, true) => format!("{finished} done · summed up at 6 pm"),
+            (Language::English, false) => format!("{finished} done, not summed up yet."),
+        };
+        Draft::Offer(note, self.language.pick("지금 정리하기", "Sum up now").into())
+    }
+
+    /// The same date a month before, when there was work.
+    fn back_then(&self, date: Date) -> Option<BackThen> {
+        let then = date.checked_sub(1.month()).ok()?;
+        let records = self.day_records_on(then);
+        let first = records.first()?;
+        let text = match self.summaries.days.get(&then).and_then(|summary| summary.done.first()) {
+            Some(line) => line.text.clone(),
+            None if records.len() > 1 => match self.language {
+                Language::Korean => format!("{} 외 {}개", first.title, records.len() - 1),
+                Language::English => format!("{} and {} more", first.title, records.len() - 1),
+            },
+            None => first.title.clone(),
+        };
+        Some(BackThen {
+            label: format!("{} · {}", self.language.pick("지난달 오늘", "A month ago"), self.month_day(then)),
+            text,
+            days: then.until(date).ok()?.get_days() as i64,
+        })
+    }
+
+    fn day_records_on(&self, date: Date) -> Vec<&WorkRecord> {
+        let (from, to) = (self.start_of(date), self.start_of(date.tomorrow().unwrap_or(date)));
+        let mut records = self.within(from, to);
+        records.sort_by_key(|record| record.turns_between(from, to).next().map(|turn| turn.asked_at));
+        records
     }
 
     pub fn day(&self, place: &JournalPlace) -> DayView {
@@ -611,15 +860,10 @@ impl Journal<'_> {
             .collect();
         let axis = self.axis(&spans, day);
         let (bars, lanes) = self.bars(&records, day, &axis);
-        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-        for record in &records {
-            *counts.entry(record.project().to_owned()).or_default() += 1;
-        }
-        let mut filters = vec![(None, self.language.pick("전체", "All").to_owned(), records.len())];
-        filters.extend(counts.into_iter().map(|(name, count)| (Some(name.clone()), name, count)));
-        let mut shown: Vec<&WorkRecord> = records.iter().copied().filter(|record| place.project.as_deref().is_none_or(|project| record.project() == project)).collect();
+        let mut shown: Vec<&WorkRecord> = records.clone();
         shown.sort_by_key(|record| std::cmp::Reverse(record.turns_between(from, to).last().map(|turn| turn.asked_at)));
         DayView {
+            date: day,
             masthead: Masthead {
                 big: day.day().to_string(),
                 top: self.weekday_long(day.weekday()),
@@ -627,14 +871,16 @@ impl Journal<'_> {
                     Language::Korean => format!("{}년 {}월", day.year(), day.month()),
                     Language::English => format!("{} {}", self.month_name(day.month()), day.year()),
                 },
-                pills: self.tally_pills(&records, from, to, false),
+                pills: Vec::new(),
+                stats: self.stats(&records, from, to, None),
                 can_go_forward: place.back > 0,
             },
             axis,
             bars,
             lanes,
-            filters,
-            cards: shown.into_iter().map(|record| self.card(record, from, to)).collect(),
+            draft: self.draft(day, &records, from, to),
+            tasks: shown.into_iter().map(|record| self.task_row(record, from, to)).collect(),
+            back_then: self.back_then(day),
         }
     }
 
@@ -644,68 +890,114 @@ impl Journal<'_> {
         monday.checked_sub((back * 7).days()).unwrap_or(monday)
     }
 
+    /// A week's bounds and its records.
+    fn week_records(&self, monday: Date) -> (Timestamp, Timestamp, Vec<&WorkRecord>) {
+        let sunday = monday.checked_add(6.days()).unwrap_or(monday);
+        let (from, to) = (self.start_of(monday), self.start_of(sunday.tomorrow().unwrap_or(sunday)));
+        (from, to, self.within(from, to))
+    }
+
+    fn worked(&self, records: &[&WorkRecord], from: Timestamp, to: Timestamp) -> SignedDuration {
+        records.iter().flat_map(|record| record.turns_between(from, to)).filter_map(|turn| turn.duration()).fold(SignedDuration::ZERO, |total, span| total + span)
+    }
+
+    /// The week's recap is ready from Friday 18:00, and for any week before this one.
+    fn recap_ready(&self, monday: Date) -> bool {
+        let friday = monday.checked_add(4.days()).unwrap_or(monday);
+        let evening = friday.at(super::summary::EVENING, 0, 0, 0).to_zoned(self.zone.clone()).map(|zoned| zoned.timestamp()).unwrap_or(self.now);
+        self.now >= evening
+    }
+
+    /// "11월 둘째 주", or "Week 2 of November".
+    fn week_name(&self, monday: Date) -> String {
+        let ordinal = (monday.day() as usize - 1) / 7;
+        match self.language {
+            Language::Korean => format!("{} {} 주", self.month_name(monday.month()), ["첫째", "둘째", "셋째", "넷째", "다섯째"][ordinal.min(4)]),
+            Language::English => format!("Week {} of {}", ordinal + 1, self.month_name(monday.month())),
+        }
+    }
+
     pub fn week(&self, place: &JournalPlace) -> WeekView {
         let monday = self.monday(place.back);
         let sunday = monday.checked_add(6.days()).unwrap_or(monday);
-        let from = self.start_of(monday);
-        let to = self.start_of(sunday.tomorrow().unwrap_or(sunday));
-        let records = self.within(from, to);
-        let mut spans = Vec::new();
+        let (from, to, records) = self.week_records(monday);
+        let last_monday = monday.checked_sub(7.days()).unwrap_or(monday);
+        let (last_from, last_to, last_records) = self.week_records(last_monday);
+        let before = self.worked(&last_records, last_from, last_to);
+        let pick = |korean: &'static str, english: &'static str| self.language.pick(korean, english);
+        let mut days = Vec::new();
+        let mut summaries = Vec::new();
         for offset in 0..7 {
-            let day = monday.checked_add(offset.days()).unwrap_or(monday);
-            let (day_from, day_to) = (self.start_of(day), self.start_of(day.tomorrow().unwrap_or(day)));
-            for record in &records {
-                let turns: Vec<_> = record.turns_between(day_from, day_to).collect();
-                if let Some(first) = turns.first() {
-                    // Every day is laid on the same hours, so their spans are moved to the first day's clock.
-                    let shift = SignedDuration::from_hours(24 * offset);
-                    let end = turns.iter().filter_map(|turn| turn.finished_at).max().unwrap_or(first.asked_at);
-                    spans.push((first.asked_at - shift, end - shift));
+            let date = monday.checked_add(offset.days()).unwrap_or(monday);
+            let (day_from, day_to) = (self.start_of(date), self.start_of(date.tomorrow().unwrap_or(date)));
+            let mut list: Vec<&WorkRecord> = records.iter().copied().filter(|record| record.turns_between(day_from, day_to).next().is_some()).collect();
+            if list.is_empty() {
+                continue;
+            }
+            list.sort_by_key(|record| record.turns_between(day_from, day_to).next().map(|turn| turn.asked_at));
+            let place_of = |at: Timestamp| (day_from.duration_until(at).as_secs_f64() / 3600.0 - 8.0) / 11.0;
+            let strip = list
+                .iter()
+                .filter_map(|record| {
+                    let turns: Vec<_> = record.turns_between(day_from, day_to).collect();
+                    let begin = turns.first()?.asked_at;
+                    let end = turns.iter().filter_map(|turn| turn.finished_at).max().unwrap_or(begin);
+                    Some((place_of(begin).clamp(0.0, 1.0), place_of(end).clamp(0.0, 1.0).max(place_of(begin).clamp(0.0, 1.0) + 0.012), record.provider))
+                })
+                .collect();
+            let today = date == self.today();
+            let summary = self.summaries.days.get(&date);
+            let (mut lines, note): (Vec<DraftLine>, Option<String>) = match summary {
+                Some(summary) => {
+                    summaries.push(summary);
+                    let lines = summary.done.iter().map(|item| DraftLine { key: item.key.clone(), project: item.project.clone(), text: item.text.clone(), mark: self.summary_marks(date, item.key.as_deref()) }).collect();
+                    let note = if summary.edited { Some(pick("고침", "Edited").to_owned()) } else if today { Some(pick("오늘 초안", "Today's draft").to_owned()) } else { None };
+                    (lines, note)
                 }
+                None => {
+                    let lines = list
+                        .iter()
+                        .map(|record| {
+                            let commits = record.commits.iter().filter(|commit| commit.at >= day_from && commit.at < day_to).count();
+                            let pulls: Vec<u32> = record.pull_requests.iter().filter(|pull| pull.at >= day_from && pull.at < day_to).map(|pull| pull.number).collect();
+                            DraftLine { key: Some(record.key.clone()), project: record.project().to_owned(), text: record.title.clone(), mark: self.marks(commits, &pulls) }
+                        })
+                        .collect();
+                    (lines, Some(pick("정리 전", "Not summed up").to_owned()))
+                }
+            };
+            let more = lines.len().saturating_sub(4);
+            lines.truncate(4);
+            days.push(WeekDay { date, day: self.weekday(date.weekday()).to_owned(), label: self.month_day(date), lines, more, note, strip, today });
+        }
+        // What is left is what the latest summed-up day says is left.
+        let carried: Vec<LeftLine> = summaries
+            .iter()
+            .max_by_key(|summary| summary.date)
+            .map(|summary| summary.left.iter().map(|item| LeftLine { key: item.key.clone(), title: item.title.clone(), text: item.text.clone(), open: item.open }).collect())
+            .unwrap_or_default();
+        let mut kind_counts: BTreeMap<super::summary::Kind, usize> = BTreeMap::new();
+        for summary in &summaries {
+            for item in &summary.done {
+                *kind_counts.entry(item.kind).or_default() += 1;
             }
         }
-        let axis = HourAxis { now: None, now_text: String::new(), ..self.axis(&spans, monday) };
-        let mut rows = Vec::new();
-        for offset in 0..7 {
-            let day = monday.checked_add(offset.days()).unwrap_or(monday);
-            let today = day == self.today();
-            let day_axis = HourAxis { now: None, now_text: String::new(), ..axis.clone() };
-            let (bars, lanes) = self.bars(&records, day, &day_axis);
-            let now = today.then(|| {
-                let hours = self.start_of(day).duration_until(self.now).as_secs_f64() / 3600.0;
-                ((hours - axis.first as f64) / (axis.last - axis.first) as f64).clamp(0.0, 1.0)
-            });
-            rows.push(WeekRow { label: format!("{} {}", self.weekday(day.weekday()), day.day()), today, bars, lanes, now });
-        }
-        let mut by_project: BTreeMap<String, Vec<&WorkRecord>> = BTreeMap::new();
-        for record in &records {
-            by_project.entry(record.project().to_owned()).or_default().push(record);
-        }
-        let mut projects: Vec<ProjectCard> = by_project
-            .into_iter()
-            .map(|(name, mut list)| {
-                list.sort_by_key(|record| std::cmp::Reverse(record.turns_between(from, to).last().map(|turn| turn.asked_at)));
-                let commits = list.iter().map(|record| record.commits.iter().filter(|commit| commit.at >= from && commit.at < to).count()).sum();
-                let pulls: Vec<u32> = list.iter().flat_map(|record| record.pull_requests.iter().filter(|pull| pull.at >= from && pull.at < to).map(|pull| pull.number)).collect();
-                let lines = list
-                    .iter()
-                    .map(|record| {
-                        let last = record.turns_between(from, to).last().map(|turn| turn.asked_at).unwrap_or(from);
-                        let date = self.date(last);
-                        Line {
-                            key: record.key.clone(),
-                            provider: record.provider,
-                            title: record.title.clone(),
-                            callout: self.callout(record),
-                            pull_request: record.pull_requests.iter().find(|pull| pull.at >= from && pull.at < to).map(|pull| format!("PR #{}", pull.number)),
-                            when: format!("{} {}", self.weekday(date.weekday()), self.clock(last)),
-                        }
-                    })
-                    .collect();
-                ProjectCard { count: list.len(), marks: self.marks(commits, &pulls), name, lines }
-            })
-            .collect();
-        projects.sort_by_key(|project| std::cmp::Reverse(project.count));
+        let mut kinds: Vec<(String, usize)> = kind_counts.into_iter().map(|(kind, count)| (kind.name(self.language).to_owned(), count)).collect();
+        kinds.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        let ready = self.recap_ready(monday);
+        let open: HashSet<&str> = carried.iter().filter_map(|line| line.key.as_deref()).collect();
+        let metro = self.metro(monday, &records, &open, place.back == 0, ready);
+        let finished = records.iter().filter(|record| self.finished_on(record, from, to)).count();
+        let cards = if finished > 0 { self.recap(place).cards.len() } else { 0 };
+        let recap = (finished > 0).then(|| RecapEntry {
+            title: match self.language {
+                Language::Korean => format!("{} 회고 카드\n{cards}장", if place.back == 0 { "이번 주" } else { "이 주" }),
+                Language::English => format!("This week's recap\nin {cards} cards"),
+            },
+            note: if ready { pick("금요일 18:00 기준", "As of Friday 18:00") } else { pick("금요일 18:00 완성 예정", "Ready Friday 18:00") }.to_owned(),
+            button: if ready { pick("넘겨 보기", "Flip through") } else { pick("지금까지 보기", "See so far") }.to_owned(),
+            count: finished,
+        });
         let current = place.back == 0;
         WeekView {
             masthead: Masthead {
@@ -715,13 +1007,162 @@ impl Journal<'_> {
                 } else {
                     format!("{}–{}", self.month_name(monday.month()), self.month_name(sunday.month()))
                 },
-                bottom: if current { self.language.pick("이번 주", "This week").to_owned() } else { monday.year().to_string() },
-                pills: self.tally_pills(&records, from, to, true),
+                bottom: if current { pick("이번 주", "This week").to_owned() } else { monday.year().to_string() },
+                pills: Vec::new(),
+                stats: self.stats(&records, from, to, (!last_records.is_empty()).then_some(before)),
                 can_go_forward: place.back > 0,
             },
-            axis,
-            rows,
-            projects,
+            monday,
+            title: if current { pick("이번 주 정리", "This week") } else { pick("이 주 정리", "That week") }.to_owned(),
+            days,
+            recap,
+            carried_title: if current && !ready { pick("남은 일", "Left") } else { pick("다음 주로 넘어가는 일", "Carried to next week") }.to_owned(),
+            carried,
+            kinds,
+            report: if summaries.is_empty() { String::new() } else { self.weekly_report(monday, &summaries) },
+            metro,
+        }
+    }
+
+    /// The week on screen as six cards: the cover, what got done, what kind of work, the busiest day, the
+    /// longest task and what carries over. The kind card needs summaries and is left out without them.
+    pub fn recap(&self, place: &JournalPlace) -> RecapView {
+        let monday = self.monday(place.back);
+        let sunday = monday.checked_add(6.days()).unwrap_or(monday);
+        let (from, to, records) = self.week_records(monday);
+        let pick = |korean: &'static str, english: &'static str| self.language.pick(korean, english);
+        let this = if place.back == 0 { pick("이번 주", "This week") } else { pick("이 주", "That week") };
+        let projects: std::collections::BTreeSet<&str> = records.iter().map(|record| record.project()).collect();
+        let mut cards = vec![RecapCard::Cover {
+            label: match self.language {
+                Language::Korean => format!("{this} 회고"),
+                Language::English => format!("{this} in review"),
+            },
+            title: self.week_name(monday),
+            span: match self.language {
+                Language::Korean => format!("{}일 – {}일", monday.day(), sunday.day()),
+                Language::English => format!("{} – {}", self.month_day(monday), self.month_day(sunday)),
+            },
+            chips: vec![
+                format!("{} {}", pick("작업", "Tasks"), records.len()),
+                format!("{} {}", pick("프로젝트", "Projects"), projects.len()),
+            ],
+        }];
+        let finished = records.iter().filter(|record| self.finished_on(record, from, to)).count();
+        let waiting = records.iter().filter(|record| self.callout(record) == Some(Callout::Asking)).count();
+        let (last_from, last_to, last_records) = self.week_records(monday.checked_sub(7.days()).unwrap_or(monday));
+        let last_finished = last_records.iter().filter(|record| self.finished_on(record, last_from, last_to)).count();
+        let versus = match (self.language, finished.cmp(&last_finished)) {
+            (_, _) if last_records.is_empty() => String::new(),
+            (Language::Korean, std::cmp::Ordering::Greater) => format!("지난주보다 {}개 많아요", finished - last_finished),
+            (Language::Korean, std::cmp::Ordering::Less) => format!("지난주보다 {}개 적어요", last_finished - finished),
+            (Language::Korean, std::cmp::Ordering::Equal) => "지난주와 같아요".to_owned(),
+            (Language::English, std::cmp::Ordering::Greater) => format!("{} more than last week", finished - last_finished),
+            (Language::English, std::cmp::Ordering::Less) => format!("{} fewer than last week", last_finished - finished),
+            (Language::English, std::cmp::Ordering::Equal) => "Same as last week".to_owned(),
+        };
+        cards.push(RecapCard::Finished {
+            label: match self.language {
+                Language::Korean => format!("{this} 끝낸 일"),
+                Language::English => format!("Finished {}", this.to_lowercase()),
+            },
+            count: finished,
+            versus,
+            waiting,
+            note: match (self.language, waiting) {
+                (_, 0) => String::new(),
+                (Language::Korean, 1) => "1개는 답변 필요".to_owned(),
+                (Language::Korean, n) => format!("{n}개는 답변 필요"),
+                (Language::English, 1) => "One is waiting on your answer".to_owned(),
+                (Language::English, n) => format!("{n} are waiting on your answer"),
+            },
+        });
+        let mut kind_counts: BTreeMap<super::summary::Kind, usize> = BTreeMap::new();
+        for offset in 0..7 {
+            if let Some(summary) = monday.checked_add(offset.days()).ok().and_then(|date| self.summaries.days.get(&date)) {
+                for item in &summary.done {
+                    *kind_counts.entry(item.kind).or_default() += 1;
+                }
+            }
+        }
+        if !kind_counts.is_empty() {
+            let total: usize = kind_counts.values().sum();
+            let mut kinds: Vec<(String, usize)> = kind_counts.into_iter().map(|(kind, count)| (kind.name(self.language).to_owned(), count)).collect();
+            kinds.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+            kinds.truncate(5);
+            cards.push(RecapCard::Kind {
+                label: pick("가장 많이 한 일", "Most of the work").to_owned(),
+                top: kinds[0].0.clone(),
+                of: match self.language {
+                    Language::Korean => format!("{total}개 중 {}개", kinds[0].1),
+                    Language::English => format!("{} of {total}", kinds[0].1),
+                },
+                kinds,
+            });
+        }
+        // The busiest weekday by AI time; the weekend only when there was work on it.
+        let mut per_day = Vec::new();
+        for offset in 0..7 {
+            let date = monday.checked_add(offset.days()).unwrap_or(monday);
+            let (day_from, day_to) = (self.start_of(date), self.start_of(date.tomorrow().unwrap_or(date)));
+            let list: Vec<&WorkRecord> = records.iter().copied().filter(|record| record.turns_between(day_from, day_to).next().is_some()).collect();
+            per_day.push((date, self.worked(&list, day_from, day_to), list.len()));
+        }
+        if per_day[5].2 + per_day[6].2 == 0 {
+            per_day.truncate(5);
+        }
+        if let Some((busiest, worked, count)) = per_day.iter().copied().max_by_key(|(_, worked, _)| *worked).filter(|(_, worked, _)| worked.is_positive()) {
+            let peak = worked.as_secs_f64();
+            cards.push(RecapCard::Busiest {
+                label: pick("가장 바빴던 날", "The busiest day").to_owned(),
+                day: self.weekday_long(busiest.weekday()),
+                note: match self.language {
+                    Language::Korean => format!("AI 작업 {} · 작업 {count}", self.duration(worked)),
+                    Language::English => format!("{} of AI work · {count} tasks", self.duration(worked)),
+                },
+                days: per_day.iter().map(|(date, worked, _)| (self.weekday(date.weekday()).to_owned(), worked.as_secs_f64() / peak, *date == busiest)).collect(),
+            });
+        }
+        if let Some((record, worked)) = records.iter().map(|record| (*record, self.worked(&[record], from, to))).max_by_key(|(_, worked)| *worked).filter(|(_, worked)| worked.is_positive()) {
+            let turns: Vec<_> = record.turns_between(from, to).collect();
+            let begin = turns.first().map(|turn| turn.asked_at).unwrap_or(from);
+            let end = turns.iter().filter_map(|turn| turn.finished_at).max().unwrap_or(begin);
+            let same_day = self.date(begin) == self.date(end);
+            let day_from = self.start_of(self.date(begin));
+            let place_of = |at: Timestamp| ((day_from.duration_until(at).as_secs_f64() / 3600.0 - 8.0) / 11.0).clamp(0.0, 1.0);
+            cards.push(RecapCard::Longest {
+                label: pick("가장 오래 맡긴 작업", "The longest task").to_owned(),
+                provider: record.provider,
+                project: record.project().to_owned(),
+                title: record.title.clone(),
+                time: self.duration_parts(worked),
+                span: if same_day {
+                    format!("{} {} – {}", self.weekday(self.date(begin).weekday()), self.clock(begin), self.clock(end))
+                } else {
+                    format!("{} – {}", self.weekday(self.date(begin).weekday()), self.weekday(self.date(end).weekday()))
+                },
+                bar: same_day.then(|| (place_of(begin), place_of(end).max(place_of(begin) + 0.02))),
+            });
+        }
+        let latest = (0..7).rev().filter_map(|offset| monday.checked_add(offset.days()).ok()).find_map(|date| self.summaries.days.get(&date));
+        let items: Vec<(String, String, bool)> = latest.map(|summary| summary.left.iter().map(|item| (item.title.clone(), item.text.clone(), item.open == super::summary::Open::Asking)).collect()).unwrap_or_default();
+        cards.push(RecapCard::Carried {
+            label: pick("다음 주로 넘어가는 일", "Carried to next week").to_owned(),
+            count: items.len(),
+            items,
+            save: pick("이미지로 저장", "Save as image").to_owned(),
+        });
+        let index = place.recap.unwrap_or(0).min(cards.len() - 1);
+        let count = cards.len();
+        RecapView {
+            position: format!("{} / {}", index + 1, cards.len()),
+            cards,
+            index,
+            save_one: pick("이 카드 저장", "Save this card").to_owned(),
+            save_all: match self.language {
+                Language::Korean => format!("{}장을 한 장으로 저장", ["", "한", "두", "세", "네", "다섯", "여섯"].get(count).copied().unwrap_or("모든")),
+                Language::English => "Save all as one image".to_owned(),
+            },
         }
     }
 
@@ -807,6 +1248,7 @@ impl Journal<'_> {
                 top: self.language.pick("월", "").to_owned(),
                 bottom: first.year().to_string() + self.language.pick("년", ""),
                 pills: self.tally_pills(&records, from, to, true),
+                stats: Vec::new(),
                 can_go_forward: place.back > 0,
             },
             weekdays: match self.language {
@@ -897,6 +1339,7 @@ impl Journal<'_> {
                 .into_iter()
                 .flatten()
                 .collect(),
+                stats: Vec::new(),
                 can_go_forward: false,
             },
             heatmap,
@@ -1085,6 +1528,19 @@ pub struct Words {
     pub loading: &'static str,
     pub empty: &'static str,
     pub more_lines: &'static str,
+    pub edit: &'static str,
+    pub copy_report: &'static str,
+    pub redo: &'static str,
+    pub left: &'static str,
+    pub tasks_today: &'static str,
+    pub tasks_that_day: &'static str,
+    pub waiting: &'static str,
+    pub copy_week: &'static str,
+    pub week_summary: &'static str,
+    pub week_note: &'static str,
+    pub carried: &'static str,
+    pub kinds: &'static str,
+    pub no_summary: &'static str,
 }
 
 impl Words {
@@ -1114,6 +1570,19 @@ impl Words {
             loading: pick("기록을 읽는 중…", "Reading records…"),
             empty: pick("이 기간에 맡긴 작업이 없어요", "No tasks in this period"),
             more_lines: pick("외 {}개", "+{} more"),
+            edit: pick("고치기", "Edit"),
+            copy_report: pick("보고서로 복사", "Copy as report"),
+            redo: pick("다시 정리", "Sum up again"),
+            left: pick("남은 일", "Left"),
+            tasks_today: pick("오늘 맡긴 일", "Today's tasks"),
+            tasks_that_day: pick("이날 맡긴 일", "Tasks that day"),
+            waiting: pick("답변 대기 시간", "Waiting for an answer"),
+            copy_week: pick("주간 보고로 복사", "Copy weekly report"),
+            week_summary: pick("이번 주 정리", "This week"),
+            week_note: pick("날짜별 정리예요. 줄을 누르면 그 작업이 열려요.", "Each day's summary in order. Press a line to open its task."),
+            carried: pick("다음 주로 넘어가는 일", "Carried to next week"),
+            kinds: pick("일의 종류", "Kinds of work"),
+            no_summary: pick("정리 전", "Not summed up"),
         }
     }
 }
@@ -1136,6 +1605,8 @@ pub struct Screen {
     pub usage: Vec<MiniBattery>,
     pub body: Body,
     pub detail: Option<DetailView>,
+    /// The week's recap cards, while they are open.
+    pub recap: Option<RecapView>,
     pub log: String,
     /// No records have been read yet.
     pub loading: bool,
@@ -1161,6 +1632,7 @@ impl Journal<'_> {
             usage,
             body,
             detail: place.open.as_deref().and_then(|key| self.detail(key)),
+            recap: (place.tab == JournalTab::Week && place.recap.is_some()).then(|| self.recap(place)),
             log: self.log(place),
             loading,
             words: Words::new(self.language),

@@ -5,20 +5,24 @@
 use super::kit::{self, Weight, color, ns, paint, rect};
 use super::marks::draw_app_mark;
 use errand_core::avatar::Avatar;
-use errand_core::journal::view::{Bar, Body, Callout, CalendarCell, DayView, DetailView, HourAxis, JournalTab, Masthead, MonthView, ReportSpan, ReportView, Screen, Translate, WeekView, Words, translate_label};
+use errand_core::journal::metro::{COLOURED_LINES, MetroLine, MetroView};
+use errand_core::journal::summary::Open;
+use errand_core::journal::view::{Body, Callout, CalendarCell, DayView, DetailView, Draft, HourAxis, JournalTab, Masthead, MonthView, RecapCard, RecapView, ReportSpan, ReportView, Screen, Stat, Translate, WeekView, Words, translate_label};
+use jiff::civil::Date;
 use errand_core::model::Msg;
 use errand_core::ports::Poster;
 use errand_core::theme::{self, Paint, Rgb};
 use errand_core::{Language, Provider};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
+    NSAffineTransformNSAppKitAdditions, NSBitmapImageFileType, NSBitmapImageRep, NSDeviceRGBColorSpace, NSModalResponseOK, NSSavePanel,
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSApplication, NSBackingStoreType, NSBezierPath, NSColor, NSCompositingOperation, NSEvent,
-    NSGraphicsContext, NSLineBreakMode, NSMutableParagraphStyle, NSScrollView, NSShadow, NSStringDrawing, NSStringDrawingOptions, NSStringNSExtendedStringDrawing, NSTextAlignment, NSView, NSWindow, NSWindowDelegate,
+    NSGraphicsContext, NSLineBreakMode, NSLineCapStyle, NSLineJoinStyle, NSMutableParagraphStyle, NSScrollView, NSShadow, NSStringDrawing, NSStringDrawingOptions, NSStringNSExtendedStringDrawing, NSTextAlignment, NSView, NSWindow, NSWindowDelegate,
     NSWindowStyleMask, NSWindowTitleVisibility,
 };
-use objc2_foundation::{NSAttributedStringKey, NSDictionary, NSNotification, NSNumber, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize};
+use objc2_foundation::{NSAffineTransform, NSAttributedStringKey, NSDictionary, NSNotification, NSNumber, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize};
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
@@ -38,7 +42,6 @@ const FAINT: Rgb = rgb(0.706, 0.729, 0.741);
 const CODEX: Rgb = rgb(0.22, 0.55, 0.95);
 const CLAUDE: Rgb = rgb(0.80, 0.42, 0.32);
 const ASKING_FILL: Rgb = rgb(0.984, 0.961, 0.929);
-const NEW_FILL: Rgb = rgb(0.933, 0.957, 0.988);
 
 fn service(provider: Provider) -> Rgb {
     match provider {
@@ -52,7 +55,6 @@ fn service(provider: Provider) -> Rgb {
 enum Hit {
     Tab(JournalTab),
     Step(i64),
-    Project(Option<String>),
     Span(ReportSpan),
     Open(String),
     Close,
@@ -60,6 +62,11 @@ enum Hit {
     OpenTask(String),
     Translate(String, Vec<String>, Language),
     Original(bool),
+    Summarize(Date),
+    EditSummary(Date),
+    Recap(Option<usize>),
+    /// Saves one recap card, or all of them, as an image; the window does this itself.
+    SaveRecap(Option<usize>),
 }
 
 impl Hit {
@@ -67,7 +74,6 @@ impl Hit {
         match self {
             Hit::Tab(tab) => Msg::JournalTab(tab),
             Hit::Step(step) => Msg::JournalStep(step),
-            Hit::Project(project) => Msg::JournalProject(project),
             Hit::Span(span) => Msg::JournalSpan(span),
             Hit::Open(key) => Msg::JournalOpen(Some(key)),
             Hit::Close => Msg::JournalOpen(None),
@@ -75,6 +81,10 @@ impl Hit {
             Hit::OpenTask(url) => Msg::JournalOpenTask(url),
             Hit::Translate(key, texts, language) => Msg::JournalTranslate { key, texts, language },
             Hit::Original(original) => Msg::JournalOriginal(original),
+            Hit::Summarize(date) => Msg::JournalSummarize(date),
+            Hit::EditSummary(date) => Msg::JournalEditSummary(date),
+            Hit::Recap(card) => Msg::JournalRecap(card),
+            Hit::SaveRecap(_) => Msg::Redraw,
         }
     }
 }
@@ -225,16 +235,6 @@ fn chip_colors(callout: Callout) -> (Paint, Rgb, Rgb) {
     }
 }
 
-/// A card's fill and edge, as the widget draws the same state.
-fn card_colors(callout: Option<Callout>) -> (Rgb, Paint, f64) {
-    match callout {
-        Some(Callout::Asking) => (ASKING_FILL, theme::ASKING.alpha(0.55), 1.5),
-        Some(Callout::New) => (NEW_FILL, theme::NEW_RESULT.alpha(0.55), 1.5),
-        Some(Callout::Running) => (theme::WHITE, theme::RUNNING_BRIGHT.alpha(0.7), 1.25),
-        None => (theme::WHITE, EDGE.alpha(1.0), 1.0),
-    }
-}
-
 fn masthead(pen: &mut Pen, masthead: &Masthead, screen: &Screen, spans: bool) {
     let big = kit::font(104.0, Weight::Bold);
     let baseline = 100.0;
@@ -267,6 +267,10 @@ fn masthead(pen: &mut Pen, masthead: &Masthead, screen: &Screen, spans: bool) {
             }
         }
     }
+    if !masthead.stats.is_empty() {
+        stats(pen, &masthead.stats, PAD + WIDTH, 100.0);
+        return;
+    }
     // The person's character closes the line, as on the widget's profile row.
     let face = rect(PAD + WIDTH - 64.0, 40.0, 64.0, 64.0);
     pen.round(face, 32.0, Some(theme::HEALTHY.alpha(0.14)), None);
@@ -280,6 +284,27 @@ fn masthead(pen: &mut Pen, masthead: &Masthead, screen: &Screen, spans: bool) {
         right -= width;
         pen.capsule(right, 79.0, 24.0, Some(pill.icon), &pill.text, 12.0, fill, ink, icon_ink);
         right -= 6.0;
+    }
+}
+
+/// Counts at the end of the date line, right-aligned, their figures' baseline at `baseline`.
+fn stats(pen: &Pen, stats: &[Stat], right: f64, baseline: f64) {
+    let mut x = right;
+    for stat in stats.iter().rev() {
+        let figure: f64 = stat.parts.iter().map(|part| text_width(&part.text, if part.small { 15.0 } else { 26.0 }, Weight::Bold)).sum();
+        let label = text_width(&stat.label, 11.5, Weight::Semibold);
+        let width = figure.max(label);
+        x -= width;
+        let ink = if stat.asking { theme::ASKING } else { theme::INK };
+        pen.text(&stat.label, x, baseline - 50.0, 11.5, Weight::Semibold, if stat.asking { theme::ASKING.alpha(1.0) } else { theme::MUTED.alpha(1.0) });
+        let mut cursor = x;
+        for part in &stat.parts {
+            let size = if part.small { 15.0 } else { 26.0 };
+            // Units sit on the figures' baseline.
+            let top = baseline - kit::font(size, Weight::Bold).ascender() - 4.0;
+            cursor += pen.text(&part.text, cursor, top, size, Weight::Bold, ink.alpha(1.0));
+        }
+        x -= 28.0;
     }
 }
 
@@ -322,234 +347,960 @@ fn hour_labels(pen: &Pen, axis: &HourAxis, x: f64, width: f64, y: f64) {
     }
 }
 
-/// A stretch of work: the service's colour when finished, the live state's outline while it runs.
-fn bar(pen: &mut Pen, item: &Bar, frame: NSRect, with_icon: bool) {
-    match item.callout {
-        Some(Callout::Running) => pen.round(frame, 6.0, Some(theme::WHITE.alpha(1.0)), Some((theme::RUNNING_BRIGHT.alpha(0.7), 1.25))),
-        Some(Callout::Asking) => pen.round(frame, 6.0, Some(ASKING_FILL.alpha(1.0)), Some((theme::ASKING.alpha(0.55), 1.5))),
-        _ => pen.round(frame, 6.0, Some(service(item.provider).alpha(0.18)), Some((service(item.provider).alpha(0.5), 1.0))),
-    }
-    if with_icon && frame.size.width >= 24.0 {
-        let icon = (frame.size.height - 12.0).min(16.0);
-        pen.app(item.provider, rect(frame.origin.x + 5.0, frame.origin.y + (frame.size.height - icon) / 2.0, icon, icon));
-    }
-    pen.hit(frame, Hit::Open(item.key.clone()));
-}
-
 fn day(pen: &mut Pen, view: &DayView, screen: &Screen) -> f64 {
     masthead(pen, &view.masthead, screen, false);
     let words = &screen.words;
-    // The day, hour by hour.
+    // The day, hour by hour: the record itself, large. Two lanes or more when work overlaps.
     let top = 120.0;
-    let lane = 46.0;
-    let plot = top + 12.0 + 18.0 + 8.0;
-    let lanes_top = plot + 20.0;
-    let height = 12.0 + 18.0 + 8.0 + 20.0 + view.lanes as f64 * lane + 22.0 + 12.0;
-    pen.panel(rect(PAD, top, WIDTH, height), 16.0, theme::WHITE, EDGE.alpha(1.0), 1.0);
-    pen.text(words.by_hour, PAD + 18.0, top + 12.0, 12.5, Weight::Semibold, theme::INK.alpha(1.0));
-    legend(pen, PAD + WIDTH - 18.0, top + 12.0, false);
+    let lane = 50.0;
+    let plot = top + 14.0 + 18.0 + 10.0;
+    let lanes_top = plot + 22.0;
+    let height = 14.0 + 18.0 + 10.0 + 22.0 + view.lanes as f64 * lane + 26.0 + 14.0;
+    pen.panel(rect(PAD, top, WIDTH, height), 18.0, theme::WHITE, EDGE.alpha(1.0), 1.0);
+    pen.text(words.by_hour, PAD + 18.0, top + 14.0, 13.0, Weight::Bold, theme::INK.alpha(1.0));
+    let mut right = PAD + WIDTH - 18.0;
+    if view.bars.iter().any(|bar| bar.waiting.is_some()) {
+        let words_width = text_width(words.waiting, 11.5, Weight::Regular);
+        right -= words_width;
+        pen.text(words.waiting, right, top + 15.0, 11.5, Weight::Regular, theme::MUTED.alpha(1.0));
+        right -= 20.0;
+        dashed(pen, right, right + 14.0, top + 23.0, theme::ASKING.alpha(0.75));
+        right -= 16.0;
+    }
+    legend(pen, right, top + 14.0, false);
     let (x, width) = (PAD + 18.0, WIDTH - 36.0);
     hour_labels(pen, &view.axis, x, width, plot);
     let span = (view.axis.last - view.axis.first) as f64;
+    let grid_height = view.lanes as f64 * lane + 4.0;
     for hour in view.axis.first..=view.axis.last {
-        pen.fill(rect(x + (hour - view.axis.first) as f64 / span * width, plot + 16.0, 1.0, view.lanes as f64 * lane + 6.0), rgb(0.937, 0.937, 0.937).alpha(1.0));
+        pen.fill(rect(x + (hour - view.axis.first) as f64 / span * width, plot + 18.0, 1.0, grid_height), rgb(0.941, 0.945, 0.949).alpha(1.0));
     }
-    // The present goes under the work, so a label that crosses it stays readable.
+    // The present goes under the work, so names that cross it stay readable.
     let now_place = view.axis.now.map(|now| x + now * width);
     if let Some(place) = now_place {
-        pen.fill(rect(place - 0.75, plot + 14.0, 1.5, view.lanes as f64 * lane + 10.0), theme::INK.alpha(1.0));
+        pen.fill(rect(place - 0.75, plot + 16.0, 1.5, grid_height + 6.0), theme::INK.alpha(1.0));
     }
     for item in &view.bars {
         let left = x + item.start * width;
-        let frame = rect(left, lanes_top + item.lane as f64 * lane, ((item.end - item.start) * width).max(8.0), 28.0);
+        let frame = rect(left, lanes_top + item.lane as f64 * lane, ((item.end - item.start) * width).max(14.0), 30.0);
         let running = item.callout == Some(Callout::Running);
-        bar(pen, item, frame, !running);
-        let label_width = text_width(&item.label, 11.0, Weight::Semibold);
-        let inside = label_width + 34.0 <= frame.size.width;
         let ink = match item.callout {
             Some(Callout::Running) => theme::RUNNING,
             Some(Callout::Asking) => theme::ASKING,
             _ => theme::INK,
         };
-        if running {
-            pen.icon("loader-circle", rect(frame.origin.x + 7.0, frame.origin.y + 8.0, 12.0, 12.0), theme::RUNNING_BRIGHT);
+        if let Some(until) = item.waiting {
+            dashed(pen, frame.origin.x + frame.size.width, x + until * width, frame.origin.y + 15.0, theme::ASKING.alpha(0.75));
         }
+        match item.callout {
+            Some(Callout::Running) => pen.round(frame, 8.0, Some(theme::WHITE.alpha(1.0)), Some((theme::RUNNING_BRIGHT.alpha(0.7), 1.25))),
+            Some(Callout::Asking) => pen.round(frame, 8.0, Some(ASKING_FILL.alpha(1.0)), Some((theme::ASKING.alpha(0.55), 1.5))),
+            _ => pen.round(frame, 8.0, Some(service(item.provider).alpha(0.18)), Some((service(item.provider).alpha(0.55), 1.0))),
+        }
+        if running {
+            pen.icon("loader-circle", rect(frame.origin.x + 7.0, frame.origin.y + 9.0, 12.0, 12.0), theme::RUNNING_BRIGHT);
+        } else if frame.size.width >= 24.0 {
+            pen.app(item.provider, rect(frame.origin.x + 6.0, frame.origin.y + 7.0, 16.0, 16.0));
+        }
+        pen.hit(frame, Hit::Open(item.key.clone()));
+        let label_width = text_width(&item.label, 12.0, Weight::Bold);
         let next = view.bars.iter().filter(|other| other.lane == item.lane && other.start > item.start).map(|other| x + other.start * width).fold(x + width, f64::min);
-        // Work still running ends at the present, and nothing is drawn after it yet: its name goes there.
-        let after = frame.origin.x + frame.size.width;
-        let after = now_place.map_or(after, |place| after.max(place)) + 8.0;
-        let room_after = (next - after - 4.0).min(label_width + 2.0);
-        if inside {
-            let start = frame.origin.x + if running { 24.0 } else { 27.0 };
-            pen.text_in(&item.label, rect(start, frame.origin.y + 6.0, frame.size.width - (start - frame.origin.x) - 6.0, 16.0), 11.0, Weight::Semibold, ink.alpha(1.0), NSTextAlignment::Left, false);
-        } else if running && room_after >= label_width.min(60.0) {
-            pen.text_in(&item.label, rect(after, frame.origin.y + 6.0, room_after, 16.0), 11.0, Weight::Semibold, ink.alpha(1.0), NSTextAlignment::Left, false);
+        if label_width + 34.0 <= frame.size.width {
+            pen.text_in(&item.label, rect(frame.origin.x + 28.0, frame.origin.y + 7.0, frame.size.width - 34.0, 17.0), 12.0, Weight::Bold, ink.alpha(1.0), NSTextAlignment::Left, false);
         } else {
-            // Below the bar, as far as the next bar in its lane allows.
-            let room = (next - frame.origin.x - 8.0).min(150.0);
+            // Below the bar, as far as the next bar in its lane allows; the present line gives way.
+            let room = (next - frame.origin.x - 8.0).min(180.0);
             if room >= 28.0 {
-                let label = rect(frame.origin.x, frame.origin.y + 31.0, room.min(label_width + 2.0), 15.0);
+                let label = rect(frame.origin.x, frame.origin.y + 33.0, room.min(label_width + 2.0), 16.0);
                 if now_place.is_some_and(|place| place > label.origin.x - 2.0 && place < label.origin.x + label.size.width + 2.0) {
                     pen.fill(rect(label.origin.x - 3.0, label.origin.y, label.size.width + 6.0, label.size.height), theme::WHITE.alpha(1.0));
                 }
-                pen.text_in(&item.label, label, 11.0, Weight::Medium, ink.alpha(1.0), NSTextAlignment::Left, false);
+                pen.text_in(&item.label, label, 11.5, Weight::Semibold, ink.alpha(1.0), NSTextAlignment::Left, false);
             }
         }
     }
     if let Some(place) = now_place {
-        let words_width = text_width(&view.axis.now_text, 10.5, Weight::Semibold);
-        let capsule = rect((place - words_width / 2.0 - 7.0).clamp(x, x + width - words_width - 14.0), lanes_top + view.lanes as f64 * lane + 2.0, words_width + 14.0, 18.0);
-        pen.round(capsule, 9.0, Some(theme::INK.alpha(1.0)), None);
-        pen.text(&view.axis.now_text, capsule.origin.x + 7.0, capsule.origin.y + 2.0, 10.5, Weight::Semibold, theme::WHITE.alpha(1.0));
+        let words_width = text_width(&view.axis.now_text, 11.0, Weight::Bold);
+        let capsule = rect((place - words_width / 2.0 - 8.0).clamp(x, x + width - words_width - 16.0), lanes_top + view.lanes as f64 * lane + 2.0, words_width + 16.0, 20.0);
+        pen.round(capsule, 10.0, Some(theme::INK.alpha(1.0)), None);
+        pen.text(&view.axis.now_text, capsule.origin.x + 8.0, capsule.origin.y + 3.0, 11.0, Weight::Bold, theme::WHITE.alpha(1.0));
     }
-    // Every task in one grid, newest first; projects filter it.
-    let mut y = top + height + 16.0;
-    let mut x = PAD;
-    for (project, name, count) in &view.filters {
-        let selected = *project == screen.place.project;
-        let label = format!("{name}  {count}");
-        let words_width = text_width(&label, 12.0, if selected { Weight::Semibold } else { Weight::Medium });
-        let frame = rect(x, y, words_width + 24.0, 26.0);
-        if selected {
-            pen.round(frame, 13.0, Some(theme::INK.alpha(0.09)), None);
-        } else {
-            pen.round(frame, 13.0, Some(theme::WHITE.alpha(1.0)), Some((rgb(0.84, 0.84, 0.84).alpha(1.0), 1.0)));
-        }
-        let name_width = pen.text(name, x + 12.0, y + 5.0, 12.0, if selected { Weight::Semibold } else { Weight::Medium }, theme::INK.alpha(1.0));
-        pen.text(&count.to_string(), x + 12.0 + name_width + 6.0, y + 5.0, 12.0, Weight::Medium, theme::MUTED.alpha(1.0));
-        pen.hit(frame, Hit::Project(project.clone()));
-        x += frame.size.width + 6.0;
-    }
-    y += 36.0;
-    if view.cards.is_empty() {
-        let note = if screen.loading { words.loading } else { words.empty };
-        pen.text_in(note, rect(PAD, y + 30.0, WIDTH, 20.0), 13.0, Weight::Regular, theme::MUTED.alpha(1.0), NSTextAlignment::Center, false);
-        return y + 80.0;
-    }
-    let card_width = ((WIDTH - 20.0) / 3.0).floor();
-    for (index, card) in view.cards.iter().enumerate() {
-        let frame = rect(PAD + (index % 3) as f64 * (card_width + 10.0), y + (index / 3) as f64 * 122.0, card_width, 112.0);
-        task_card(pen, card, frame);
-    }
-    y + view.cards.len().div_ceil(3) as f64 * 122.0 + 14.0
+
+    // Below: the day's summary as the character hands it over, beside the day's tasks.
+    let y = top + height + 16.0;
+    let side = 392.0;
+    let draft_width = WIDTH - side - 16.0;
+    let draft_height = draft(pen, view, screen, rect(PAD, y, draft_width, 0.0));
+    let side_height = day_side(pen, view, screen, rect(PAD + draft_width + 16.0, y, side, 0.0));
+    y + draft_height.max(side_height) + 24.0
 }
 
-fn task_card(pen: &mut Pen, card: &errand_core::journal::view::Card, frame: NSRect) {
-    let (fill, edge, edge_width) = card_colors(card.callout);
-    pen.panel(frame, 16.0, fill, edge, edge_width);
-    let (x, y, width) = (frame.origin.x + 14.0, frame.origin.y + 11.0, frame.size.width - 28.0);
-    pen.app(card.provider, rect(x, y + 1.0, 18.0, 18.0));
-    let mut title_end = x + width;
-    if let Some(callout) = card.callout {
-        let (fill, ink, icon_ink) = chip_colors(callout);
-        let chip = Pen::measuring().capsule(0.0, 0.0, 19.0, Some(callout.state().icon()), callout.word(Language::Korean), 11.0, fill, ink, icon_ink);
-        let word = callout_word(card, callout);
-        let chip = chip.max(Pen::measuring().capsule(0.0, 0.0, 19.0, Some(callout.state().icon()), word, 11.0, fill, ink, icon_ink));
-        title_end -= chip;
-        pen.capsule(title_end, y + 1.0, 19.0, Some(callout.state().icon()), word, 11.0, fill, ink, icon_ink);
-        title_end -= 8.0;
+/// A dashed line across, as the wait for the person's answer is drawn.
+fn dashed(pen: &Pen, from: f64, to: f64, y: f64, ink: Paint) {
+    if !pen.draw || to <= from {
+        return;
     }
-    pen.text_in(&card.title, rect(x + 25.0, y + 1.0, title_end - x - 25.0, 19.0), 13.5, Weight::Semibold, theme::INK.alpha(1.0), NSTextAlignment::Left, false);
-    pen.text_in(&format!("“{}”", card.ask), rect(x, y + 25.0, width, 18.0), 12.5, Weight::Regular, theme::INK.alpha(1.0), NSTextAlignment::Left, false);
-    let (ink, weight, icon) = match card.callout {
-        Some(Callout::Asking) => (theme::ASKING, Weight::Semibold, "corner-down-right"),
-        Some(Callout::Running) => (theme::RUNNING, Weight::Semibold, "timer"),
-        _ if card.line.starts_with("작업 중") || card.line.starts_with("Working") => (theme::RUNNING, Weight::Semibold, "timer"),
-        _ => (theme::MUTED, Weight::Regular, "corner-down-right"),
+    let path = NSBezierPath::bezierPath();
+    path.moveToPoint(NSPoint::new(from, y));
+    path.lineToPoint(NSPoint::new(to, y));
+    path.setLineWidth(1.5);
+    let pattern: [f64; 2] = [4.0, 3.0];
+    unsafe { path.setLineDash_count_phase(pattern.as_ptr() as *mut f64, 2, 0.0) };
+    paint(ink).setStroke();
+    path.stroke();
+}
+
+/// The character's face in its soft circle.
+fn face(pen: &Pen, screen: &Screen, frame: NSRect) {
+    pen.round(frame, frame.size.width / 2.0, Some(theme::HEALTHY.alpha(0.16)), None);
+    if pen.draw {
+        kit::draw_avatar(&Avatar::named(&screen.avatar), frame);
+    }
+}
+
+/// A white card with a tail pointing left at the character, as a speech bubble. Draws nothing when measuring.
+fn bubble(pen: &Pen, frame: NSRect) {
+    pen.panel(frame, 20.0, theme::WHITE, EDGE.alpha(1.0), 1.0);
+    if !pen.draw {
+        return;
+    }
+    let (x, y) = (frame.origin.x, frame.origin.y + 24.0);
+    let tail = NSBezierPath::bezierPath();
+    tail.moveToPoint(NSPoint::new(x + 1.0, y - 8.0));
+    tail.lineToPoint(NSPoint::new(x - 8.0, y));
+    tail.lineToPoint(NSPoint::new(x + 1.0, y + 8.0));
+    tail.closePath();
+    color(theme::WHITE).setFill();
+    tail.fill();
+    let edge = NSBezierPath::bezierPath();
+    edge.moveToPoint(NSPoint::new(x + 0.5, y - 8.0));
+    edge.lineToPoint(NSPoint::new(x - 8.0, y));
+    edge.lineToPoint(NSPoint::new(x + 0.5, y + 8.0));
+    edge.setLineWidth(1.0);
+    paint(EDGE.alpha(1.0)).setStroke();
+    edge.stroke();
+}
+
+/// A rounded button with an optional icon; returns its width. `dark` is the main action.
+#[allow(clippy::too_many_arguments)]
+fn button(pen: &mut Pen, right: f64, y: f64, icon: Option<&str>, words: &str, dark: bool, hit: Hit) -> f64 {
+    let words_width = text_width(words, 12.5, Weight::Bold);
+    let width = words_width + if icon.is_some() { 47.0 } else { 30.0 };
+    let frame = rect(right - width, y, width, 32.0);
+    let (fill, ink) = if dark { (theme::INK.alpha(1.0), theme::WHITE) } else { (rgb(0.933, 0.941, 0.949).alpha(1.0), theme::INK) };
+    pen.round(frame, 16.0, Some(fill), None);
+    let mut cursor = frame.origin.x + 15.0;
+    if let Some(icon) = icon {
+        pen.icon(icon, rect(cursor, y + 9.5, 13.0, 13.0), ink);
+        cursor += 19.0;
+    }
+    pen.text(words, cursor, y + 7.5, 12.5, Weight::Bold, ink.alpha(1.0));
+    pen.hit(frame, hit);
+    width
+}
+
+/// The day's summary card, or what stands in for it; returns its height.
+fn draft(pen: &mut Pen, view: &DayView, screen: &Screen, area: NSRect) -> f64 {
+    let words = &screen.words;
+    let (x, y) = (area.origin.x, area.origin.y);
+    face(pen, screen, rect(x, y, 58.0, 58.0));
+    let card_x = x + 70.0;
+    let card_width = area.size.width - 70.0;
+    let (inner_x, inner_width) = (card_x + 22.0, card_width - 44.0);
+    let card = match &view.draft {
+        Draft::Ready(card) => card,
+        other => {
+            // A short card: one line of what is happening and, when it helps, one button.
+            let (note, ink, action): (&str, Rgb, Option<&String>) = match other {
+                Draft::Nothing(note) => (note, theme::MUTED, None),
+                Draft::Offer(note, button) => (note, theme::INK, Some(button)),
+                Draft::Making(note) => (note, theme::RUNNING, None),
+                Draft::Failed(why, button) => (why, theme::STALLED, button.as_ref()),
+                Draft::Ready(_) => unreachable!(),
+            };
+            let height = 96.0;
+            bubble(pen, rect(card_x, y, card_width, height));
+            pen.text(&view_title(view, screen), inner_x, y + 18.0, 17.0, Weight::Bold, theme::INK.alpha(1.0));
+            let mut note_x = inner_x;
+            if matches!(other, Draft::Making(_)) {
+                pen.icon("loader-circle", rect(inner_x, y + 54.0, 13.0, 13.0), theme::RUNNING_BRIGHT);
+                note_x += 19.0;
+            }
+            pen.text_in(note, rect(note_x, y + 52.0, inner_width - 180.0, 36.0), 13.0, Weight::Medium, ink.alpha(1.0), NSTextAlignment::Left, true);
+            if let Some(action) = action {
+                button(pen, card_x + card_width - 22.0, y + 46.0, Some("refresh-cw"), action, true, Hit::Summarize(view.date));
+            }
+            return height;
+        }
     };
-    pen.icon(icon, rect(x, y + 50.0, 12.0, 12.0), ink);
-    pen.text_in(&card.line, rect(x + 18.0, y + 47.0, width - 18.0, 17.0), 11.5, weight, ink.alpha(1.0), NSTextAlignment::Left, false);
-    let mut cursor = x;
-    for (icon, words) in [("clock", card.time.as_str()), ("folder", card.project.as_str()), ("git-commit-horizontal", card.marks.as_str())] {
-        if words.is_empty() {
-            continue;
+    // Measure first: the lines decide the card's height.
+    let row = 28.0;
+    let left_height = if card.left.is_empty() { 0.0 } else { 13.0 + 20.0 + card.left.len() as f64 * row };
+    let stale_height = if card.stale.is_some() { 36.0 } else { 0.0 };
+    let height = 18.0 + 26.0 + 20.0 + 12.0 + card.done.len() as f64 * row + left_height + 14.0 + stale_height + 32.0 + 18.0;
+    bubble(pen, rect(card_x, y, card_width, height));
+    let mut cy = y + 18.0;
+    let chip_width = Pen::measuring().capsule(0.0, 0.0, 22.0, None, &card.chip, 11.5, rgb(0.953, 0.957, 0.965).alpha(1.0), theme::MUTED, theme::MUTED);
+    pen.text_in(&card.title, rect(inner_x, cy, inner_width - chip_width - 10.0, 26.0), 19.0, Weight::Bold, theme::INK.alpha(1.0), NSTextAlignment::Left, false);
+    pen.capsule(inner_x + inner_width - chip_width, cy + 2.0, 22.0, None, &card.chip, 11.5, rgb(0.953, 0.957, 0.965).alpha(1.0), rgb(0.243, 0.282, 0.302), theme::MUTED);
+    cy += 26.0;
+    pen.text_in(&card.note, rect(inner_x, cy, inner_width, 18.0), 12.5, Weight::Regular, theme::MUTED.alpha(1.0), NSTextAlignment::Left, false);
+    cy += 20.0 + 12.0;
+    for line in &card.done {
+        let frame = rect(inner_x, cy, inner_width, row);
+        pen.icon("circle-check", rect(inner_x, cy + 6.0, 16.0, 16.0), rgb(0.243, 0.282, 0.302));
+        pen.text_in(&line.project, rect(inner_x + 26.0, cy + 6.0, 92.0, 17.0), 12.0, Weight::Semibold, theme::MUTED.alpha(1.0), NSTextAlignment::Left, false);
+        let mut text_right = inner_x + inner_width;
+        if !line.mark.is_empty() {
+            let mark_width = Pen::measuring().capsule(0.0, 0.0, 20.0, None, &line.mark, 11.0, theme::MUTED.alpha(0.12), theme::MUTED, theme::MUTED);
+            pen.capsule(text_right - mark_width, cy + 4.0, 20.0, None, &line.mark, 11.0, theme::MUTED.alpha(0.12), rgb(0.243, 0.282, 0.302), theme::MUTED);
+            text_right -= mark_width + 10.0;
         }
-        pen.icon(icon, rect(cursor, y + 73.0, 11.0, 11.0), theme::MUTED);
-        cursor += 15.0 + pen.text(words, cursor + 15.0, y + 70.0, 10.5, Weight::Regular, theme::MUTED.alpha(1.0)) + 12.0;
+        pen.text_in(&line.text, rect(inner_x + 126.0, cy + 5.0, text_right - inner_x - 126.0, 18.0), 13.5, Weight::Regular, theme::INK.alpha(1.0), NSTextAlignment::Left, false);
+        if let Some(key) = &line.key {
+            pen.hit(frame, Hit::Open(key.clone()));
+        }
+        cy += row;
     }
-    pen.hit(frame, Hit::Open(card.key.clone()));
+    if !card.left.is_empty() {
+        cy += 6.0;
+        dashed(pen, inner_x, inner_x + inner_width, cy, rgb(0.867, 0.882, 0.894).alpha(1.0));
+        cy += 7.0;
+        pen.text(words.left, inner_x, cy, 12.0, Weight::Bold, theme::MUTED.alpha(1.0));
+        cy += 20.0;
+        for line in &card.left {
+            let frame = rect(inner_x, cy, inner_width, row);
+            let ink = match line.open {
+                Open::Asking => {
+                    pen.icon("message-circle-question-mark", rect(inner_x, cy + 6.0, 16.0, 16.0), theme::ASKING);
+                    theme::ASKING
+                }
+                Open::Running => {
+                    pen.icon("loader-circle", rect(inner_x, cy + 6.0, 16.0, 16.0), theme::RUNNING_BRIGHT);
+                    theme::RUNNING
+                }
+                Open::Todo => {
+                    pen.round(rect(inner_x + 2.0, cy + 8.0, 12.0, 12.0), 4.0, None, Some((theme::MUTED.alpha(1.0), 1.75)));
+                    theme::INK
+                }
+            };
+            let title_width = pen.text(&line.title, inner_x + 26.0, cy + 5.0, 13.5, Weight::Bold, ink.alpha(1.0)).min(inner_width * 0.5);
+            pen.text_in(&format!(" · {}", line.text), rect(inner_x + 26.0 + title_width, cy + 5.0, inner_width - 26.0 - title_width, 18.0), 13.5, Weight::Regular, theme::INK.alpha(1.0), NSTextAlignment::Left, false);
+            if let Some(key) = &line.key {
+                pen.hit(frame, Hit::Open(key.clone()));
+            }
+            cy += row;
+        }
+    }
+    cy += 14.0;
+    if let Some((note, can_redo)) = &card.stale {
+        let frame = rect(inner_x, cy, inner_width, 28.0);
+        pen.round(frame, 10.0, Some(rgb(0.953, 0.957, 0.965).alpha(1.0)), None);
+        pen.icon(if *can_redo { "refresh-cw" } else { "loader-circle" }, rect(inner_x + 10.0, cy + 7.5, 13.0, 13.0), theme::MUTED);
+        pen.text(note, inner_x + 30.0, cy + 6.0, 12.5, Weight::Medium, rgb(0.243, 0.282, 0.302).alpha(1.0));
+        if *can_redo {
+            let redo_width = text_width(words.redo, 12.5, Weight::Bold);
+            pen.text(words.redo, inner_x + inner_width - redo_width - 12.0, cy + 6.0, 12.5, Weight::Bold, theme::INK.alpha(1.0));
+            pen.hit(frame, Hit::Summarize(card.date));
+        }
+        cy += 36.0;
+    }
+    let mut right = inner_x + inner_width;
+    right -= button(pen, right, cy, Some("copy"), words.copy_report, true, Hit::Copy(card.report.clone())) + 8.0;
+    right -= button(pen, right, cy, Some("pencil"), words.edit, false, Hit::EditSummary(card.date));
+    pen.text_in(&card.footer, rect(inner_x, cy + 8.0, right - inner_x - 12.0, 17.0), 11.5, Weight::Regular, theme::MUTED.alpha(1.0), NSTextAlignment::Left, false);
+    height
 }
 
-/// The chip's word in the card's own language: the card's line tells which one the view used.
-fn callout_word(card: &errand_core::journal::view::Card, callout: Callout) -> &'static str {
-    let english = card.time.ends_with(" on") || card.marks.starts_with("Commits");
-    callout.word(if english { Language::English } else { Language::Korean })
+/// The draft card's heading when there is no summary yet.
+fn view_title(view: &DayView, screen: &Screen) -> String {
+    let past = view.masthead.can_go_forward;
+    match (screen.language, past) {
+        (Language::Korean, false) => "오늘 정리".to_owned(),
+        (Language::Korean, true) => "이날 정리".to_owned(),
+        (Language::English, false) => "Today's summary".to_owned(),
+        (Language::English, true) => "That day's summary".to_owned(),
+    }
+}
+
+/// The day's tasks as a short list, and the same day a month before; returns the height.
+fn day_side(pen: &mut Pen, view: &DayView, screen: &Screen, area: NSRect) -> f64 {
+    let words = &screen.words;
+    let (x, y, width) = (area.origin.x, area.origin.y, area.size.width);
+    let row = 46.0;
+    let list_height = 6.0 + 34.0 + view.tasks.len().max(1) as f64 * row + 6.0;
+    pen.panel(rect(x, y, width, list_height), 18.0, theme::WHITE, EDGE.alpha(1.0), 1.0);
+    let heading = if view.masthead.can_go_forward { words.tasks_that_day } else { words.tasks_today };
+    let heading_width = pen.text(heading, x + 16.0, y + 15.0, 13.0, Weight::Bold, theme::INK.alpha(1.0));
+    pen.text(&view.tasks.len().to_string(), x + 16.0 + heading_width + 6.0, y + 15.0, 12.0, Weight::Semibold, theme::MUTED.alpha(1.0));
+    let mut ry = y + 40.0;
+    if view.tasks.is_empty() {
+        let note = if screen.loading { words.loading } else { words.empty };
+        pen.text_in(note, rect(x + 16.0, ry + 14.0, width - 32.0, 18.0), 12.5, Weight::Regular, theme::MUTED.alpha(1.0), NSTextAlignment::Left, false);
+    }
+    for task in &view.tasks {
+        pen.fill(rect(x + 16.0, ry, width - 32.0, 1.0), HAIRLINE.alpha(1.0));
+        pen.app(task.provider, rect(x + 16.0, ry + 14.0, 18.0, 18.0));
+        let mut title_right = x + width - 16.0;
+        if let Some(callout) = task.callout {
+            let (fill, ink, icon_ink) = chip_colors(callout);
+            let word = callout.word(screen.language);
+            let chip = Pen::measuring().capsule(0.0, 0.0, 20.0, None, word, 11.0, fill, ink, icon_ink);
+            pen.capsule(title_right - chip, ry + 13.0, 20.0, None, word, 11.0, fill, ink, icon_ink);
+            title_right -= chip + 8.0;
+        }
+        pen.text_in(&task.title, rect(x + 44.0, ry + 6.0, title_right - x - 44.0, 18.0), 13.0, Weight::Bold, theme::INK.alpha(1.0), NSTextAlignment::Left, false);
+        pen.text_in(&task.meta, rect(x + 44.0, ry + 24.0, title_right - x - 44.0, 16.0), 11.0, Weight::Regular, theme::MUTED.alpha(1.0), NSTextAlignment::Left, false);
+        pen.hit(rect(x, ry, width, row), Hit::Open(task.key.clone()));
+        ry += row;
+    }
+    let mut height = list_height;
+    if let Some(back) = &view.back_then {
+        let by = y + list_height + 12.0;
+        let text_height = pen.text_height(&back.text, width - 32.0 - 44.0, 13.0, Weight::Semibold, 2);
+        let card_height = 12.0 + 17.0 + 2.0 + text_height + 14.0;
+        let frame = rect(x, by, width, card_height);
+        pen.panel(frame, 18.0, theme::WHITE, EDGE.alpha(1.0), 1.0);
+        let violet = rgb(0.357, 0.294, 0.769);
+        pen.round(rect(x + 16.0, by + 12.0, 32.0, 32.0), 10.0, Some(violet.alpha(0.12)), None);
+        pen.icon("rotate-ccw-clock", rect(x + 24.0, by + 20.0, 16.0, 16.0), violet);
+        pen.text(&back.label, x + 60.0, by + 12.0, 11.5, Weight::Bold, violet.alpha(1.0));
+        pen.text_in(&back.text, rect(x + 60.0, by + 31.0, width - 76.0, text_height), 13.0, Weight::Semibold, theme::INK.alpha(1.0), NSTextAlignment::Left, true);
+        pen.hit(frame, Hit::Step(-back.days));
+        height += 12.0 + card_height;
+    }
+    height
 }
 
 fn week(pen: &mut Pen, view: &WeekView, screen: &Screen) -> f64 {
     masthead(pen, &view.masthead, screen, false);
     let words = &screen.words;
-    let top = 120.0;
-    let label = 56.0;
-    let rows: Vec<f64> = view.rows.iter().map(|row| if row.bars.is_empty() && !row.today { 14.0 } else { 4.0 + row.lanes as f64 * 16.0 + (row.lanes.saturating_sub(1)) as f64 * 2.0 }).collect();
-    let height = 12.0 + 18.0 + 6.0 + 14.0 + 6.0 + rows.iter().sum::<f64>() + 5.0 * (rows.len() - 1) as f64 + 12.0;
-    pen.panel(rect(PAD, top, WIDTH, height), 16.0, theme::WHITE, EDGE.alpha(1.0), 1.0);
-    pen.text(words.by_weekday, PAD + 18.0, top + 12.0, 12.5, Weight::Semibold, theme::INK.alpha(1.0));
-    legend(pen, PAD + WIDTH - 18.0, top + 12.0, false);
-    let (x, width) = (PAD + 18.0 + label, WIDTH - 36.0 - label);
-    hour_labels(pen, &view.axis, x, width, top + 36.0);
-    let mut y = top + 56.0;
-    for (row, row_height) in view.rows.iter().zip(&rows) {
-        let quiet = row.bars.is_empty() && !row.today;
-        let ink = if quiet { FAINT } else { theme::INK };
-        pen.text(&row.label, PAD + 18.0, y + (row_height - 15.0) / 2.0, if quiet { 10.5 } else { 11.5 }, if row.today { Weight::Bold } else { Weight::Medium }, ink.alpha(1.0));
-        pen.round(rect(x, y, width, *row_height), 5.0, Some(theme::INK.alpha(0.03)), None);
-        for item in &row.bars {
-            let frame = rect(x + item.start * width, y + 2.0 + item.lane as f64 * 18.0, ((item.end - item.start) * width).max(4.0), 16.0);
-            bar(pen, item, frame, false);
-        }
-        if let Some(now) = row.now {
-            pen.fill(rect(x + now * width - 0.75, y - 3.0, 1.5, row_height + 6.0), theme::INK.alpha(1.0));
-        }
-        y += row_height + 5.0;
+    let mut top = 120.0;
+    if !view.metro.is_empty() {
+        top += metro(pen, &view.metro, PAD, top, WIDTH) + 16.0;
     }
-    // Projects, a card each with its work as lines; the cards flow three to a row.
-    let mut y = top + height + 16.0;
-    if view.projects.is_empty() {
+    let side = 368.0;
+    let sheet_width = WIDTH - side - 16.0;
+    // The week as one page: each day's summary, in order.
+    let row_line = 22.0;
+    let day_height = |day: &errand_core::journal::view::WeekDay| 20.0 + (day.lines.len() as f64 * row_line + if day.note.is_some() || day.more > 0 { 24.0 } else { 0.0 }).max(40.0);
+    let rows_height: f64 = view.days.iter().map(day_height).sum();
+    let sheet_height = 18.0 + 46.0 + 12.0 + rows_height.max(60.0) + 10.0;
+    let (x, y) = (PAD, top);
+    pen.panel(rect(x, y, sheet_width, sheet_height), 20.0, theme::WHITE, EDGE.alpha(1.0), 1.0);
+    let (inner_x, inner_width) = (x + 22.0, sheet_width - 44.0);
+    pen.text(&view.title, inner_x, y + 18.0, 19.0, Weight::Bold, theme::INK.alpha(1.0));
+    let mut right = inner_x + inner_width;
+    if !view.report.is_empty() {
+        right -= button(pen, right, y + 22.0, Some("copy"), words.copy_week, true, Hit::Copy(view.report.clone())) + 12.0;
+    }
+    pen.text_in(words.week_note, rect(inner_x, y + 44.0, right - inner_x, 18.0), 12.5, Weight::Regular, theme::MUTED.alpha(1.0), NSTextAlignment::Left, false);
+    let mut ry = y + 18.0 + 46.0 + 12.0;
+    if view.days.is_empty() {
         let note = if screen.loading { words.loading } else { words.empty };
-        pen.text_in(note, rect(PAD, y + 30.0, WIDTH, 20.0), 13.0, Weight::Regular, theme::MUTED.alpha(1.0), NSTextAlignment::Center, false);
-        return y + 80.0;
+        pen.text_in(note, rect(inner_x, ry + 20.0, inner_width, 18.0), 13.0, Weight::Regular, theme::MUTED.alpha(1.0), NSTextAlignment::Center, false);
     }
-    let card_width = ((WIDTH - 20.0) / 3.0).floor();
-    for row in view.projects.chunks(3) {
-        let tallest = row.iter().map(|project| 46.0 + project.lines.len() as f64 * 28.0).fold(0.0, f64::max);
-        for (index, project) in row.iter().enumerate() {
-            let frame = rect(PAD + index as f64 * (card_width + 10.0), y, card_width, 46.0 + project.lines.len() as f64 * 28.0);
-            pen.panel(frame, 16.0, theme::WHITE, EDGE.alpha(1.0), 1.0);
-            let (cx, cy, cw) = (frame.origin.x + 14.0, frame.origin.y + 4.0, frame.size.width - 28.0);
-            pen.icon("folder", rect(cx, cy + 11.0, 14.0, 14.0), theme::MUTED);
-            let name = pen.text(&project.name, cx + 20.0, cy + 9.0, 13.5, Weight::Semibold, theme::INK.alpha(1.0));
-            pen.capsule(cx + 26.0 + name, cy + 9.0, 18.0, None, &project.count.to_string(), 11.0, theme::MUTED.alpha(0.12), theme::MUTED, theme::MUTED);
-            let marks = text_width(&project.marks, 11.5, Weight::Regular);
-            pen.text(&project.marks, cx + cw - marks, cy + 10.0, 11.5, Weight::Regular, theme::MUTED.alpha(1.0));
-            for (line_index, line) in project.lines.iter().enumerate() {
-                let ly = cy + 36.0 + line_index as f64 * 28.0;
-                pen.fill(rect(frame.origin.x, ly, frame.size.width, 1.0), theme::INK.alpha(0.06));
-                pen.app(line.provider, rect(cx, ly + 7.0, 14.0, 14.0));
-                let when = text_width(&line.when, 11.0, Weight::Regular);
-                pen.text(&line.when, cx + cw - when, ly + 7.0, 11.0, Weight::Regular, theme::MUTED.alpha(1.0));
-                let mut end = cx + cw - when - 10.0;
-                if let Some(pull) = &line.pull_request {
-                    let words = text_width(pull, 11.0, Weight::Regular);
-                    end -= words;
-                    pen.text(pull, end, ly + 7.0, 11.0, Weight::Regular, theme::MUTED.alpha(1.0));
-                    end -= 8.0;
+    let strip_width = 132.0;
+    let lines_x = inner_x + 72.0;
+    let lines_width = inner_width - 72.0 - strip_width - 14.0;
+    for day in &view.days {
+        pen.fill(rect(inner_x, ry, inner_width, 1.0), HAIRLINE.alpha(1.0));
+        let top_y = ry + 10.0;
+        pen.text(&day.day, inner_x, top_y - 2.0, 17.0, Weight::Bold, theme::INK.alpha(1.0));
+        pen.text(&day.label, inner_x, top_y + 20.0, 12.0, Weight::Regular, theme::MUTED.alpha(1.0));
+        let mut ly = top_y;
+        for line in &day.lines {
+            let mut text_right = lines_x + lines_width;
+            if !line.mark.is_empty() {
+                let mark_width = text_width(&line.mark, 11.0, Weight::Semibold);
+                pen.text(&line.mark, text_right - mark_width, ly + 3.0, 11.0, Weight::Semibold, theme::MUTED.alpha(1.0));
+                text_right -= mark_width + 10.0;
+            }
+            pen.text_in(&line.project, rect(lines_x, ly + 2.0, 92.0, 17.0), 11.5, Weight::Semibold, theme::MUTED.alpha(1.0), NSTextAlignment::Left, false);
+            let faded = day.note.as_deref() == Some(words.no_summary);
+            pen.text_in(&line.text, rect(lines_x + 100.0, ly + 1.0, text_right - lines_x - 100.0, 18.0), 13.0, Weight::Regular, if faded { rgb(0.243, 0.282, 0.302).alpha(1.0) } else { theme::INK.alpha(1.0) }, NSTextAlignment::Left, false);
+            if let Some(key) = &line.key {
+                pen.hit(rect(lines_x, ly, lines_width, row_line), Hit::Open(key.clone()));
+            }
+            ly += row_line;
+        }
+        if day.note.is_some() || day.more > 0 {
+            let mut chip = day.note.clone().unwrap_or_default();
+            if day.more > 0 {
+                let more = words.more_lines.replace("{}", &day.more.to_string());
+                chip = if chip.is_empty() { more } else { format!("{chip} · {more}") };
+            }
+            pen.capsule(lines_x, ly + 3.0, 20.0, None, &chip, 11.0, rgb(0.953, 0.957, 0.965).alpha(1.0), rgb(0.243, 0.282, 0.302), theme::MUTED);
+        }
+        // The day's work across 08–19, so the page still shows when it happened.
+        let strip = rect(inner_x + inner_width - strip_width, top_y + 6.0, strip_width, 10.0);
+        pen.round(strip, 5.0, Some(rgb(0.953, 0.957, 0.965).alpha(1.0)), None);
+        for (start, end, provider) in &day.strip {
+            pen.round(rect(strip.origin.x + start * strip_width, strip.origin.y, ((end - start) * strip_width).max(2.0), 10.0), 3.0, Some(service(*provider).alpha(0.55)), None);
+        }
+        ry += day_height(day);
+    }
+
+    // Beside it: the recap, what is left, and the kinds of work.
+    let sx = PAD + sheet_width + 16.0;
+    let mut sy = top;
+    if let Some(recap) = &view.recap {
+        let frame = rect(sx, sy, side, 232.0);
+        if pen.draw {
+            NSGraphicsContext::saveGraphicsState_class();
+            let shadow = NSShadow::new();
+            shadow.setShadowColor(Some(&paint(INDIGO.alpha(0.25))));
+            shadow.setShadowBlurRadius(28.0);
+            shadow.setShadowOffset(NSSize::new(0.0, -12.0));
+            shadow.set();
+            color(INDIGO).setFill();
+            NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(frame, 22.0, 22.0).fill();
+            NSGraphicsContext::restoreGraphicsState_class();
+            NSGraphicsContext::saveGraphicsState_class();
+            NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(frame, 22.0, 22.0).addClip();
+            kit::draw_character(&Avatar::named(&screen.avatar), rect(sx + side - 150.0, sy + 92.0, 168.0, 168.0));
+            NSGraphicsContext::restoreGraphicsState_class();
+        }
+        pen.text(&recap.note, sx + 22.0, sy + 20.0, 12.0, Weight::Bold, LAVENDER.alpha(1.0));
+        pen.text_in(&recap.title, rect(sx + 22.0, sy + 40.0, side - 150.0, 60.0), 22.0, Weight::Bold, theme::WHITE.alpha(1.0), NSTextAlignment::Left, true);
+        // A small stack of cards, the front one with the week's count.
+        for (index, shade) in [rgb(0.290, 0.239, 0.549), rgb(0.416, 0.357, 0.753)].into_iter().enumerate() {
+            pen.round(rect(sx + 22.0 + index as f64 * 30.0, sy + 112.0 - index as f64 * 3.0, 44.0, 60.0), 8.0, Some(shade.alpha(1.0)), None);
+        }
+        pen.round(rect(sx + 82.0, sy + 106.0, 44.0, 60.0), 8.0, Some(LAVENDER.alpha(1.0)), None);
+        pen.text(&recap.count.to_string(), sx + 89.0, sy + 140.0, 18.0, Weight::Bold, INDIGO.alpha(1.0));
+        let button_width = text_width(&recap.button, 13.0, Weight::Bold) + 46.0;
+        let open = rect(sx + 22.0, sy + 232.0 - 22.0 - 34.0, button_width, 34.0);
+        pen.round(open, 17.0, Some(theme::WHITE.alpha(1.0)), None);
+        pen.text(&recap.button, open.origin.x + 16.0, open.origin.y + 8.0, 13.0, Weight::Bold, INDIGO.alpha(1.0));
+        pen.icon("chevron-right", rect(open.origin.x + button_width - 26.0, open.origin.y + 10.0, 14.0, 14.0), INDIGO);
+        pen.hit(frame, Hit::Recap(Some(0)));
+        sy += 232.0 + 12.0;
+    }
+    if !view.carried.is_empty() {
+        let height = 12.0 + 20.0 + 4.0 + view.carried.len() as f64 * 28.0 + 10.0;
+        pen.panel(rect(sx, sy, side, height), 18.0, theme::WHITE, EDGE.alpha(1.0), 1.0);
+        let heading = pen.text(&view.carried_title, sx + 16.0, sy + 13.0, 13.0, Weight::Bold, theme::INK.alpha(1.0));
+        pen.text(&view.carried.len().to_string(), sx + 16.0 + heading + 6.0, sy + 13.0, 12.0, Weight::Semibold, theme::MUTED.alpha(1.0));
+        let mut cy = sy + 36.0;
+        for line in &view.carried {
+            left_line(pen, line, sx + 16.0, cy, side - 32.0, 13.0);
+            cy += 28.0;
+        }
+        sy += height + 12.0;
+    }
+    if !view.kinds.is_empty() {
+        let height = 12.0 + 20.0 + 6.0 + view.kinds.len() as f64 * 22.0 + 10.0;
+        pen.panel(rect(sx, sy, side, height), 18.0, theme::WHITE, EDGE.alpha(1.0), 1.0);
+        pen.text(words.kinds, sx + 16.0, sy + 13.0, 13.0, Weight::Bold, theme::INK.alpha(1.0));
+        let most = view.kinds.iter().map(|(_, count)| *count).max().unwrap_or(1).max(1) as f64;
+        let mut ky = sy + 40.0;
+        for (name, count) in &view.kinds {
+            pen.text_in(name, rect(sx + 16.0, ky + 2.0, 70.0, 17.0), 12.0, Weight::Regular, theme::INK.alpha(1.0), NSTextAlignment::Left, false);
+            let track = side - 32.0 - 80.0 - 26.0;
+            pen.round(rect(sx + 96.0, ky + 6.0, (track * *count as f64 / most).max(4.0), 9.0), 4.0, Some(rgb(0.243, 0.282, 0.302).alpha(1.0)), None);
+            let number = count.to_string();
+            pen.text(&number, sx + side - 16.0 - text_width(&number, 12.0, Weight::Bold), ky + 2.0, 12.0, Weight::Bold, theme::INK.alpha(1.0));
+            ky += 22.0;
+        }
+        sy += height + 12.0;
+    }
+    (y + sheet_height).max(sy) + 24.0
+}
+
+/// The metro map's line colours: violet, aqua, orange and berry, which stay apart for colour-blind eyes too; a
+/// fifth project, or all the rest, share grey.
+const LINE_COLOURS: [Rgb; COLOURED_LINES] = [rgb(0.384, 0.314, 0.839), rgb(0.106, 0.686, 0.478), rgb(0.922, 0.408, 0.204), rgb(0.753, 0.224, 0.541)];
+const OTHER_LINE: Rgb = rgb(0.553, 0.592, 0.612);
+const LANE_GAP: f64 = 74.0;
+const DAY_BAND: Rgb = rgb(0.965, 0.969, 0.973);
+
+fn line_colour(line: &MetroLine) -> Rgb {
+    line.colour.map_or(OTHER_LINE, |slot| LINE_COLOURS[slot])
+}
+
+fn stroke(path: &NSBezierPath, width: f64, ink: Rgb, dash: Option<[f64; 2]>) {
+    path.setLineWidth(width);
+    path.setLineCapStyle(NSLineCapStyle::Round);
+    path.setLineJoinStyle(NSLineJoinStyle::Round);
+    if let Some(pattern) = dash {
+        unsafe { path.setLineDash_count_phase(pattern.as_ptr() as *mut f64, 2, 0.0) };
+    }
+    color(ink).setStroke();
+    path.stroke();
+}
+
+fn segment(from: (f64, f64), to: (f64, f64)) -> Retained<NSBezierPath> {
+    let path = NSBezierPath::bezierPath();
+    path.moveToPoint(NSPoint::new(from.0, from.1));
+    path.lineToPoint(NSPoint::new(to.0, to.1));
+    path
+}
+
+/// A stop: white inside, ringed in its line's colour; an interchange for a pull request; dashed while waiting.
+fn station(pen: &Pen, x: f64, y: f64, radius: f64, ring: Rgb, pull: bool, asking: bool) {
+    if !pen.draw {
+        return;
+    }
+    let radius = if pull { radius + 2.0 } else { radius };
+    let oval = NSBezierPath::bezierPathWithOvalInRect(rect(x - radius, y - radius, radius * 2.0, radius * 2.0));
+    color(theme::WHITE).setFill();
+    oval.fill();
+    let ring = if pull { theme::INK } else if asking { theme::ASKING } else { ring };
+    stroke(&oval, 3.5, ring, asking.then_some([4.0, 3.0]));
+    if pull {
+        let dot = (radius - 4.5).max(2.5);
+        color(theme::INK).setFill();
+        NSBezierPath::bezierPathWithOvalInRect(rect(x - dot, y - dot, dot * 2.0, dot * 2.0)).fill();
+    }
+}
+
+/// The week as a metro map in a panel across the page; returns the panel's height.
+fn metro(pen: &mut Pen, view: &MetroView, x: f64, y: f64, width: f64) -> f64 {
+    let (inner_x, inner_width) = (x + 22.0, width - 44.0);
+    let map_top = y + 80.0;
+    let lane_y = |lane: usize| map_top + 80.0 + lane as f64 * LANE_GAP;
+    let last_lane = lane_y(view.lines.len().max(1) - 1);
+
+    // The legend flows in rows under the map: the lines, then what the marks mean.
+    let mut legend: Vec<(Option<usize>, Option<usize>, &str, f64)> = Vec::new();
+    for (index, line) in view.lines.iter().enumerate() {
+        legend.push((Some(index), None, &line.legend, text_width(&line.legend, 12.0, Weight::Regular)));
+    }
+    for (index, words) in view.keys.iter().enumerate() {
+        legend.push((None, Some(index), words, text_width(words, 12.0, Weight::Regular)));
+    }
+    let legend_top = last_lane + 96.0;
+    let mut placed = Vec::new();
+    let (mut lx, mut ly) = (inner_x, legend_top);
+    for (line, key, words, words_width) in legend {
+        let item = 22.0 + 6.0 + words_width;
+        if lx > inner_x && lx + item > inner_x + inner_width {
+            lx = inner_x;
+            ly += 24.0;
+        }
+        placed.push((line, key, words, lx, ly));
+        lx += item + 20.0;
+    }
+    let height = ly + 22.0 + 18.0 - y;
+
+    pen.panel(rect(x, y, width, height), 20.0, theme::WHITE, EDGE.alpha(1.0), 1.0);
+    pen.text(&view.title, inner_x, y + 18.0, 19.0, Weight::Bold, theme::INK.alpha(1.0));
+    pen.text_in(&view.note, rect(inner_x, y + 44.0, inner_width, 18.0), 12.5, Weight::Regular, theme::MUTED.alpha(1.0), NSTextAlignment::Left, false);
+
+    let carried: Vec<&MetroLine> = view.lines.iter().filter(|line| line.carried > 0).collect();
+    let badge = 118.0;
+    let start = inner_x + badge + 4.0;
+    let end_room = if carried.is_empty() { 28.0 } else { 108.0 };
+    let days = view.days.len().max(1);
+    // A full week keeps its days wide enough for names by closing the gaps between them.
+    let gap = (64.0 - (days as f64 - 4.0).max(0.0) * 10.0).max(34.0);
+    let zone_width = ((inner_x + inner_width - end_room) - (start + 22.0) - gap * (days as f64 - 1.0)) / days as f64;
+    let zone_x = |day: usize| start + 22.0 + day as f64 * (zone_width + gap);
+    let last = days - 1;
+    let zones_end = zone_x(last) + zone_width;
+
+    for (index, day) in view.days.iter().enumerate() {
+        let zx = zone_x(index);
+        pen.round(rect(zx - 12.0, map_top + 26.0, zone_width + 24.0, last_lane + 58.0 - map_top - 26.0), 14.0, Some(DAY_BAND.alpha(1.0)), None);
+        pen.text_in(&day.label, rect(zx - 12.0, map_top, zone_width + 24.0, 18.0), 13.0, Weight::Bold, theme::INK.alpha(1.0), NSTextAlignment::Center, false);
+        pen.text_in(&day.total, rect(zx - 12.0, last_lane + 64.0, zone_width + 24.0, 16.0), 11.5, Weight::Semibold, theme::MUTED.alpha(1.0), NSTextAlignment::Center, false);
+    }
+
+    // The lines: a white casing under each, so a crossing reads as one line passing over another.
+    if pen.draw {
+        for line in &view.lines {
+            let path = NSBezierPath::bezierPath();
+            path.moveToPoint(NSPoint::new(start, lane_y(line.lanes[0])));
+            for day in 0..view.days.len() {
+                let here = lane_y(line.lanes[day]);
+                path.lineToPoint(NSPoint::new(zone_x(day) + zone_width, here));
+                if day < last {
+                    let (from, to, next) = (zone_x(day) + zone_width, zone_x(day + 1), lane_y(line.lanes[day + 1]));
+                    let middle = (from + to) / 2.0;
+                    path.curveToPoint_controlPoint1_controlPoint2(NSPoint::new(to, next), NSPoint::new(middle, here), NSPoint::new(middle, next));
                 }
-                if let Some(callout) = line.callout {
-                    let (fill, ink, icon_ink) = chip_colors(callout);
-                    let word = callout.word(if line.when.is_ascii() { Language::English } else { Language::Korean });
-                    let chip = Pen::measuring().capsule(0.0, 0.0, 18.0, None, word, 10.5, fill, ink, icon_ink);
-                    end -= chip;
-                    pen.capsule(end, ly + 5.0, 18.0, None, word, 10.5, fill, ink, icon_ink);
-                    end -= 8.0;
+            }
+            stroke(&path, 13.0, theme::WHITE, None);
+            stroke(&path, 7.0, line_colour(line), None);
+        }
+    }
+    // Ends: a bar where a line stops, a dashed run to the terminal where work is still open.
+    let terminal_x = inner_x + inner_width - 78.0;
+    for line in &view.lines {
+        let here = lane_y(line.lanes[last]);
+        if !pen.draw {
+            break;
+        }
+        if line.carried > 0 {
+            stroke(&segment((zones_end + 8.0, here), (terminal_x - 6.0, here)), 5.0, line_colour(line), Some([7.0, 7.0]));
+        } else {
+            stroke(&segment((zones_end + 9.0, here - 11.0), (zones_end + 9.0, here + 11.0)), 7.0, line_colour(line), None);
+        }
+    }
+    if !carried.is_empty() {
+        let ys: Vec<f64> = carried.iter().map(|line| lane_y(line.lanes[last])).collect();
+        let (low, high) = (ys.iter().copied().fold(f64::MAX, f64::min), ys.iter().copied().fold(f64::MIN, f64::max));
+        let frame = rect(terminal_x, low - 26.0, 78.0, high - low + 52.0);
+        pen.round(frame, 13.0, Some(theme::WHITE.alpha(1.0)), Some((theme::INK.alpha(1.0), 2.5)));
+        let middle = frame.origin.y + frame.size.height / 2.0;
+        pen.text_in(&view.terminal, rect(terminal_x, middle - 17.0, 78.0, 17.0), 12.5, Weight::Bold, theme::INK.alpha(1.0), NSTextAlignment::Center, false);
+        pen.text_in(&view.terminal_count, rect(terminal_x, middle + 1.0, 78.0, 16.0), 11.0, Weight::Semibold, theme::MUTED.alpha(1.0), NSTextAlignment::Center, false);
+    }
+    // Each line's name at its start, in its colour.
+    for line in &view.lines {
+        let frame = rect(inner_x, lane_y(line.lanes[0]) - 13.0, badge, 26.0);
+        pen.round(frame, 13.0, Some(line_colour(line).alpha(1.0)), None);
+        pen.text_in(&line.name, kit::inset(frame, 10.0, 5.0), 12.0, Weight::Bold, theme::WHITE.alpha(1.0), NSTextAlignment::Center, false);
+    }
+
+    // Stops that began close together on one line move apart just enough not to cover each other.
+    let mut spots: Vec<(f64, f64)> = view
+        .stops
+        .iter()
+        .map(|stop| (zone_x(stop.day) + 12.0 + stop.at * (zone_width - 24.0), (5.5 + (stop.minutes.max(0) as f64).sqrt() * 0.55).min(16.0)))
+        .collect();
+    for line in 0..view.lines.len() {
+        for day in 0..view.days.len() {
+            let mut group: Vec<usize> = (0..view.stops.len()).filter(|&index| view.stops[index].line == line && view.stops[index].day == day).collect();
+            group.sort_by(|&a, &b| spots[a].0.total_cmp(&spots[b].0));
+            for pair in group.windows(2) {
+                let least = spots[pair[0]].0 + spots[pair[0]].1 + spots[pair[1]].1 + 3.0;
+                spots[pair[1]].0 = spots[pair[1]].0.max(least);
+            }
+            if let Some(&last) = group.last() {
+                let over = spots[last].0 + spots[last].1 - (zone_x(day) + zone_width);
+                if over > 0.0 {
+                    group.iter().for_each(|&index| spots[index].0 -= over);
                 }
-                pen.text_in(&line.title, rect(cx + 21.0, ly + 5.0, end - cx - 21.0, 18.0), 12.5, Weight::Semibold, theme::INK.alpha(1.0), NSTextAlignment::Left, false);
-                pen.hit(rect(frame.origin.x, ly, frame.size.width, 28.0), Hit::Open(line.key.clone()));
             }
         }
-        y += tallest + 10.0;
     }
-    y + 4.0
+
+    // Stops, then their names on top, each kept inside its day.
+    for (stop, &(sx, radius)) in view.stops.iter().zip(&spots) {
+        let line = &view.lines[stop.line];
+        let (zx, here) = (zone_x(stop.day), lane_y(line.lanes[stop.day]));
+        station(pen, sx, here, radius, line_colour(line), stop.pull.is_some(), stop.asking);
+        pen.hit(rect(sx - radius - 6.0, here - radius - 6.0, radius * 2.0 + 12.0, radius * 2.0 + 12.0), Hit::Open(stop.key.clone()));
+        let Some(above) = stop.name_above else { continue };
+        let weight = if stop.minutes >= 45 { Weight::Bold } else { Weight::Semibold };
+        let words = text_width(&stop.title, 12.0, weight).min(zone_width + 12.0);
+        let left = (sx - words / 2.0).clamp(zx - 6.0, zx + zone_width + 6.0 - words);
+        let top = if above { here - radius - 8.0 - 17.0 } else { here + radius + 7.0 };
+        pen.round(rect(left - 4.0, top, words + 8.0, 17.0), 5.0, Some(theme::WHITE.alpha(0.9)), None);
+        pen.text_in(&stop.title, rect(left, top, words, 17.0), 12.0, weight, theme::INK.alpha(1.0), NSTextAlignment::Center, false);
+        pen.hit(rect(left, top, words, 17.0), Hit::Open(stop.key.clone()));
+        let tag = stop.pull.as_deref().or(stop.asking.then_some(view.waiting.as_str()));
+        if let Some(tag) = tag {
+            let tag_width = text_width(tag, 10.5, Weight::Bold) + 14.0;
+            let tag_left = (sx - tag_width / 2.0).clamp(zx - 6.0, zx + zone_width + 6.0 - tag_width);
+            let tag_top = if above { top - 4.0 - 16.0 } else { top + 17.0 + 4.0 };
+            let frame = rect(tag_left, tag_top, tag_width, 16.0);
+            if stop.pull.is_some() {
+                pen.round(frame, 8.0, Some(theme::INK.alpha(1.0)), None);
+                pen.text_in(tag, rect(tag_left, tag_top + 1.5, tag_width, 14.0), 10.5, Weight::Bold, theme::WHITE.alpha(1.0), NSTextAlignment::Center, false);
+            } else {
+                pen.round(frame, 8.0, Some(theme::WHITE.alpha(1.0)), Some((theme::ASKING.alpha(1.0), 1.0)));
+                pen.text_in(tag, rect(tag_left, tag_top + 1.5, tag_width, 14.0), 10.5, Weight::Bold, theme::ASKING.alpha(1.0), NSTextAlignment::Center, false);
+            }
+        }
+    }
+
+    // The legend.
+    for (line, key, words, lx, ly) in placed {
+        let middle = ly + 11.0;
+        match (line, key) {
+            (Some(index), _) => pen.round(rect(lx + 2.0, middle - 3.0, 18.0, 6.0), 3.0, Some(line_colour(&view.lines[index]).alpha(1.0)), None),
+            (_, Some(0)) => station(pen, lx + 11.0, middle, 5.5, theme::MUTED, false, false),
+            (_, Some(1)) => station(pen, lx + 11.0, middle, 5.5, theme::MUTED, true, false),
+            (_, Some(2)) => station(pen, lx + 11.0, middle, 5.5, theme::MUTED, false, true),
+            (_, Some(3)) => {
+                if pen.draw {
+                    stroke(&segment((lx + 11.0, middle - 8.0), (lx + 11.0, middle + 8.0)), 5.0, theme::MUTED, None);
+                }
+            }
+            _ => {
+                if pen.draw {
+                    stroke(&segment((lx + 2.0, middle), (lx + 20.0, middle)), 4.0, theme::MUTED, Some([5.0, 5.0]));
+                }
+            }
+        }
+        pen.text(words, lx + 28.0, ly + 3.0, 12.0, Weight::Regular, rgb(0.243, 0.282, 0.302).alpha(1.0));
+    }
+    height
+}
+
+/// A left-over item: its state's mark, its title in that state's colour, then why.
+fn left_line(pen: &mut Pen, line: &errand_core::journal::view::LeftLine, x: f64, y: f64, width: f64, size: f64) {
+    let ink = match line.open {
+        Open::Asking => {
+            pen.icon("message-circle-question-mark", rect(x, y + 6.0, 15.0, 15.0), theme::ASKING);
+            theme::ASKING
+        }
+        Open::Running => {
+            pen.icon("loader-circle", rect(x, y + 6.0, 15.0, 15.0), theme::RUNNING_BRIGHT);
+            theme::RUNNING
+        }
+        Open::Todo => {
+            pen.round(rect(x + 2.0, y + 8.0, 12.0, 12.0), 4.0, None, Some((theme::MUTED.alpha(1.0), 1.75)));
+            theme::INK
+        }
+    };
+    let title_width = pen.text(&line.title, x + 24.0, y + 5.0, size, Weight::Bold, ink.alpha(1.0)).min(width * 0.55);
+    pen.text_in(&format!(" · {}", line.text), rect(x + 24.0 + title_width, y + 5.0, width - 24.0 - title_width, 18.0), size, Weight::Regular, theme::INK.alpha(1.0), NSTextAlignment::Left, false);
+    if let Some(key) = &line.key {
+        pen.hit(rect(x, y, width, 28.0), Hit::Open(key.clone()));
+    }
+}
+
+const INDIGO: Rgb = rgb(0.169, 0.137, 0.314);
+const NAVY: Rgb = rgb(0.075, 0.192, 0.361);
+const PINE: Rgb = rgb(0.059, 0.239, 0.227);
+const LAVENDER: Rgb = rgb(0.812, 0.780, 0.937);
+const SKY: Rgb = rgb(0.612, 0.780, 1.0);
+const MINT: Rgb = rgb(0.561, 0.890, 0.824);
+const PALE: Rgb = rgb(0.839, 0.902, 1.0);
+const PEACH: Rgb = rgb(1.0, 0.788, 0.541);
+
+/// A recap card's size; saved images are drawn at the same size, twice as many pixels.
+const CARD: (f64, f64) = (340.0, 604.0);
+
+/// One recap card in `frame`, `CARD` in size, with its place among `total` as the bar along the top.
+fn recap_card(pen: &Pen, card: &RecapCard, frame: NSRect, index: usize, total: usize, avatar: &str) {
+    let (ground, accent) = match card {
+        RecapCard::Cover { .. } | RecapCard::Kind { .. } | RecapCard::Carried { .. } => (INDIGO, LAVENDER),
+        RecapCard::Finished { .. } | RecapCard::Longest { .. } => (NAVY, SKY),
+        RecapCard::Busiest { .. } => (PINE, MINT),
+    };
+    let (x, y, width, height) = (frame.origin.x, frame.origin.y, frame.size.width, frame.size.height);
+    let white = theme::WHITE;
+    pen.round(frame, 30.0, Some(ground.alpha(1.0)), None);
+    if pen.draw {
+        NSGraphicsContext::saveGraphicsState_class();
+        NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(frame, 30.0, 30.0).addClip();
+    }
+    let (ix, iw) = (x + 28.0, width - 56.0);
+    // Where the card sits among the rest.
+    let gap = 5.0;
+    let segment = (iw - gap * (total.max(1) - 1) as f64) / total.max(1) as f64;
+    for step in 0..total {
+        pen.round(rect(ix + step as f64 * (segment + gap), y + 22.0, segment, 4.0), 2.0, Some(white.alpha(if step <= index { 1.0 } else { 0.28 })), None);
+    }
+    let label_y = y + 56.0;
+    let face = |frame: NSRect| {
+        if pen.draw {
+            kit::draw_character(&Avatar::named(avatar), frame);
+        }
+    };
+    match card {
+        RecapCard::Cover { label, title, span, chips } => {
+            face(rect(x + 50.0, y + height - 330.0, 290.0, 290.0));
+            pen.text(label, ix, label_y, 17.0, Weight::Bold, accent.alpha(1.0));
+            pen.text_in(title, rect(ix, label_y + 28.0, iw, 120.0), 48.0, Weight::Bold, white.alpha(1.0), NSTextAlignment::Left, true);
+            let title_height = pen.text_height(title, iw, 48.0, Weight::Bold, 2);
+            pen.text(span, ix, label_y + 34.0 + title_height, 17.0, Weight::Semibold, accent.alpha(1.0));
+            let mut cx = ix;
+            for chip in chips {
+                cx += pen.capsule(cx, y + height - 52.0, 32.0, None, chip, 14.0, rgb(0.243, 0.204, 0.439).alpha(1.0), white, white) + 8.0;
+            }
+        }
+        RecapCard::Finished { label, count, versus, waiting, note } => {
+            pen.text(label, ix, label_y, 17.0, Weight::Bold, accent.alpha(1.0));
+            pen.text(&count.to_string(), ix - 6.0, label_y + 22.0, 150.0, Weight::Bold, white.alpha(1.0));
+            pen.text(versus, ix, label_y + 210.0, 17.0, Weight::Semibold, PALE.alpha(1.0));
+            let shown = (*count).min(32);
+            let dots = shown + (*waiting).min(32 - shown);
+            let rows = dots.div_ceil(8);
+            let dots_top = y + height - 44.0 - rows as f64 * 34.0 - if note.is_empty() { 0.0 } else { 24.0 };
+            for dot in 0..dots {
+                let frame = rect(ix + (dot % 8) as f64 * 34.0, dots_top + (dot / 8) as f64 * 34.0, 24.0, 24.0);
+                if dot < shown {
+                    pen.round(frame, 12.0, Some(SKY.alpha(1.0)), None);
+                } else {
+                    pen.round(frame, 12.0, None, Some((PEACH.alpha(1.0), 2.5)));
+                }
+            }
+            if !note.is_empty() {
+                pen.text(note, ix, y + height - 56.0, 14.0, Weight::Regular, PALE.alpha(1.0));
+            }
+        }
+        RecapCard::Kind { label, top, of, kinds } => {
+            pen.text(label, ix, label_y, 17.0, Weight::Bold, accent.alpha(1.0));
+            pen.text_in(top, rect(ix, label_y + 28.0, iw, 130.0), 52.0, Weight::Bold, white.alpha(1.0), NSTextAlignment::Left, true);
+            let top_height = pen.text_height(top, iw, 52.0, Weight::Bold, 2);
+            pen.text(of, ix, label_y + 34.0 + top_height, 22.0, Weight::Bold, accent.alpha(1.0));
+            let most = kinds.iter().map(|(_, count)| *count).max().unwrap_or(1).max(1) as f64;
+            let mut ky = y + height - 36.0 - kinds.len() as f64 * 44.0;
+            for (rank, (name, count)) in kinds.iter().enumerate() {
+                let ink = if rank == 0 { white } else { accent };
+                pen.text(name, ix, ky, 15.0, Weight::Semibold, ink.alpha(1.0));
+                let number = count.to_string();
+                pen.text(&number, ix + iw - text_width(&number, 15.0, Weight::Semibold), ky, 15.0, Weight::Semibold, ink.alpha(1.0));
+                pen.round(rect(ix, ky + 24.0, iw, 10.0), 5.0, Some(white.alpha(0.12)), None);
+                pen.round(rect(ix, ky + 24.0, (iw * *count as f64 / most).max(6.0), 10.0), 5.0, Some(if rank == 0 { white.alpha(1.0) } else { rgb(0.655, 0.588, 0.890).alpha(1.0) }), None);
+                ky += 44.0;
+            }
+        }
+        RecapCard::Busiest { label, day, note, days } => {
+            pen.text(label, ix, label_y, 17.0, Weight::Bold, accent.alpha(1.0));
+            pen.text(day, ix, label_y + 26.0, 64.0, Weight::Bold, white.alpha(1.0));
+            pen.text(note, ix, label_y + 110.0, 19.0, Weight::Bold, rgb(0.788, 0.949, 0.918).alpha(1.0));
+            let count = days.len().max(1) as f64;
+            let column = (iw - 14.0 * (count - 1.0)) / count;
+            let floor = y + height - 56.0;
+            for (index, (name, share, busiest)) in days.iter().enumerate() {
+                let cx = ix + index as f64 * (column + 14.0);
+                let bar_height = (share * 190.0).max(4.0);
+                pen.round(rect(cx, floor - bar_height, column, bar_height), 7.0, Some(if *busiest { white.alpha(1.0) } else { MINT.alpha(0.45) }), None);
+                let name_width = text_width(name, 14.0, Weight::Bold);
+                pen.text(name, cx + (column - name_width) / 2.0, floor + 10.0, 14.0, Weight::Bold, if *busiest { white.alpha(1.0) } else { accent.alpha(1.0) });
+            }
+        }
+        RecapCard::Longest { label, provider, project, title, time, span, bar } => {
+            pen.text(label, ix, label_y, 17.0, Weight::Bold, accent.alpha(1.0));
+            pen.app(*provider, rect(ix, label_y + 34.0, 30.0, 30.0));
+            pen.text(&format!("{} · {project}", provider.title()), ix + 40.0, label_y + 40.0, 15.0, Weight::Semibold, PALE.alpha(1.0));
+            pen.text_in(title, rect(ix, label_y + 78.0, iw, 110.0), 40.0, Weight::Bold, white.alpha(1.0), NSTextAlignment::Left, true);
+            let floor = y + height - 44.0;
+            let mut tx = ix;
+            for part in time {
+                let size = if part.small { 32.0 } else { 66.0 };
+                let top = floor - 64.0 - kit::font(size, Weight::Bold).ascender();
+                tx += pen.text(&part.text, tx, top, size, Weight::Bold, white.alpha(1.0));
+            }
+            if let Some((start, end)) = bar {
+                pen.round(rect(ix, floor - 30.0, iw, 12.0), 6.0, Some(white.alpha(0.12)), None);
+                pen.round(rect(ix + start * iw, floor - 30.0, ((end - start) * iw).max(8.0), 12.0), 6.0, Some(SKY.alpha(1.0)), None);
+                pen.text("08", ix, floor - 10.0, 13.0, Weight::Regular, PALE.alpha(1.0));
+                pen.text("19", ix + iw - text_width("19", 13.0, Weight::Regular), floor - 10.0, 13.0, Weight::Regular, PALE.alpha(1.0));
+            }
+            let span_width = text_width(span, 13.0, Weight::Regular);
+            pen.text(span, ix + (iw - span_width) / 2.0, floor - 10.0, 13.0, Weight::Regular, PALE.alpha(1.0));
+        }
+        RecapCard::Carried { label, count, items, .. } => {
+            face(rect(x + width - 150.0, y + height - 190.0, 170.0, 170.0));
+            pen.text(label, ix, label_y, 17.0, Weight::Bold, accent.alpha(1.0));
+            pen.text(&count.to_string(), ix - 4.0, label_y + 22.0, 120.0, Weight::Bold, white.alpha(1.0));
+            let mut iy = label_y + 170.0;
+            for (title, text, asking) in items.iter().take(3) {
+                let block = rect(ix, iy, iw, 64.0);
+                pen.round(block, 16.0, Some(white.alpha(0.12)), None);
+                pen.text_in(title, rect(ix + 14.0, iy + 11.0, iw - 28.0, 20.0), 15.0, Weight::Bold, if *asking { PEACH.alpha(1.0) } else { white.alpha(1.0) }, NSTextAlignment::Left, false);
+                pen.text_in(text, rect(ix + 14.0, iy + 34.0, iw - 28.0, 20.0), 14.0, Weight::Medium, white.alpha(0.85), NSTextAlignment::Left, false);
+                iy += 74.0;
+            }
+        }
+    }
+    if pen.draw {
+        NSGraphicsContext::restoreGraphicsState_class();
+    }
+}
+
+/// The recap over the week: the window dimmed, one card at full size, and the ways to move and save.
+fn recap_overlay(pen: &mut Pen, view: &RecapView, screen: &Screen) {
+    pen.fill(rect(0.0, TOP, SIZE.0, SIZE.1 - TOP), rgb(0.094, 0.078, 0.188).alpha(0.82));
+    pen.hit(rect(0.0, TOP, SIZE.0, SIZE.1 - TOP), Hit::Recap(None));
+    let frame = rect((SIZE.0 - CARD.0) / 2.0, TOP + 18.0, CARD.0, CARD.1);
+    if pen.draw {
+        NSGraphicsContext::saveGraphicsState_class();
+        let shadow = NSShadow::new();
+        shadow.setShadowColor(Some(&paint(rgb(0.0, 0.0, 0.0).alpha(0.35))));
+        shadow.setShadowBlurRadius(40.0);
+        shadow.setShadowOffset(NSSize::new(0.0, -20.0));
+        shadow.set();
+        color(INDIGO).setFill();
+        NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(frame, 30.0, 30.0).fill();
+        NSGraphicsContext::restoreGraphicsState_class();
+    }
+    if let Some(card) = view.cards.get(view.index) {
+        recap_card(pen, card, frame, view.index, view.cards.len(), &screen.avatar);
+    }
+    pen.hit(frame, Hit::Recap(Some((view.index + 1) % view.cards.len().max(1))));
+    let arrow = |pen: &mut Pen, x: f64, icon: &str, target: Option<usize>, bright: bool| {
+        let button = rect(x, TOP + 18.0 + CARD.1 / 2.0 - 22.0, 44.0, 44.0);
+        pen.round(button, 22.0, Some(if bright { theme::WHITE.alpha(1.0) } else { theme::WHITE.alpha(0.16) }), None);
+        pen.icon(icon, kit::inset(button, 13.0, 13.0), if bright { NAVY } else { theme::WHITE });
+        if let Some(target) = target {
+            pen.hit(button, Hit::Recap(Some(target)));
+        }
+    };
+    let last = view.cards.len().saturating_sub(1);
+    arrow(pen, frame.origin.x - 68.0, "chevron-left", view.index.checked_sub(1), false);
+    arrow(pen, frame.origin.x + CARD.0 + 24.0, "chevron-right", (view.index < last).then_some(view.index + 1), view.index < last);
+    let close = rect(SIZE.0 - 60.0, TOP + 18.0, 36.0, 36.0);
+    pen.round(close, 18.0, Some(theme::WHITE.alpha(0.16)), None);
+    pen.icon("x", kit::inset(close, 10.0, 10.0), theme::WHITE);
+    pen.hit(close, Hit::Recap(None));
+    // Below the card: where it is among the rest, and saving.
+    let by = TOP + 18.0 + CARD.1 + 14.0;
+    let one = text_width(&view.save_one, 13.0, Weight::Bold) + 44.0;
+    let all = text_width(&view.save_all, 13.0, Weight::Bold) + 44.0;
+    let position = text_width(&view.position, 12.5, Weight::Regular);
+    let mut bx = (SIZE.0 - (position + 18.0 + one + 10.0 + all)) / 2.0;
+    pen.text(&view.position, bx, by + 9.0, 12.5, Weight::Regular, theme::WHITE.alpha(0.7));
+    bx += position + 18.0;
+    for (words, width, which, bright) in [(&view.save_one, one, Some(view.index), false), (&view.save_all, all, None, true)] {
+        let button = rect(bx, by, width, 36.0);
+        pen.round(button, 18.0, Some(if bright { theme::WHITE.alpha(1.0) } else { theme::WHITE.alpha(0.16) }), None);
+        pen.icon("download", rect(bx + 15.0, by + 11.0, 14.0, 14.0), if bright { theme::INK } else { theme::WHITE });
+        pen.text(words, bx + 35.0, by + 9.0, 13.0, Weight::Bold, if bright { theme::INK.alpha(1.0) } else { theme::WHITE.alpha(1.0) });
+        pen.hit(button, Hit::SaveRecap(which));
+        bx += width + 10.0;
+    }
+}
+
+/// Draws one recap card, or all of them side by side, into a PNG the person places with a save panel.
+fn save_recap(mtm: MainThreadMarker, screen: &Screen, which: Option<usize>) {
+    let Some(view) = &screen.recap else { return };
+    let cards: Vec<(usize, &RecapCard)> = match which {
+        Some(index) => view.cards.get(index).map(|card| vec![(index, card)]).unwrap_or_default(),
+        None => view.cards.iter().enumerate().collect(),
+    };
+    if cards.is_empty() {
+        return;
+    }
+    let (margin, gap) = (32.0, 24.0);
+    let size = NSSize::new(margin * 2.0 + cards.len() as f64 * CARD.0 + (cards.len() - 1) as f64 * gap, margin * 2.0 + CARD.1);
+    let Some(image) = (unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(), std::ptr::null_mut(), (size.width * 2.0) as isize, (size.height * 2.0) as isize, 8, 4, true, false, NSDeviceRGBColorSpace, 0, 0,
+        )
+    }) else {
+        return;
+    };
+    image.setSize(size);
+    NSGraphicsContext::saveGraphicsState_class();
+    NSGraphicsContext::setCurrentContext(NSGraphicsContext::graphicsContextWithBitmapImageRep(&image).as_deref());
+    // Cards are drawn downwards, as in the window's flipped views.
+    let flip = NSAffineTransform::transform();
+    flip.translateXBy_yBy(0.0, size.height);
+    flip.scaleXBy_yBy(1.0, -1.0);
+    flip.concat();
+    color(GROUND).setFill();
+    NSBezierPath::fillRect(rect(0.0, 0.0, size.width, size.height));
+    let pen = Pen { draw: true, hits: Vec::new() };
+    for (slot, (index, card)) in cards.iter().enumerate() {
+        recap_card(&pen, card, rect(margin + slot as f64 * (CARD.0 + gap), margin, CARD.0, CARD.1), *index, view.cards.len(), &screen.avatar);
+    }
+    NSGraphicsContext::restoreGraphicsState_class();
+    let Some(png) = (unsafe { image.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) }) else { return };
+    let bytes = png.to_vec();
+    let panel = NSSavePanel::savePanel(mtm);
+    let name = match which {
+        Some(index) => format!("errand-recap-{}.png", index + 1),
+        None => "errand-recap.png".to_owned(),
+    };
+    panel.setNameFieldStringValue(&ns(&name));
+    let chosen = panel.clone();
+    let completion = block2::RcBlock::new(move |result| {
+        if result == NSModalResponseOK
+            && let Some(path) = chosen.URL().and_then(|url| url.to_file_path())
+        {
+            let _ = std::fs::write(path, &bytes);
+        }
+    });
+    panel.beginWithCompletionHandler(&completion);
 }
 
 fn dot(pen: &Pen, frame: NSRect, provider: Provider, callout: Option<Callout>) {
@@ -948,9 +1699,13 @@ fn detail(pen: &mut Pen, view: &DetailView, screen: &Screen) {
     pen.icon("copy", rect(copy.origin.x + 11.0, y + 8.0, 12.0, 12.0), theme::INK);
     pen.text(words.copy_summary, copy.origin.x + 28.0, y + 6.0, 12.0, Weight::Medium, theme::INK.alpha(1.0));
     pen.hit(copy, Hit::Copy(summary));
+    // The counts sit at the right; where longer words leave no room beside the buttons, the first ones go.
     let mut right = x + width;
     for pill in view.pills.iter().rev() {
         let pill_width = Pen::measuring().capsule(0.0, 0.0, 22.0, None, pill, 11.0, theme::MUTED.alpha(0.12), theme::MUTED, theme::MUTED);
+        if right - pill_width < copy.origin.x + copy.size.width + 10.0 {
+            break;
+        }
         right -= pill_width;
         pen.capsule(right, y + 3.0, 22.0, None, pill, 11.0, theme::MUTED.alpha(0.12), theme::MUTED, theme::MUTED);
         right -= 6.0;
@@ -1126,7 +1881,9 @@ define_class!(
                     body(&mut pen, screen);
                 }
                 Layer::Overlay => {
-                    if let Some(view) = &screen.detail {
+                    if let Some(view) = &screen.recap {
+                        recap_overlay(&mut pen, view, screen);
+                    } else if let Some(view) = &screen.detail {
                         detail(&mut pen, view, screen);
                     }
                 }
@@ -1143,6 +1900,12 @@ define_class!(
         fn mouse_down(&self, event: &NSEvent) {
             let point = self.convertPoint_fromView(event.locationInWindow(), None);
             let hit = self.ivars().hits.borrow().iter().rev().find(|(frame, _)| kit::contains(*frame, point)).map(|(_, hit)| hit.clone());
+            if let Some(Hit::SaveRecap(which)) = hit {
+                if let Some(screen) = self.ivars().screen.borrow().as_ref() {
+                    save_recap(self.mtm(), screen, which);
+                }
+                return;
+            }
             if let Some(hit) = hit {
                 // A press inside the panel that names the panel itself keeps it open.
                 if matches!(&hit, Hit::Open(key) if self.ivars().layer == Layer::Overlay && self.ivars().screen.borrow().as_ref().and_then(|screen| screen.detail.as_ref()).is_some_and(|detail| &detail.key == key)) {
@@ -1162,7 +1925,7 @@ define_class!(
             let inside = kit::contains(self.bounds(), local);
             let owned = match self.ivars().layer {
                 Layer::Top => self.ivars().hits.borrow().iter().any(|(frame, _)| kit::contains(*frame, local)),
-                Layer::Overlay => self.ivars().screen.borrow().as_ref().is_some_and(|screen| screen.detail.is_some()) && local.y >= TOP,
+                Layer::Overlay => self.ivars().screen.borrow().as_ref().is_some_and(|screen| screen.detail.is_some() || screen.recap.is_some()) && local.y >= TOP,
                 Layer::Canvas | Layer::DetailBody => true,
             };
             // The panel's scrolling body is a subview of the overlay, so it is asked first.
@@ -1274,7 +2037,8 @@ impl Journal {
         self.top.show(screen);
         self.canvas.show(screen);
         self.overlay.show(screen);
-        self.overlay.setHidden(screen.detail.is_none());
+        self.overlay.setHidden(screen.detail.is_none() && screen.recap.is_none());
+        self.detail_scroll.setHidden(screen.detail.is_none() || screen.recap.is_some());
         if let Some(detail) = &screen.detail {
             let visible = self.detail_scroll.frame().size;
             let height = detail_body(&mut Pen::measuring(), detail, &screen.words, screen.language).max(visible.height);

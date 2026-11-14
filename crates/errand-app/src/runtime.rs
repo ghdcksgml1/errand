@@ -57,6 +57,13 @@ impl Runtime {
             Ok(settings) => state.tasks.settings = settings,
             Err(error) => state.tasks.settings_error = Some(error),
         }
+        state.journal.language = Some(platform.language);
+        state.journal.summaries.auto = state.tasks.settings.summaries;
+        state.journal.nudged = errand_io::summaries::load_nudged(&platform.session_tray.with_file_name("nudged"));
+        match errand_io::summaries::load(&platform.session_tray.with_file_name("summaries")) {
+            Ok(kept) => state.journal.summaries.days = kept.into_iter().map(|summary| (summary.date, summary)).collect(),
+            Err(_) => state.journal.summaries.unreadable = true,
+        }
         let (scans, requests) = mpsc::channel::<SessionRecords>();
         let mut scanner = SessionScanner::new(platform.sessions.clone());
         let scan_poster = poster.clone();
@@ -246,6 +253,31 @@ impl Runtime {
                 let _ = self.journal_scans.send(since);
                 None
             }
+            Effect::Summarize { input, provider, model } => {
+                let poster = self.poster.clone();
+                let executable = self.platform.title_cli(provider);
+                thread::spawn(move || {
+                    let cancel = std::sync::atomic::AtomicBool::new(false);
+                    let date = input.date;
+                    let result = errand_io::summaries::summarize(executable.as_deref(), provider, &model, &input, errand_io::now(), &cancel);
+                    poster.post(Msg::JournalSummarized { date, result });
+                });
+                None
+            }
+            Effect::SaveSummary(summary) => {
+                // A summary that could not be written is still on screen, and is made again next time.
+                let _ = errand_io::summaries::save(&self.platform.session_tray.with_file_name("summaries"), &summary);
+                None
+            }
+            Effect::EditSummary { date, text } => {
+                self.shell.edit_summary(date, &text);
+                None
+            }
+            Effect::SaveNudged(date) => {
+                let _ = errand_io::summaries::save_nudged(&self.platform.session_tray.with_file_name("nudged"), date);
+                None
+            }
+            Effect::DeleteSummaries => Some(Msg::JournalSummariesDeleted(errand_io::summaries::delete_all(&self.platform.session_tray.with_file_name("summaries")))),
             Effect::TranslateJournal { key, texts, language, provider, model } => {
                 let poster = self.poster.clone();
                 let executable = self.platform.title_cli(provider);

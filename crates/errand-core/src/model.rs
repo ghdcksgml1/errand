@@ -212,9 +212,21 @@ pub struct JournalState {
     /// The window is on screen, so records are kept fresh.
     pub open: bool,
     pub scanning: bool,
+    /// The window asked for its full records while a shorter read was running; they are read once it lands.
+    pub rescan: bool,
     pub scanned_at: Option<Timestamp>,
     pub translations: crate::journal::view::Translations,
+    pub summaries: crate::journal::summary::Summaries,
+    /// The language the window is drawn in, which summaries are written in.
+    pub language: Option<crate::Language>,
+    /// The day the pet's morning bubble is telling about, while it shows.
+    pub nudge: Option<jiff::civil::Date>,
+    /// The last morning the bubble was dealt with, so it comes once a day.
+    pub nudged: Option<jiff::civil::Date>,
 }
+
+/// The hour from which the pet tells about the last day's work.
+pub const MORNING: i8 = 8;
 
 /// How far back the window reads: a year of heat map and the week it ends in.
 pub const JOURNAL_REACH: SignedDuration = SignedDuration::from_hours(24 * 372);
@@ -359,6 +371,8 @@ pub enum Msg {
     JournalSpan(crate::journal::view::ReportSpan),
     /// Opens a task's detail, or closes it.
     JournalOpen(Option<String>),
+    /// Shows the week's recap at this card, or closes it.
+    JournalRecap(Option<usize>),
     /// Puts the log on screen on the clipboard.
     JournalCopy(String),
     /// Opens a task in its app.
@@ -369,6 +383,23 @@ pub enum Msg {
     JournalTranslated { key: String, result: Result<Vec<(String, String)>, String> },
     /// Shows answers as they were written (true) or translated.
     JournalOriginal(bool),
+    /// Sums up this day now, from the person's press.
+    JournalSummarize(jiff::civil::Date),
+    /// A day summed up, or why not.
+    JournalSummarized { date: jiff::civil::Date, result: Result<crate::journal::summary::DaySummary, String> },
+    /// Opens a day's summary to edit.
+    JournalEditSummary(jiff::civil::Date),
+    /// The person's edit of a day's summary, as text.
+    JournalSummaryEdited { date: jiff::civil::Date, text: String },
+    /// Removes every summary kept, from the settings.
+    JournalDeleteSummaries,
+    JournalSummariesDeleted(Result<(), String>),
+    /// The morning bubble: open the day it tells about.
+    NudgeSee,
+    /// The morning bubble: open the task waiting on the person's answer.
+    NudgeAnswer,
+    /// The morning bubble: not now.
+    NudgeLater,
     /// The widget moved or the screens changed: nothing to update, only to draw again.
     Redraw,
     /// The menu: opens the list of rooms beside the dock.
@@ -468,6 +499,16 @@ pub enum Effect {
     ScanJournal(Timestamp),
     /// Asks the local CLI to translate these answers, then sends `JournalTranslated`.
     TranslateJournal { key: String, texts: Vec<String>, language: crate::Language, provider: Provider, model: String },
+    /// Asks the local CLI to sum up a day, then sends `JournalSummarized`.
+    Summarize { input: crate::journal::summary::SummaryInput, provider: Provider, model: String },
+    /// Keeps a day's summary on this Mac.
+    SaveSummary(crate::journal::summary::DaySummary),
+    /// Shows a day's summary as text to edit; the edit comes back as `JournalSummaryEdited`.
+    EditSummary { date: jiff::civil::Date, text: String },
+    /// Removes every summary kept, then sends `JournalSummariesDeleted`.
+    DeleteSummaries,
+    /// Keeps the morning the pet's bubble was dealt with.
+    SaveNudged(jiff::civil::Date),
     FetchRooms,
     /// Send this room the person's presence report, as this visible a room may hear it, then `RoomRead`.
     SyncRoom { room: String, visibility: Visibility },
@@ -535,6 +576,10 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             }
             let effects = crate::tasks::update(&mut state.tasks, msg, now).into_iter().map(Effect::Tasks).collect();
             if was_open && !state.tasks.open() { state.badge_open = false; }
+            state.journal.summaries.auto = state.tasks.settings.summaries;
+            if !state.journal.summaries.auto {
+                state.journal.nudge = None;
+            }
             effects
         }
         Msg::CheckAccounts => vec![Effect::ReadAccounts],
@@ -636,6 +681,7 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             apply_sessions(state);
             let mut effects = if unread_on_screen(&state.sessions).is_some() { vec![Effect::ReadAttention] } else { vec![] };
             effects.extend(scan_journal(state, now, false));
+            effects.extend(morning(state, now));
             effects
         }
         Msg::AttentionRead(attention) => {
@@ -1170,13 +1216,19 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
         Msg::JournalClosed => {
             state.journal.open = false;
             state.journal.place.open = None;
+            state.journal.place.recap = None;
             vec![]
         }
         Msg::JournalScanned(records) => {
             state.journal.scanning = false;
             state.journal.records = records;
             state.journal.scanned_at = Some(now);
-            vec![]
+            if std::mem::take(&mut state.journal.rescan) {
+                return scan_journal(state, now, true).into_iter().collect();
+            }
+            let mut effects: Vec<Effect> = summarize_next(state, now).into_iter().collect();
+            effects.extend(morning(state, now));
+            effects
         }
         Msg::JournalTab(tab) => {
             let place = &mut state.journal.place;
@@ -1186,6 +1238,7 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
                 place.project = None;
             }
             place.open = None;
+            place.recap = None;
             vec![]
         }
         Msg::JournalStep(step) => {
@@ -1193,6 +1246,7 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             place.back = (place.back - step).max(0);
             place.project = None;
             place.open = None;
+            place.recap = None;
             vec![]
         }
         Msg::JournalProject(project) => {
@@ -1201,6 +1255,10 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
         }
         Msg::JournalSpan(span) => {
             state.journal.place.span = span;
+            vec![]
+        }
+        Msg::JournalRecap(card) => {
+            state.journal.place.recap = card;
             vec![]
         }
         Msg::JournalOpen(key) => {
@@ -1236,14 +1294,198 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             state.journal.translations.original = original;
             vec![]
         }
+        Msg::JournalSummarize(date) => {
+            if state.journal.summaries.making.is_some() || state.journal.summaries.unreadable {
+                return vec![];
+            }
+            state.journal.summaries.failed.remove(&date);
+            summarize(state, now, date).into_iter().collect()
+        }
+        Msg::JournalSummarized { date, result } => {
+            let summaries = &mut state.journal.summaries;
+            let mut effects = Vec::new();
+            // A summary edited or deleted while it was being made keeps what the person did; the result is dropped.
+            if summaries.making == Some(date) {
+                summaries.making = None;
+                match result {
+                    Ok(summary) => {
+                        summaries.days.insert(date, summary.clone());
+                        effects.push(Effect::SaveSummary(summary));
+                    }
+                    Err(why) => {
+                        summaries.failed.insert(date, why);
+                    }
+                }
+            }
+            effects.extend(summarize_next(state, now));
+            effects.extend(morning(state, now));
+            effects
+        }
+        Msg::JournalEditSummary(date) => match state.journal.summaries.days.get(&date) {
+            Some(summary) => vec![Effect::EditSummary { date, text: summary.edit_text() }],
+            None => vec![],
+        },
+        Msg::JournalSummaryEdited { date, text } => {
+            let Some(summary) = state.journal.summaries.days.get(&date) else { return vec![] };
+            let edited = summary.with_edit(&text);
+            if edited.done.is_empty() && edited.left.is_empty() {
+                return vec![];
+            }
+            if state.journal.summaries.making == Some(date) {
+                state.journal.summaries.making = None;
+            }
+            state.journal.summaries.days.insert(date, edited.clone());
+            vec![Effect::SaveSummary(edited)]
+        }
+        Msg::JournalDeleteSummaries => vec![Effect::DeleteSummaries],
+        Msg::NudgeSee => {
+            let Some((day, mut effects)) = settle_nudge(state, now) else { return vec![] };
+            let today = now.to_zoned(crate::format::local_zone()).date();
+            let place = &mut state.journal.place;
+            place.tab = crate::journal::view::JournalTab::Day;
+            place.back = day.until(today).map(|span| span.get_days() as i64).unwrap_or(1).max(0);
+            place.open = None;
+            place.recap = None;
+            effects.extend(apply(state, Msg::ShowDashboard, now));
+            effects
+        }
+        Msg::NudgeAnswer => {
+            let Some((_, mut effects)) = settle_nudge(state, now) else { return vec![] };
+            if let Some(key) = crate::view::waiting_on_person(state).first().map(|(key, _)| key.clone()) {
+                effects.extend(apply(state, Msg::OpenSession(key), now));
+            }
+            effects
+        }
+        Msg::NudgeLater => settle_nudge(state, now).map(|(_, effects)| effects).unwrap_or_default(),
+        Msg::JournalSummariesDeleted(result) => {
+            if result.is_ok() {
+                let summaries = &mut state.journal.summaries;
+                summaries.days.clear();
+                summaries.failed.clear();
+                summaries.making = None;
+                state.journal.nudge = None;
+            }
+            vec![]
+        }
     }
 }
 
 
 /// Reads the records again for the open window: at once when asked, else once they are a little old.
+/// The bubble is dealt with for today: it goes, and does not come back until tomorrow morning.
+fn settle_nudge(state: &mut AppState, now: Timestamp) -> Option<(jiff::civil::Date, Vec<Effect>)> {
+    let day = state.journal.nudge.take()?;
+    let today = now.to_zoned(crate::format::local_zone()).date();
+    state.journal.nudged = Some(today);
+    Some((day, vec![Effect::SaveNudged(today)]))
+}
+
+/// Once a day from the morning, the pet tells about the last day with finished work. The records are read a week
+/// back when the window has not read them lately, and that day is summed up first when it is not yet. Nothing is
+/// said with summaries turned off, or when there is nothing to tell.
+fn morning(state: &mut AppState, now: Timestamp) -> Vec<Effect> {
+    let zone = crate::format::local_zone();
+    let local = now.to_zoned(zone.clone());
+    let today = local.date();
+    if !state.journal.summaries.auto || state.journal.summaries.unreadable {
+        state.journal.nudge = None;
+        return vec![];
+    }
+    let journal = &state.journal;
+    // Summaries are written in the window's language; until the app has said which, nothing is made on its own.
+    if journal.language.is_none() || journal.nudged == Some(today) || local.hour() < MORNING || state.widget.hidden {
+        return vec![];
+    }
+    let fresh = journal.scanned_at.is_some_and(|at| now.duration_since(at) < SignedDuration::from_hours(1));
+    if !fresh {
+        if journal.scanning {
+            return vec![];
+        }
+        state.journal.scanning = true;
+        return vec![Effect::ScanJournal(now - SignedDuration::from_hours(24 * (crate::journal::summary::AUTO_DAYS + 1)))];
+    }
+    let live = crate::view::journal_live(state);
+    let found = {
+        let journal = crate::journal::view::Journal {
+            records: &state.journal.records,
+            live: &live,
+            translations: &state.journal.translations,
+            summaries: &state.journal.summaries,
+            now,
+            zone: &zone,
+            language: state.journal.language.unwrap_or(crate::Language::English),
+        };
+        (1..=crate::journal::summary::AUTO_DAYS)
+            .filter_map(|back| today.checked_sub(jiff::ToSpan::days(back)).ok())
+            .find(|date| journal.summary_input(*date).is_some())
+            .map(|date| (date, state.journal.summaries.days.get(&date).is_some_and(|summary| summary.edited || summary.basis == journal.day_basis(date))))
+    };
+    // A bubble still up from an earlier morning, or about a day since summed up again, gives way to this morning's.
+    let Some((day, fresh)) = found else {
+        state.journal.nudge = None;
+        state.journal.nudged = Some(today);
+        return vec![Effect::SaveNudged(today)];
+    };
+    if fresh {
+        state.journal.nudge = Some(day);
+        return vec![];
+    }
+    state.journal.nudge = None;
+    if state.journal.summaries.failed.contains_key(&day) {
+        state.journal.nudged = Some(today);
+        return vec![Effect::SaveNudged(today)];
+    }
+    if state.journal.summaries.making.is_some() {
+        return vec![];
+    }
+    summarize(state, now, day).into_iter().collect()
+}
+
+/// Sums up `date` with the task AI, from the records as they are now.
+fn summarize(state: &mut AppState, now: Timestamp, date: jiff::civil::Date) -> Option<Effect> {
+    let live = crate::view::journal_live(state);
+    let zone = crate::format::local_zone();
+    let journal = crate::journal::view::Journal {
+        records: &state.journal.records,
+        live: &live,
+        translations: &state.journal.translations,
+        summaries: &state.journal.summaries,
+        now,
+        zone: &zone,
+        language: state.journal.language.unwrap_or(crate::Language::English),
+    };
+    let input = journal.summary_input(date)?;
+    state.journal.summaries.making = Some(date);
+    let settings = &state.tasks.settings;
+    Some(Effect::Summarize { input, provider: settings.provider, model: settings.model().to_owned() })
+}
+
+/// While the window is open, the next day due a summary of its own, one at a time.
+fn summarize_next(state: &mut AppState, now: Timestamp) -> Option<Effect> {
+    if !state.journal.open {
+        return None;
+    }
+    let live = crate::view::journal_live(state);
+    let zone = crate::format::local_zone();
+    let journal = crate::journal::view::Journal {
+        records: &state.journal.records,
+        live: &live,
+        translations: &state.journal.translations,
+        summaries: &state.journal.summaries,
+        now,
+        zone: &zone,
+        language: state.journal.language.unwrap_or(crate::Language::English),
+    };
+    let date = journal.next_to_summarize(&state.journal.summaries)?;
+    summarize(state, now, date)
+}
+
 fn scan_journal(state: &mut AppState, now: Timestamp, at_once: bool) -> Option<Effect> {
     let journal = &mut state.journal;
     let stale = journal.scanned_at.is_none_or(|scanned| now.duration_since(scanned) >= JOURNAL_REFRESH);
+    if journal.open && journal.scanning && at_once {
+        journal.rescan = true;
+    }
     if !journal.open || journal.scanning || !(at_once || stale) {
         return None;
     }

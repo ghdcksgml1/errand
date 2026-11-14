@@ -34,6 +34,8 @@ pub enum PreviewKind {
     Dashboard,
     Dock,
     Details,
+    /// The pet's morning bubble about the last day's work.
+    Nudge,
     /// The character editor beside the dock.
     AvatarEditor,
     /// The cards stacked on the dock.
@@ -242,6 +244,18 @@ pub fn render(
             let placement = layout::detail_placement(dock, screen, &visible_frames(mtm), shape);
             details.point(placement.tail_on_right, placement.tail_y);
             snapshot(&details.view, output)
+        }
+        PreviewKind::Nudge => {
+            let mut nudge = super::nudge::Nudge::new(mtm, poster);
+            let panel = host(mtm, &nudge.view);
+            let Some(vm) = view::nudge(state, &context) else { return false };
+            nudge.render(&vm);
+            let screen = screen_frame(&panel, mtm);
+            let shape = DockShape { batteries: state.shown_providers().len(), ..DockShape::FULL };
+            let dock = layout::default_dock_frame(screen, shape);
+            let placement = layout::nudge_placement(dock, screen, &visible_frames(mtm), shape, None);
+            nudge.point(placement.tail_on_right, placement.tail_y);
+            snapshot(&nudge.view, output)
         }
         PreviewKind::AvatarEditor => {
             let mut editor = AvatarEditor::new(mtm, poster, language);

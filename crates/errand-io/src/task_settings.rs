@@ -15,14 +15,16 @@ pub fn load(root: &Path, previous_provider: Provider) -> Result<AiSettings, Stri
     if value["version"] != 1 { return Err(READ_ERROR.into()) }
     let provider = match value["provider"].as_str() { Some("codex") => Provider::Codex, Some("claude") => Provider::Claude, _ => return Err(READ_ERROR.into()) };
     let model = |key: &str| value["models"][key].as_str().filter(|id| valid_model(id)).map(str::to_owned).ok_or_else(|| READ_ERROR.to_owned());
-    Ok(AiSettings { provider, models: PerProvider { codex: model("codex")?, claude: model("claude")? } })
+    // Settings saved before summaries existed leave them on.
+    let summaries = value["summaries"]["auto"].as_bool().unwrap_or(true);
+    Ok(AiSettings { provider, models: PerProvider { codex: model("codex")?, claude: model("claude")? }, summaries })
 }
 pub fn save(root: &Path, settings: &AiSettings) -> Result<(), String> {
     if !settings.valid() { return Err(ERROR.into()) }
     fs::create_dir_all(root).map_err(|_| ERROR)?;
     #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; fs::set_permissions(root, fs::Permissions::from_mode(0o700)).map_err(|_| ERROR)?; }
     let value = json!({"version": 1, "provider": if settings.provider == Provider::Codex { "codex" } else { "claude" },
-        "models": { "codex": settings.models.codex, "claude": settings.models.claude }});
+        "models": { "codex": settings.models.codex, "claude": settings.models.claude }, "summaries": { "auto": settings.summaries }});
     let mut temp = tempfile::NamedTempFile::new_in(root).map_err(|_| ERROR)?;
     temp.write_all(&serde_json::to_vec(&value).map_err(|_| ERROR)?).map_err(|_| ERROR)?;
     temp.as_file().sync_all().map_err(|_| ERROR)?;
