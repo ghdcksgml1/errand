@@ -84,13 +84,72 @@ pub struct Live {
     pub question: Option<String>,
 }
 
+/// Answers translated into the person's language, kept only while Errand runs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Translations {
+    /// Each answer as the panel shows it, by the words it was written in.
+    pub texts: HashMap<String, String>,
+    /// The task whose answers are being translated.
+    pub working: Option<String>,
+    /// The task whose answers could not be translated, and why.
+    pub failed: Option<(String, String)>,
+    /// The person asked to see the answers as they were written.
+    pub original: bool,
+}
+
 /// Everything the views read.
 pub struct Journal<'a> {
     pub records: &'a [WorkRecord],
     pub live: &'a HashMap<String, Live>,
+    pub translations: &'a Translations,
     pub now: Timestamp,
     pub zone: &'a TimeZone,
     pub language: Language,
+}
+
+/// Whether `text` reads as another language than `language`: Korean letters against Latin ones, leaving out
+/// anything in backticks. Short bits such as a hash or a file name count as neither.
+pub fn foreign(text: &str, language: Language) -> bool {
+    let (mut hangul, mut latin, mut code) = (0usize, 0usize, false);
+    for c in text.chars() {
+        match c {
+            '`' => code = !code,
+            _ if code => {}
+            '\u{AC00}'..='\u{D7A3}' | '\u{3131}'..='\u{318E}' => hangul += 1,
+            _ if c.is_ascii_alphabetic() => latin += 1,
+            _ => {}
+        }
+    }
+    // A Korean syllable carries about as much as three Latin letters.
+    match language {
+        Language::Korean => latin >= 12 && hangul * 3 < latin,
+        Language::English => hangul >= 6 && hangul * 3 >= latin,
+    }
+}
+
+/// The panel's offer to translate a task's answers.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Translate {
+    /// Some answers are in another language; these are the ones not translated yet.
+    Offer(Vec<String>),
+    Working,
+    /// The last try failed: why, and the answers to try again.
+    Failed(String, Vec<String>),
+    /// The translations are on screen; the button shows the originals.
+    Shown,
+    /// The originals are on screen; the button shows the translations.
+    Original,
+}
+
+/// The panel's words for its translate button.
+pub fn translate_label(translate: &Translate, language: Language) -> &'static str {
+    match translate {
+        Translate::Offer(_) => language.pick("번역", "Translate"),
+        Translate::Working => language.pick("번역 중…", "Translating…"),
+        Translate::Failed(..) => language.pick("다시 번역", "Translate again"),
+        Translate::Shown => language.pick("원문 보기", "Show original"),
+        Translate::Original => language.pick("번역 보기", "Show translation"),
+    }
 }
 
 /// A live state worth calling out on a record, as the widget's chips do.
@@ -324,6 +383,8 @@ pub struct DetailView {
     pub open_label: String,
     pub pills: Vec<String>,
     pub turns: Vec<TurnRow>,
+    /// None when every answer is already in the person's language.
+    pub translate: Option<Translate>,
     pub commits: Vec<(String, String, String)>,
     pub files: Vec<FileRow>,
 }
@@ -434,8 +495,13 @@ impl Journal<'_> {
         }
         let commits: usize = records.iter().map(|record| record.commits.iter().filter(|commit| commit.at >= from && commit.at < to).count()).sum();
         let pulls: usize = records.iter().map(|record| record.pull_requests.iter().filter(|pull| pull.at >= from && pull.at < to).count()).sum();
-        pills.push(Pill { callout: None, icon: "git-commit-horizontal", text: format!("{} {commits}", self.language.pick("커밋", "Commits")) });
-        pills.push(Pill { callout: None, icon: "git-pull-request", text: format!("PR {pulls}") });
+        // A count of nothing says nothing.
+        if commits > 0 {
+            pills.push(Pill { callout: None, icon: "git-commit-horizontal", text: format!("{} {commits}", self.language.pick("커밋", "Commits")) });
+        }
+        if pulls > 0 {
+            pills.push(Pill { callout: None, icon: "git-pull-request", text: format!("PR {pulls}") });
+        }
         pills
     }
 
@@ -768,6 +834,12 @@ impl Journal<'_> {
         for at in &requests {
             *per_day.entry(self.date(*at)).or_default() += 1;
         }
+        // Five shades by the person's own spread of busy days, so a heavy user's map is not all one colour.
+        let mut busy: Vec<usize> = per_day.values().copied().filter(|count| *count > 0).collect();
+        busy.sort_unstable();
+        let cut = |share: f64| busy.get(((busy.len() as f64 - 1.0) * share).round() as usize).copied().unwrap_or(0);
+        let steps = [cut(0.2), cut(0.4), cut(0.6), cut(0.8)];
+        let level = |count: usize| if count == 0 { 0 } else { 1 + steps.iter().filter(|step| count > **step).count() as i8 };
         let mut heatmap = Vec::new();
         let mut heatmap_months = Vec::new();
         let mut last_month = 0;
@@ -784,7 +856,7 @@ impl Journal<'_> {
                 } else if first_record.is_none_or(|first| date < first) {
                     Some(-1)
                 } else {
-                    Some(per_day.get(&date).copied().unwrap_or(0).min(5) as i8)
+                    Some(level(per_day.get(&date).copied().unwrap_or(0)))
                 });
             }
         }
@@ -817,11 +889,14 @@ impl Journal<'_> {
                 big: records.len().to_string(),
                 top: self.language.pick("작업", "tasks").to_owned(),
                 bottom: format!("{} – {}", self.month_day(span_start), self.month_day(today)),
-                pills: vec![
-                    Pill { callout: None, icon: "git-commit-horizontal", text: format!("{} {commits}", self.language.pick("커밋", "Commits")) },
-                    Pill { callout: None, icon: "git-pull-request", text: format!("PR {pulls}") },
-                    Pill { callout: None, icon: "clock", text: format!("{} {}", self.language.pick("AI 작업", "AI work"), self.duration(worked)) },
-                ],
+                pills: [
+                    (commits > 0).then(|| Pill { callout: None, icon: "git-commit-horizontal", text: format!("{} {commits}", self.language.pick("커밋", "Commits")) }),
+                    (pulls > 0).then(|| Pill { callout: None, icon: "git-pull-request", text: format!("PR {pulls}") }),
+                    worked.is_positive().then(|| Pill { callout: None, icon: "clock", text: format!("{} {}", self.language.pick("AI 작업", "AI work"), self.duration(worked)) }),
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
                 can_go_forward: false,
             },
             heatmap,
@@ -843,6 +918,33 @@ impl Journal<'_> {
             Some(end) => format!("{} {} – {} · {}", self.month_day(day), self.clock(start), self.clock(end), self.duration(record.working_time())),
             None => format!("{} {}{}", self.month_day(day), self.clock(start), self.language.pick("부터", " on")),
         };
+        // Answers in another language, and the ones of them not translated yet.
+        let answers: Vec<String> = record.turns.iter().filter_map(|turn| turn.result.as_deref()).map(|result| preview(result, 220)).filter(|answer| foreign(answer, self.language)).collect();
+        let waiting: Vec<String> = answers.iter().filter(|answer| !self.translations.texts.contains_key(*answer)).cloned().collect();
+        let translations = self.translations;
+        let translate = if answers.is_empty() {
+            None
+        } else if translations.working.as_deref() == Some(key) {
+            Some(Translate::Working)
+        } else if let Some((_, why)) = translations.failed.as_ref().filter(|(failed, _)| failed == key) {
+            // The CLI's messages come in both languages, Korean first.
+            let why = match (why.split_once(" / "), self.language) {
+                (Some((korean, _)), Language::Korean) => korean,
+                (Some((_, english)), Language::English) => english,
+                (None, _) => why.as_str(),
+            };
+            Some(Translate::Failed(why.to_owned(), waiting.clone()))
+        } else if !waiting.is_empty() {
+            Some(Translate::Offer(waiting.clone()))
+        } else if translations.original {
+            Some(Translate::Original)
+        } else {
+            Some(Translate::Shown)
+        };
+        let shown = |answer: String| match translations.texts.get(&answer) {
+            Some(translated) if !translations.original => preview(translated, 220),
+            _ => answer,
+        };
         let turns = record
             .turns
             .iter()
@@ -852,7 +954,7 @@ impl Journal<'_> {
                 TurnRow {
                     time: self.clock(turn.asked_at),
                     ask: preview(&turn.ask, 160),
-                    result: turn.result.as_deref().map(|result| preview(result, 220)).unwrap_or_else(|| {
+                    result: turn.result.as_deref().map(|result| shown(preview(result, 220))).unwrap_or_else(|| {
                         if turn.aborted { self.language.pick("중단했어요.", "Stopped.").to_owned() } else if turn.finished_at.is_none() { self.language.pick("작업 중이에요.", "Still working.").to_owned() } else { String::new() }
                     }),
                     commits: record.commits.iter().filter(|commit| commit.at >= turn.asked_at && commit.at < until).map(|commit| commit.sha.clone()).collect(),
@@ -887,12 +989,13 @@ impl Journal<'_> {
                 Provider::Claude => self.language.pick("Claude에서 열기", "Open in Claude"),
             }
             .to_owned(),
-            pills: vec![
-                count(("요청", "Requests"), record.turns.len()),
-                count(("커밋", "Commits"), record.commits.len()),
-                count(("파일", "Files"), record.files.len()),
-            ],
+            pills: [(("요청", "Requests"), record.turns.len()), (("커밋", "Commits"), record.commits.len()), (("파일", "Files"), record.files.len())]
+                .into_iter()
+                .filter(|(_, n)| *n > 0)
+                .map(|(word, n)| count(word, n))
+                .collect(),
             turns,
+            translate,
             commits: record.commits.iter().map(|commit| (commit.sha.clone(), commit.message.clone(), self.clock(commit.at))).collect(),
             files,
         })
@@ -1037,6 +1140,8 @@ pub struct Screen {
     /// No records have been read yet.
     pub loading: bool,
     pub words: Words,
+    /// The language every word above is in.
+    pub language: Language,
     /// The person's character, as the widget draws it.
     pub avatar: String,
 }
@@ -1059,6 +1164,7 @@ impl Journal<'_> {
             log: self.log(place),
             loading,
             words: Words::new(self.language),
+            language: self.language,
             avatar,
         }
     }

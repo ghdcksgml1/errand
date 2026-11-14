@@ -5,7 +5,7 @@
 use super::kit::{self, Weight, color, ns, paint, rect};
 use super::marks::draw_app_mark;
 use errand_core::avatar::Avatar;
-use errand_core::journal::view::{Bar, Body, Callout, CalendarCell, DayView, DetailView, HourAxis, Masthead, MonthView, ReportSpan, ReportView, Screen, WeekView, JournalTab};
+use errand_core::journal::view::{Bar, Body, Callout, CalendarCell, DayView, DetailView, HourAxis, JournalTab, Masthead, MonthView, ReportSpan, ReportView, Screen, Translate, WeekView, Words, translate_label};
 use errand_core::model::Msg;
 use errand_core::ports::Poster;
 use errand_core::theme::{self, Paint, Rgb};
@@ -58,6 +58,8 @@ enum Hit {
     Close,
     Copy(String),
     OpenTask(String),
+    Translate(String, Vec<String>, Language),
+    Original(bool),
 }
 
 impl Hit {
@@ -71,6 +73,8 @@ impl Hit {
             Hit::Close => Msg::JournalOpen(None),
             Hit::Copy(text) => Msg::JournalCopy(text),
             Hit::OpenTask(url) => Msg::JournalOpenTask(url),
+            Hit::Translate(key, texts, language) => Msg::JournalTranslate { key, texts, language },
+            Hit::Original(original) => Msg::JournalOriginal(original),
         }
     }
 }
@@ -350,34 +354,49 @@ fn day(pen: &mut Pen, view: &DayView, screen: &Screen) -> f64 {
     for hour in view.axis.first..=view.axis.last {
         pen.fill(rect(x + (hour - view.axis.first) as f64 / span * width, plot + 16.0, 1.0, view.lanes as f64 * lane + 6.0), rgb(0.937, 0.937, 0.937).alpha(1.0));
     }
+    // The present goes under the work, so a label that crosses it stays readable.
+    let now_place = view.axis.now.map(|now| x + now * width);
+    if let Some(place) = now_place {
+        pen.fill(rect(place - 0.75, plot + 14.0, 1.5, view.lanes as f64 * lane + 10.0), theme::INK.alpha(1.0));
+    }
     for item in &view.bars {
         let left = x + item.start * width;
         let frame = rect(left, lanes_top + item.lane as f64 * lane, ((item.end - item.start) * width).max(8.0), 28.0);
-        bar(pen, item, frame, item.callout != Some(Callout::Running));
-        let inside = text_width(&item.label, 11.0, Weight::Semibold) + 34.0 <= frame.size.width;
+        let running = item.callout == Some(Callout::Running);
+        bar(pen, item, frame, !running);
+        let label_width = text_width(&item.label, 11.0, Weight::Semibold);
+        let inside = label_width + 34.0 <= frame.size.width;
         let ink = match item.callout {
             Some(Callout::Running) => theme::RUNNING,
             Some(Callout::Asking) => theme::ASKING,
             _ => theme::INK,
         };
-        if item.callout == Some(Callout::Running) {
+        if running {
             pen.icon("loader-circle", rect(frame.origin.x + 7.0, frame.origin.y + 8.0, 12.0, 12.0), theme::RUNNING_BRIGHT);
         }
+        let next = view.bars.iter().filter(|other| other.lane == item.lane && other.start > item.start).map(|other| x + other.start * width).fold(x + width, f64::min);
+        // Work still running ends at the present, and nothing is drawn after it yet: its name goes there.
+        let after = frame.origin.x + frame.size.width;
+        let after = now_place.map_or(after, |place| after.max(place)) + 8.0;
+        let room_after = (next - after - 4.0).min(label_width + 2.0);
         if inside {
-            let start = frame.origin.x + if item.callout == Some(Callout::Running) { 24.0 } else { 27.0 };
+            let start = frame.origin.x + if running { 24.0 } else { 27.0 };
             pen.text_in(&item.label, rect(start, frame.origin.y + 6.0, frame.size.width - (start - frame.origin.x) - 6.0, 16.0), 11.0, Weight::Semibold, ink.alpha(1.0), NSTextAlignment::Left, false);
+        } else if running && room_after >= label_width.min(60.0) {
+            pen.text_in(&item.label, rect(after, frame.origin.y + 6.0, room_after, 16.0), 11.0, Weight::Semibold, ink.alpha(1.0), NSTextAlignment::Left, false);
         } else {
             // Below the bar, as far as the next bar in its lane allows.
-            let next = view.bars.iter().filter(|other| other.lane == item.lane && other.start > item.start).map(|other| x + other.start * width).fold(x + width, f64::min);
             let room = (next - frame.origin.x - 8.0).min(150.0);
             if room >= 28.0 {
-                pen.text_in(&item.label, rect(frame.origin.x, frame.origin.y + 31.0, room, 15.0), 11.0, Weight::Medium, ink.alpha(1.0), NSTextAlignment::Left, false);
+                let label = rect(frame.origin.x, frame.origin.y + 31.0, room.min(label_width + 2.0), 15.0);
+                if now_place.is_some_and(|place| place > label.origin.x - 2.0 && place < label.origin.x + label.size.width + 2.0) {
+                    pen.fill(rect(label.origin.x - 3.0, label.origin.y, label.size.width + 6.0, label.size.height), theme::WHITE.alpha(1.0));
+                }
+                pen.text_in(&item.label, label, 11.0, Weight::Medium, ink.alpha(1.0), NSTextAlignment::Left, false);
             }
         }
     }
-    if let Some(now) = view.axis.now {
-        let place = x + now * width;
-        pen.fill(rect(place - 0.75, plot + 14.0, 1.5, view.lanes as f64 * lane + 10.0), theme::INK.alpha(1.0));
+    if let Some(place) = now_place {
         let words_width = text_width(&view.axis.now_text, 10.5, Weight::Semibold);
         let capsule = rect((place - words_width / 2.0 - 7.0).clamp(x, x + width - words_width - 14.0), lanes_top + view.lanes as f64 * lane + 2.0, words_width + 14.0, 18.0);
         pen.round(capsule, 9.0, Some(theme::INK.alpha(1.0)), None);
@@ -614,8 +633,12 @@ fn month(pen: &mut Pen, view: &MonthView, screen: &Screen) -> f64 {
         split_row(pen, project, rx, py, rw);
         py += 66.0;
     }
+    // A month without pull requests has no card for them.
+    if view.pull_requests.is_empty() {
+        return (top + height).max(top + projects_height) + 24.0;
+    }
     let pulls_top = top + projects_height + 14.0;
-    let pulls_height = 40.0 + view.pull_requests.len().max(1) as f64 * 30.0 + 6.0;
+    let pulls_height = 40.0 + view.pull_requests.len() as f64 * 30.0 + 6.0;
     pen.panel(rect(rx, pulls_top, rw, pulls_height), 16.0, theme::WHITE, EDGE.alpha(1.0), 1.0);
     let title = pen.text(words.pull_requests, rx + 14.0, pulls_top + 13.0, 12.5, Weight::Semibold, theme::INK.alpha(1.0));
     pen.capsule(rx + 20.0 + title, pulls_top + 12.0, 18.0, None, &view.pull_requests.len().to_string(), 11.0, theme::MUTED.alpha(0.12), theme::MUTED, theme::MUTED);
@@ -872,7 +895,7 @@ fn top_bar(pen: &mut Pen, screen: &Screen) {
 fn detail(pen: &mut Pen, view: &DetailView, screen: &Screen) {
     let words = &screen.words;
     pen.fill(rect(0.0, TOP, SIZE.0, SIZE.1 - TOP), theme::INK.alpha(0.16));
-    let panel = rect(SIZE.0 - 10.0 - 500.0, 60.0, 500.0, SIZE.1 - 70.0);
+    let panel = detail_frame();
     if pen.draw {
         NSGraphicsContext::saveGraphicsState_class();
         let shadow = NSShadow::new();
@@ -934,10 +957,56 @@ fn detail(pen: &mut Pen, view: &DetailView, screen: &Screen) {
     }
     y += 42.0;
     pen.fill(rect(panel.origin.x, y, panel.size.width, 1.0), HAIRLINE.alpha(1.0));
-    y += 16.0;
+    if pen.draw {
+        NSGraphicsContext::restoreGraphicsState_class();
+    }
+    // Presses are checked last-first: the panel's buttons, then the panel itself, which keeps it open, then the
+    // dimmed window around it, which closes it.
+    let buttons: Vec<(NSRect, Hit)> = pen.hits.drain(1..).collect();
+    pen.hits.push((panel, Hit::Open(view.key.clone())));
+    pen.hits.extend(buttons);
+    pen.hits.push((close, Hit::Close));
+}
+
+/// Where the task panel sits, and how tall its fixed header is; its body scrolls under the header.
+const DETAIL_WIDTH: f64 = 500.0;
+const DETAIL_TOP: f64 = 60.0;
+const DETAIL_HEADER: f64 = 18.0 + 34.0 + 26.0 + 42.0 + 1.0;
+
+fn detail_frame() -> NSRect {
+    rect(SIZE.0 - 10.0 - DETAIL_WIDTH, DETAIL_TOP, DETAIL_WIDTH, SIZE.1 - DETAIL_TOP - 10.0)
+}
+
+/// The scrolling part of a task's panel: each request and its answer, the commits and the changed files.
+/// Returns how tall it is.
+fn detail_body(pen: &mut Pen, view: &DetailView, words: &Words, language: Language) -> f64 {
+    let (x, width) = (20.0, DETAIL_WIDTH - 40.0);
+    let mut y = 16.0;
     // Each request and what came back, in order.
     pen.text(words.flow, x, y, 12.5, Weight::Semibold, theme::INK.alpha(1.0));
+    // Answers written in another language can be translated, and shown as written again.
+    if let Some(translate) = &view.translate {
+        let label = translate_label(translate, language);
+        let working = matches!(translate, Translate::Working);
+        let frame = rect(x + width - text_width(label, 11.5, Weight::Medium) - 22.0, y - 4.0, text_width(label, 11.5, Weight::Medium) + 22.0, 24.0);
+        pen.round(frame, 12.0, Some(theme::INK.alpha(if working { 0.04 } else { 0.07 })), None);
+        pen.text(label, frame.origin.x + 11.0, frame.origin.y + 4.5, 11.5, Weight::Medium, if working { theme::MUTED.alpha(1.0) } else { theme::INK.alpha(1.0) });
+        let hit = match translate {
+            Translate::Offer(texts) | Translate::Failed(_, texts) => Some(Hit::Translate(view.key.clone(), texts.clone(), language)),
+            Translate::Shown => Some(Hit::Original(true)),
+            Translate::Original => Some(Hit::Original(false)),
+            Translate::Working => None,
+        };
+        if let Some(hit) = hit {
+            pen.hit(frame, hit);
+        }
+    }
     y += 26.0;
+    if let Some(Translate::Failed(why, _)) = &view.translate {
+        let height = pen.text_height(why, width, 11.5, Weight::Regular, 3);
+        pen.text_in(why, rect(x, y - 4.0, width, height), 11.5, Weight::Regular, theme::STALLED.alpha(1.0), NSTextAlignment::Left, true);
+        y += height + 8.0;
+    }
     let content_x = x + 64.0;
     let content_width = width - 64.0;
     for (index, turn) in view.turns.iter().enumerate() {
@@ -1000,15 +1069,7 @@ fn detail(pen: &mut Pen, view: &DetailView, screen: &Screen) {
             y += 24.0;
         }
     }
-    if pen.draw {
-        NSGraphicsContext::restoreGraphicsState_class();
-    }
-    // Presses are checked last-first: the panel's buttons, then the panel itself, which keeps it open, then the
-    // dimmed window around it, which closes it.
-    let buttons: Vec<(NSRect, Hit)> = pen.hits.drain(1..).collect();
-    pen.hits.push((panel, Hit::Open(view.key.clone())));
-    pen.hits.extend(buttons);
-    pen.hits.push((close, Hit::Close));
+    y + 20.0
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1016,6 +1077,8 @@ enum Layer {
     Top,
     Canvas,
     Overlay,
+    /// The scrolling body inside the task panel.
+    DetailBody,
 }
 
 pub struct LayerIvars {
@@ -1049,8 +1112,12 @@ define_class!(
             let screen = ivars.screen.borrow();
             let Some(screen) = screen.as_ref() else { return };
             let mut pen = Pen { draw: true, hits: Vec::new() };
+            match ivars.layer {
+                Layer::Top | Layer::Canvas => color(GROUND).setFill(),
+                Layer::DetailBody => color(theme::WHITE).setFill(),
+                Layer::Overlay => NSColor::clearColor().setFill(),
+            }
             if ivars.layer != Layer::Overlay {
-                color(GROUND).setFill();
                 NSBezierPath::fillRect(self.bounds());
             }
             match ivars.layer {
@@ -1061,6 +1128,11 @@ define_class!(
                 Layer::Overlay => {
                     if let Some(view) = &screen.detail {
                         detail(&mut pen, view, screen);
+                    }
+                }
+                Layer::DetailBody => {
+                    if let Some(view) = &screen.detail {
+                        detail_body(&mut pen, view, &screen.words, screen.language);
                     }
                 }
             }
@@ -1091,9 +1163,10 @@ define_class!(
             let owned = match self.ivars().layer {
                 Layer::Top => self.ivars().hits.borrow().iter().any(|(frame, _)| kit::contains(*frame, local)),
                 Layer::Overlay => self.ivars().screen.borrow().as_ref().is_some_and(|screen| screen.detail.is_some()) && local.y >= TOP,
-                Layer::Canvas => true,
+                Layer::Canvas | Layer::DetailBody => true,
             };
-            if inside && owned { (self as *const JournalLayer).cast_mut().cast() } else { std::ptr::null_mut() }
+            // The panel's scrolling body is a subview of the overlay, so it is asked first.
+            if inside && owned { unsafe { msg_send![super(self), hitTest: point] } } else { std::ptr::null_mut() }
         }
     }
 );
@@ -1133,6 +1206,9 @@ pub struct Journal {
     canvas: Retained<JournalLayer>,
     overlay: Retained<JournalLayer>,
     scroll: Retained<NSScrollView>,
+    detail_scroll: Retained<NSScrollView>,
+    detail_body: Retained<JournalLayer>,
+    detail_key: Option<String>,
     _delegate: Retained<JournalDelegate>,
     shown: Option<Screen>,
     tab: Cell<Option<(JournalTab, i64)>>,
@@ -1165,13 +1241,24 @@ impl Journal {
         let overlay = JournalLayer::new(mtm, rect(0.0, 0.0, width, height), Layer::Overlay, poster.clone());
         overlay.setHidden(true);
         content.addSubview(&overlay);
+        // The task panel's body scrolls under its header, inside the overlay; the bottom stays clear of the
+        // panel's rounded corners.
+        let panel = detail_frame();
+        let body_frame = rect(panel.origin.x + 1.0, panel.origin.y + DETAIL_HEADER, panel.size.width - 2.0, panel.size.height - DETAIL_HEADER - 10.0);
+        let detail_scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), body_frame);
+        detail_scroll.setDrawsBackground(false);
+        detail_scroll.setHasVerticalScroller(true);
+        detail_scroll.setAutohidesScrollers(true);
+        let detail_body = JournalLayer::new(mtm, rect(0.0, 0.0, body_frame.size.width, body_frame.size.height), Layer::DetailBody, poster.clone());
+        detail_scroll.setDocumentView(Some(&detail_body));
+        overlay.addSubview(&detail_scroll);
         let delegate: Retained<JournalDelegate> = {
             let this = JournalDelegate::alloc(mtm).set_ivars(poster);
             unsafe { msg_send![super(this), init] }
         };
         window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         window.center();
-        Journal { window, top, canvas, overlay, scroll, _delegate: delegate, shown: None, tab: Cell::new(None) }
+        Journal { window, top, canvas, overlay, scroll, detail_scroll, detail_body, detail_key: None, _delegate: delegate, shown: None, tab: Cell::new(None) }
     }
 
     pub fn render(&mut self, screen: &Screen) {
@@ -1188,6 +1275,21 @@ impl Journal {
         self.canvas.show(screen);
         self.overlay.show(screen);
         self.overlay.setHidden(screen.detail.is_none());
+        if let Some(detail) = &screen.detail {
+            let visible = self.detail_scroll.frame().size;
+            let height = detail_body(&mut Pen::measuring(), detail, &screen.words, screen.language).max(visible.height);
+            self.detail_body.setFrameSize(NSSize::new(visible.width, height));
+            self.detail_body.show(screen);
+            // Another task's record starts at its top.
+            if self.detail_key.as_deref() != Some(detail.key.as_str()) {
+                self.detail_key = Some(detail.key.clone());
+                let clip = self.detail_scroll.contentView();
+                clip.scrollToPoint(NSPoint::new(0.0, 0.0));
+                self.detail_scroll.reflectScrolledClipView(&clip);
+            }
+        } else {
+            self.detail_key = None;
+        }
         // A new view or period starts at its top.
         let place = (screen.place.tab, screen.place.back);
         if self.tab.get() != Some(place) {

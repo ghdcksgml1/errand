@@ -119,7 +119,7 @@ mod views {
 
     fn journal<'a>(records: &'a [WorkRecord], live: &'a HashMap<String, Live>, zone: &'a TimeZone) -> Journal<'a> {
         // 16:10 in Seoul on Friday 13 November 2026.
-        Journal { records, live, now: at("2026-11-13T07:10:00Z"), zone, language: Language::Korean }
+        Journal { records, live, translations: Box::leak(Box::default()), now: at("2026-11-13T07:10:00Z"), zone, language: Language::Korean }
     }
 
     #[test]
@@ -185,6 +185,44 @@ mod views {
         assert!(log.contains("### shop-web\n- 로그인 화면 리팩터링: 폼 상태를 옮겼어요. (커밋 1)\n"));
         assert!(log.contains("- 입력값 검증 추가: 검증을 더했어요. (PR #48)"));
     }
+
+    #[test]
+    fn answers_in_another_language_can_be_translated_and_shown_as_written() {
+        use errand_core::journal::view::{Translate, Translations, foreign};
+        assert!(foreign("I installed it. The build is now in your Applications folder.", Language::Korean));
+        assert!(!foreign("main `bc8e741`을 점검했고, 수정이 필요한 보안 문제 3건을 재현했습니다. [tasks.rs:100](/Users/me/code/errand/crates/tasks.rs)", Language::Korean));
+        assert!(!foreign("`44e4ed3`", Language::Korean), "a hash alone is no language");
+        assert!(foreign("폼 상태를 훅으로 옮기고 테스트를 고쳤어요.", Language::English));
+        assert!(!foreign("Moved the form state into a hook.", Language::English));
+
+        let english = "Moved the form state into a hook and fixed the tests.";
+        let records = vec![record("claude:e", Provider::Claude, "/code/shop-web", "로그인 훅", vec![turn("2026-11-13T02:00:00Z", Some("2026-11-13T02:30:00Z"), english), turn("2026-11-13T03:00:00Z", Some("2026-11-13T03:10:00Z"), "테스트를 고쳤어요.")])];
+        let (live, zone) = (HashMap::new(), TimeZone::get("Asia/Seoul").unwrap());
+        let mut translations = Translations::default();
+        let view = |translations: &Translations| Journal { records: &records, live: &live, translations, now: at("2026-11-13T07:10:00Z"), zone: &zone, language: Language::Korean }.detail("claude:e").unwrap();
+
+        // Only the English answer is offered, and nothing changes until it comes back.
+        assert_eq!(view(&translations).translate, Some(Translate::Offer(vec![english.to_owned()])));
+        translations.working = Some("claude:e".into());
+        assert_eq!(view(&translations).translate, Some(Translate::Working));
+        translations.working = None;
+        translations.failed = Some(("claude:e".into(), "번역하지 못했어요. / Could not translate.".into()));
+        assert_eq!(view(&translations).translate, Some(Translate::Failed("번역하지 못했어요.".into(), vec![english.to_owned()])));
+        translations.failed = None;
+        translations.texts.insert(english.to_owned(), "폼 상태를 훅으로 옮기고 테스트를 고쳤어요.".to_owned());
+        let shown = view(&translations);
+        assert_eq!(shown.translate, Some(Translate::Shown));
+        assert_eq!(shown.turns[0].result, "폼 상태를 훅으로 옮기고 테스트를 고쳤어요.");
+        assert_eq!(shown.turns[1].result, "테스트를 고쳤어요.");
+        translations.original = true;
+        let original = view(&translations);
+        assert_eq!(original.translate, Some(Translate::Original));
+        assert_eq!(original.turns[0].result, english);
+
+        // A task whose answers are all in the window's language offers nothing.
+        let sample = sample();
+        assert_eq!(journal(&sample, &live, &zone).detail("claude:a").unwrap().translate, None);
+    }
 }
 
 #[test]
@@ -197,4 +235,32 @@ fn requests_lose_what_the_app_put_in_front_and_worktrees_count_as_their_reposito
     assert_eq!(transcript.turns.iter().map(|turn| turn.ask.as_str()).collect::<Vec<_>>(), ["2번이 좋아"]);
     let record = WorkRecord::from_transcript("k".into(), Provider::Claude, transcript, None, None);
     assert_eq!(record.project(), "shop-web");
+}
+
+#[test]
+fn an_answer_after_the_thinking_closed_the_turn_still_counts() {
+    let data = lines(&[
+        r#"{"type":"user","timestamp":"2026-11-13T00:00:00Z","message":{"content":"설명해줘"}}"#,
+        r#"{"type":"assistant","timestamp":"2026-11-13T00:01:00Z","message":{"stop_reason":"end_turn","content":[{"type":"thinking","thinking":"…"}]}}"#,
+        r#"{"type":"assistant","timestamp":"2026-11-13T00:01:05Z","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"이렇게 했어요."}]}}"#,
+        r#"{"type":"user","timestamp":"2026-11-13T00:05:00Z","message":{"content":"고마워"}}"#,
+        r#"{"type":"assistant","timestamp":"2026-11-13T00:05:10Z","message":{"stop_reason":"stop_sequence","content":[{"type":"text","text":"천만에요."}]}}"#,
+    ]);
+    let transcript = read_claude(&data);
+    let turns: Vec<_> = transcript.turns.iter().map(|turn| (turn.result.as_deref(), turn.finished_at)).collect();
+    assert_eq!(turns, [(Some("이렇게 했어요."), Some(at("2026-11-13T00:01:05Z"))), (Some("천만에요."), Some(at("2026-11-13T00:05:10Z")))]);
+}
+
+#[test]
+fn old_transcripts_without_end_marks_still_have_answers() {
+    let data = lines(&[
+        r#"{"type":"user","timestamp":"2026-04-19T07:12:00Z","message":{"content":"docker-compose로 말아줘"}}"#,
+        r#"{"type":"assistant","timestamp":"2026-04-19T07:13:00Z","message":{"content":[{"type":"tool_use","name":"Write"}]}}"#,
+        r#"{"type":"assistant","timestamp":"2026-04-19T07:15:00Z","message":{"content":[{"type":"text","text":"compose 파일을 만들었어요."}]}}"#,
+        r#"{"type":"user","timestamp":"2026-04-19T09:00:00Z","message":{"content":"왜 css가 안 되지?"}}"#,
+        r#"{"type":"assistant","timestamp":"2026-04-19T09:02:00Z","message":{"content":[{"type":"text","text":"경로가 틀렸어요."}]}}"#,
+    ]);
+    let transcript = read_claude(&data);
+    let turns: Vec<_> = transcript.turns.iter().map(|turn| (turn.result.as_deref(), turn.finished_at)).collect();
+    assert_eq!(turns, [(Some("compose 파일을 만들었어요."), Some(at("2026-04-19T07:15:00Z"))), (Some("경로가 틀렸어요."), None)]);
 }

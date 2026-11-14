@@ -1550,7 +1550,7 @@ pub fn journal(state: &AppState, context: &ViewContext) -> crate::journal::view:
             MiniBattery { provider, level: vm.level, percent: vm.percent, low: vm.low }
         })
         .collect();
-    let journal = Journal { records: &state.journal.records, live: &live, now: context.now, zone: &context.zone, language: context.language };
+    let journal = Journal { records: &state.journal.records, live: &live, translations: &state.journal.translations, now: context.now, zone: &context.zone, language: context.language };
     let loading = state.journal.scanned_at.is_none();
     journal.screen(&state.journal.place, usage, loading, state.profile.avatar.clone())
 }

@@ -378,7 +378,8 @@ fn sample_journal(now: Timestamp, language: Language) -> Vec<errand_core::journa
     let mut login = record("sample:login", Provider::Claude, "shop-web", say("로그인 화면 리팩터링", "Refactor the sign-in screen"), vec![
         turn(at(0, 9, 12), Some(13), say("로그인 화면을 훅 기반으로 바꿔줘", "Move the sign-in screen onto hooks"), say("폼 상태와 검증을 useLoginForm 훅으로 옮겼어요. 파일 4개를 고쳤어요.", "Moved form state and checks into a useLoginForm hook, across four files.")),
         turn(at(0, 9, 25), Some(9), say("에러 문구도 하나로 맞춰줘", "Make the error messages match too"), say("흩어져 있던 에러 문구 5개를 messages.ts로 모았어요.", "Gathered five scattered error messages into messages.ts.")),
-        turn(at(0, 9, 38), Some(2), say("커밋해줘", "Commit it"), say("커밋 2개를 남겼어요. 푸시는 하지 않았어요.", "Left two commits, not pushed.")),
+        // An answer in the other language, as agents sometimes write, so the panel offers to translate it.
+        turn(at(0, 9, 38), Some(2), say("커밋해줘", "Commit it"), say("Left two commits, not pushed.", "커밋 2개를 남겼어요. 푸시는 하지 않았어요.")),
     ]);
     login.branch = Some("feature/login-hook".to_owned());
     login.commits = vec![

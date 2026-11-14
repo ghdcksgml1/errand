@@ -37,6 +37,10 @@ struct Reader {
     /// Commit messages printed by `git commit`, by the hash it printed.
     printed: HashMap<String, String>,
     files: HashMap<String, usize>,
+    /// The agent's latest words in the request being worked on, and when it last did anything: older transcripts
+    /// mark no end, so these stand in for the answer and the time it came.
+    last_words: Option<String>,
+    last_activity: Option<Timestamp>,
 }
 
 /// The person's own words: blocks an app puts in front of them, such as `<artifact-view-context …>…</…>`, are
@@ -74,17 +78,16 @@ impl Reader {
         {
             return;
         }
-        // A new request ends one that never said it had.
-        if let Some(open) = self.open
-            && let Some(turn) = self.transcript.turns.get_mut(open)
-            && turn.finished_at.is_none()
-        {
-            turn.finished_at = Some(at);
-        }
+        // A new request ends one that never said it had, when the agent last did anything.
+        self.close_unmarked(Some(at));
+        self.last_words = None;
+        self.last_activity = None;
         self.transcript.turns.push(WorkTurn { asked_at: at, ask, finished_at: None, result: None, aborted: false });
         self.open = Some(self.transcript.turns.len() - 1);
     }
 
+    /// Ends the latest request. It stays the latest until the next one, so an answer written after its end, as
+    /// Claude Code does when it closes the thinking before the text, still lands on it.
     fn finish(&mut self, at: Timestamp, result: Option<String>, aborted: bool) {
         let Some(turn) = self.open.and_then(|open| self.transcript.turns.get_mut(open)) else { return };
         turn.finished_at = Some(at);
@@ -92,7 +95,29 @@ impl Reader {
         if result.is_some() {
             turn.result = result;
         }
-        self.open = None;
+    }
+
+    /// Gives the latest request the agent's last words when nothing marked them as its answer, and an end when
+    /// `next` shows the person had moved on.
+    fn close_unmarked(&mut self, next: Option<Timestamp>) {
+        let (words, activity) = (self.last_words.take(), self.last_activity);
+        let Some(turn) = self.open.and_then(|open| self.transcript.turns.get_mut(open)) else { return };
+        if turn.result.is_none() && !turn.aborted {
+            turn.result = words;
+        }
+        if turn.finished_at.is_none()
+            && let Some(next) = next
+        {
+            turn.finished_at = Some(activity.filter(|done| *done > turn.asked_at).unwrap_or(next));
+        }
+    }
+
+    /// The agent said something in the request being worked on.
+    fn spoke(&mut self, at: Timestamp, words: String) {
+        self.last_activity = Some(at);
+        if !words.trim().is_empty() {
+            self.last_words = Some(words);
+        }
     }
 
     /// The end of a turn the transcript marks only by its timing line, after its answer.
@@ -101,7 +126,6 @@ impl Reader {
             && turn.finished_at.is_none()
         {
             turn.finished_at = Some(at);
-            self.open = None;
         }
     }
 
@@ -180,6 +204,8 @@ impl Reader {
     }
 
     fn done(mut self) -> Transcript {
+        // The last request keeps running unless something ended it; it still gets the words said so far.
+        self.close_unmarked(None);
         self.transcript.title = self.custom_title.or(self.ai_title);
         self.transcript
     }
@@ -244,10 +270,11 @@ pub fn read_claude(data: &[u8]) -> Transcript {
             Some("user") => claude_user(&mut reader, line, at, sidechain),
             Some("assistant") if !sidechain => {
                 let Some(message) = json::object(line.get("message")) else { return };
-                if message.get("stop_reason").and_then(Value::as_str) == Some("end_turn") {
-                    let text = message_text(message.get("content"));
-                    reader.finish(at, (!text.trim().is_empty()).then_some(text), false);
+                let text = message_text(message.get("content"));
+                if matches!(message.get("stop_reason").and_then(Value::as_str), Some("end_turn" | "stop_sequence")) {
+                    reader.finish(at, (!text.trim().is_empty()).then_some(text.clone()), false);
                 }
+                reader.spoke(at, text);
             }
             Some("system") if !sidechain => {
                 if matches!(line.get("subtype").and_then(Value::as_str), Some("turn_duration" | "stop_hook_summary")) {

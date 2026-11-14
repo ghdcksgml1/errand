@@ -79,6 +79,9 @@ impl JournalScanner {
         let projects = self.sources.claude_projects.clone();
         let mut records = Vec::new();
         for project in list(&projects) {
+            if is_scratch(&project) {
+                continue;
+            }
             let folder = projects.join(&project);
             for name in list(&folder) {
                 let Some(stem) = name.strip_suffix(".jsonl") else { continue };
@@ -88,7 +91,7 @@ impl JournalScanner {
                     continue;
                 }
                 let Some(transcript) = self.transcript(&path, read_claude) else { continue };
-                if transcript.turns.is_empty() {
+                if transcript.turns.is_empty() || transcript.folder.as_deref().is_some_and(is_scratch_folder) {
                     continue;
                 }
                 let id = transcript.id.clone().unwrap_or_else(|| stem.to_owned());
@@ -114,6 +117,9 @@ impl JournalScanner {
             if transcript.turns.is_empty() {
                 continue;
             }
+            if transcript.folder.as_deref().or(Some(thread.cwd.as_str())).is_some_and(is_scratch_folder) {
+                continue;
+            }
             let mut transcript = transcript;
             if transcript.folder.as_deref().is_none_or(str::is_empty) && !thread.cwd.is_empty() {
                 transcript.folder = Some(thread.cwd.clone());
@@ -135,4 +141,16 @@ fn codex_database(home: &Path) -> Option<PathBuf> {
         }
     }
     best.map(|(_, path)| path)
+}
+
+/// Folders the system clears on its own, where agents run quick probes rather than the person's work.
+const SCRATCH: [&str; 4] = ["/private/tmp/", "/tmp/", "/private/var/folders/", "/var/folders/"];
+
+fn is_scratch_folder(folder: &str) -> bool {
+    SCRATCH.iter().any(|prefix| folder.starts_with(prefix))
+}
+
+/// The same, for Claude Code's folder of transcripts, named after the working directory.
+fn is_scratch(project: &str) -> bool {
+    ["-private-tmp-", "-tmp-", "-private-var-folders-", "-var-folders-"].iter().any(|prefix| project.starts_with(prefix))
 }

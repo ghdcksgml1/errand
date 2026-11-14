@@ -213,6 +213,7 @@ pub struct JournalState {
     pub open: bool,
     pub scanning: bool,
     pub scanned_at: Option<Timestamp>,
+    pub translations: crate::journal::view::Translations,
 }
 
 /// How far back the window reads: a year of heat map and the week it ends in.
@@ -362,6 +363,12 @@ pub enum Msg {
     JournalCopy(String),
     /// Opens a task in its app.
     JournalOpenTask(String),
+    /// Translates these answers of a task into the language the window reads, with the AI that writes task titles.
+    JournalTranslate { key: String, texts: Vec<String>, language: crate::Language },
+    /// Each answer with its translation, or why there are none.
+    JournalTranslated { key: String, result: Result<Vec<(String, String)>, String> },
+    /// Shows answers as they were written (true) or translated.
+    JournalOriginal(bool),
     /// The widget moved or the screens changed: nothing to update, only to draw again.
     Redraw,
     /// The menu: opens the list of rooms beside the dock.
@@ -459,6 +466,8 @@ pub enum Effect {
     ShowDashboard,
     /// Reads every record since this time, then sends `JournalScanned`.
     ScanJournal(Timestamp),
+    /// Asks the local CLI to translate these answers, then sends `JournalTranslated`.
+    TranslateJournal { key: String, texts: Vec<String>, language: crate::Language, provider: Provider, model: String },
     FetchRooms,
     /// Send this room the person's presence report, as this visible a room may hear it, then `RoomRead`.
     SyncRoom { room: String, visibility: Visibility },
@@ -1195,11 +1204,38 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             vec![]
         }
         Msg::JournalOpen(key) => {
+            if state.journal.place.open != key {
+                state.journal.translations.original = false;
+            }
             state.journal.place.open = key;
             vec![]
         }
         Msg::JournalCopy(text) => vec![Effect::Copy(text)],
         Msg::JournalOpenTask(url) => vec![Effect::OpenUrl(url)],
+        Msg::JournalTranslate { key, texts, language } => {
+            let translations = &mut state.journal.translations;
+            if texts.is_empty() || translations.working.is_some() {
+                return vec![];
+            }
+            translations.working = Some(key.clone());
+            translations.failed = None;
+            translations.original = false;
+            let settings = &state.tasks.settings;
+            vec![Effect::TranslateJournal { key, texts, language, provider: settings.provider, model: settings.model().to_owned() }]
+        }
+        Msg::JournalTranslated { key, result } => {
+            let translations = &mut state.journal.translations;
+            translations.working = None;
+            match result {
+                Ok(pairs) => translations.texts.extend(pairs),
+                Err(why) => translations.failed = Some((key, why)),
+            }
+            vec![]
+        }
+        Msg::JournalOriginal(original) => {
+            state.journal.translations.original = original;
+            vec![]
+        }
     }
 }
 

@@ -24,3 +24,5 @@ pub mod task_title;
 pub mod tasks;
 
 pub mod task_settings;
+
+pub mod translate;

@@ -246,6 +246,16 @@ impl Runtime {
                 let _ = self.journal_scans.send(since);
                 None
             }
+            Effect::TranslateJournal { key, texts, language, provider, model } => {
+                let poster = self.poster.clone();
+                let executable = self.platform.title_cli(provider);
+                thread::spawn(move || {
+                    let cancel = std::sync::atomic::AtomicBool::new(false);
+                    let result = errand_io::translate::translate(executable.as_deref(), provider, &model, &texts, language, &cancel);
+                    poster.post(Msg::JournalTranslated { key, result });
+                });
+                None
+            }
             Effect::ReadAttention => Some(Msg::AttentionRead(self.platform.attention())),
             Effect::SaveResetHistory => {
                 let _ = stores::save_reset_history(&self.platform.reset_history, &self.state.history);
