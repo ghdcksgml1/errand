@@ -23,11 +23,6 @@ pub fn month_day_time(at: Timestamp, zone: &TimeZone) -> String {
     at.to_zoned(zone.clone()).strftime("%-m/%-d %H:%M").to_string()
 }
 
-/// When something was observed, or that nothing has been recorded yet.
-pub fn date_or_waiting(at: Option<Timestamp>, zone: &TimeZone, language: Language) -> String {
-    at.map_or_else(|| language.not_recorded().to_owned(), |at| month_day_time(at, zone))
-}
-
 /// "방금", "7분 전", "3시간 전", then the date once it is half a day old.
 pub fn relative_time(at: Option<Timestamp>, now: Timestamp, zone: &TimeZone, language: Language) -> String {
     let Some(at) = at else { return String::new() };
@@ -77,8 +72,6 @@ mod tests {
     fn dates_drop_leading_zeros_from_month_and_day_only() {
         // 2026-10-05T00:07:00Z is 09:07 in Seoul.
         assert_eq!(month_day_time(at(1_791_158_820.0), &seoul()), "10/5 09:07");
-        assert_eq!(date_or_waiting(None, &seoul(), Language::Korean), "기록 대기");
-        assert_eq!(date_or_waiting(None, &seoul(), Language::English), "Not recorded yet");
     }
 
     #[test]

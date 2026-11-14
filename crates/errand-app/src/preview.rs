@@ -2,7 +2,7 @@
 //! ones the Objective-C build drew, with English stand-ins for the sample tasks.
 
 use crate::platform::Platform;
-use errand_core::format::{self, timestamp_from_seconds};
+use errand_core::format;
 use errand_core::model::{AccountInfo, AppState, Msg, Profile, WidgetPreferences, update};
 use errand_core::ports::RoomService;
 use errand_core::reset_history::ResetHistory;
@@ -11,11 +11,9 @@ use errand_core::sessions::{Question, SessionRecords, SessionRow, TaskCounts, Vi
 use errand_core::update::Release;
 use errand_core::usage::{Reading, UsageError, UsageWindow, claude, codex};
 use errand_core::{Language, PerProvider, Provider, Timestamp};
-use jiff::SignedDuration;
+use jiff::{SignedDuration, ToSpan};
 use serde_json::json;
 
-/// 2026-10-15T06:00:00Z, the moment the fixtures were read.
-const FETCHED: f64 = 1_792_044_000.0;
 
 /// Fixture words in the preview's language.
 fn words(language: Language, korean: &'static str, english: &'static str) -> &'static str {
@@ -25,28 +23,41 @@ fn words(language: Language, korean: &'static str, english: &'static str) -> &'s
     }
 }
 
+/// When the sample limits refill: the short one on the hour between two and three hours from now, the weekly
+/// one at nine on the coming Monday.
+fn sample_resets(now: Timestamp) -> (f64, f64) {
+    let hourly = ((format::seconds(now) / 3600.0).floor() + 3.0) * 3600.0;
+    let zone = format::local_zone();
+    let today = now.to_zoned(zone.clone()).date();
+    let ahead = 7 - today.weekday().to_monday_zero_offset() as i64;
+    let monday = today.checked_add(ahead.days()).ok().and_then(|monday| monday.at(9, 0, 0, 0).to_zoned(zone).ok());
+    (hourly, monday.map_or(hourly + 6.0 * 86_400.0, |at| format::seconds(at.timestamp())))
+}
+
 pub fn state(arguments: &[String], now: Timestamp, language: Language) -> AppState {
     let has = |flag: &str| arguments.iter().any(|argument| argument == flag);
-    let fetched = timestamp_from_seconds(FETCHED).expect("a fixed time");
+    // Read just now, with limits that refill as real ones do.
+    let fetched = now;
+    let (hourly_reset, weekly_reset) = sample_resets(now);
     let nickname = words(language, "내 닉네임", "My nickname").to_owned();
     let mut state = AppState::new(ResetHistory::new(), SessionRecords::new(now), WidgetPreferences::default(), nickname.clone());
-    let weekly = json!({"usedPercent": 28, "windowDurationMins": 10080, "resetsAt": 1792368000});
+    let weekly = json!({"usedPercent": 28, "windowDurationMins": 10080, "resetsAt": weekly_reset});
     let mut codex_response = json!({"rateLimits": {"primary": weekly}});
-    let mut claude_limits = json!({"five_hour": {"used_percentage": 35.4, "resets_at": 1792054800},
-                                   "seven_day": {"used_percentage": 58, "resets_at": 1792368000}});
+    let mut claude_limits = json!({"five_hour": {"used_percentage": 35.4, "resets_at": hourly_reset},
+                                   "seven_day": {"used_percentage": 58, "resets_at": weekly_reset}});
     if has("--preview-multiple") {
-        codex_response = json!({"rateLimits": {"primary": {"usedPercent": 90, "windowDurationMins": 300, "resetsAt": 1792054800}, "secondary": weekly}});
-        claude_limits = json!({"five_hour": {"used_percentage": 81, "resets_at": 1792054800},
-                               "seven_day": {"used_percentage": 58, "resets_at": 1792368000}});
+        codex_response = json!({"rateLimits": {"primary": {"usedPercent": 90, "windowDurationMins": 300, "resetsAt": hourly_reset}, "secondary": weekly}});
+        claude_limits = json!({"five_hour": {"used_percentage": 81, "resets_at": hourly_reset},
+                               "seven_day": {"used_percentage": 58, "resets_at": weekly_reset}});
     }
     let codex_reading = Reading::from(codex::windows_from_response(&codex_response));
     let mut claude_reading = Reading { windows: claude::windows_from_rate_limits(&claude_limits), reported_at: Some(fetched) };
     if has("--preview-multiple") {
-        claude_reading.windows.extend(claude::window("limits/Fable", 88, 1792368000.0));
+        claude_reading.windows.extend(claude::window("limits/Fable", 88, weekly_reset));
     }
     if has("--preview-low") {
         // Claude's week nearly spent: 18% left.
-        let low = json!({"five_hour": {"used_percentage": 35.4, "resets_at": 1792054800}, "seven_day": {"used_percentage": 82, "resets_at": 1792368000}});
+        let low = json!({"five_hour": {"used_percentage": 35.4, "resets_at": hourly_reset}, "seven_day": {"used_percentage": 82, "resets_at": weekly_reset}});
         claude_reading.windows = claude::windows_from_rate_limits(&low);
     }
     for (provider, reading) in [(Provider::Codex, codex_reading), (Provider::Claude, claude_reading)] {

@@ -624,7 +624,7 @@ mod widget {
             overlap_width(details_panel.frame(), panel.frame()) < 1.0 && inside(screen, details_panel.frame()),
             &format!("The details open beside the dock instead of covering it: dock={:?} details={:?}", panel.frame(), details_panel.frame()),
         );
-        t.check(shows(&details, "72% 남음") && shows(&details, "다음 초기화"), "The details include live usage and reset times");
+        t.check(shows(&details, "72%") && shows(&details, "남음") && shows(&details, "뒤 초기화") && shows(&details, "10/19 09:00"), "The details include live usage and how long until it refills");
         click(&h.battery(Provider::Codex), NSPoint::new(150.0, 15.0));
         h.pump();
         t.check(!details_panel.isVisible(), "Clicking again closes the details");
@@ -1771,9 +1771,10 @@ mod widget {
         let details = h.details();
         t.check(
             details_panel.isVisible()
-                && shows(&details, "Account usage")
-                && shows(&details, "Next reset   10/19 09:00")
-                && titled(&details, "Show all").is_some()
+                && shows(&details, "Usage left")
+                && shows(&details, "Resets in ")
+                && shows(&details, "10/19 09:00")
+                && titled(&details, "Open work records").is_some()
                 && titled(&details, "Close").is_some(),
             "The English details name their limits and buttons in English",
         );

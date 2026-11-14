@@ -47,10 +47,6 @@ impl Language {
 
     // Times.
 
-    pub fn not_recorded(self) -> &'static str {
-        self.pick("기록 대기", "Not recorded yet")
-    }
-
     pub fn just_now(self) -> &'static str {
         self.pick("방금", "just now")
     }
@@ -105,14 +101,6 @@ impl Language {
             (Language::English, Some(left)) => format!("{title} {left}% left"),
             (Language::Korean, None) => format!("{title} 남은 비율 확인 불가"),
             (Language::English, None) => format!("{title} remaining unknown"),
-        }
-    }
-
-    /// "72% 남음" on its own.
-    pub fn percent_left(self, left: i64) -> String {
-        match self {
-            Language::Korean => format!("{left}% 남음"),
-            Language::English => format!("{left}% left"),
         }
     }
 
@@ -618,9 +606,9 @@ impl Language {
         }
     }
 
-    /// The card's button: bring the open app forward, or open it.
-    pub fn open_button(self, running: bool) -> &'static str {
-        if running { self.pick("창 보기", "Show") } else { self.pick("계정 열기", "Open") }
+    /// The card's button: it opens the app, or brings it forward where it is open already.
+    pub fn open_button(self) -> &'static str {
+        self.pick("열기", "Open")
     }
 
     pub fn open_label(self, provider: Provider) -> String {
@@ -630,24 +618,58 @@ impl Language {
         }
     }
 
-    pub fn next_reset(self, date: Option<&str>) -> String {
-        let date = date.unwrap_or(self.unknown());
+    /// A limit's name on its card: "주간 한도", "5-hour limit".
+    pub fn limit_title(self, window: &str) -> String {
         match self {
-            Language::Korean => format!("다음 초기화   {date}"),
-            Language::English => format!("Next reset   {date}"),
+            Language::Korean => format!("{window} 한도"),
+            Language::English => format!("{window} limit"),
         }
     }
 
-    pub fn reset_seen(self, date: &str) -> String {
+    /// Beside a share that remains: "72%" then this.
+    pub fn left(self) -> &'static str {
+        self.pick("남음", "left")
+    }
+
+    /// When a limit refills: how long from now where that is known ("3일 18시간 뒤 초기화"), else the date,
+    /// else that it is not known.
+    pub fn resets_in(self, until: Option<&str>, date: Option<&str>) -> String {
+        match (self, until.or(date)) {
+            (Language::Korean, Some(when)) => format!("{when} 초기화"),
+            (Language::English, Some(when)) => format!("Resets {when}"),
+            (_, None) => self.pick("초기화 시간 확인 불가", "Reset time unknown").to_owned(),
+        }
+    }
+
+    /// How long from now: "3일 18시간 뒤", "2시간 48분 뒤", "12분 뒤"; "in 3d 18h", "in 2h 48m", "in 12m".
+    pub fn from_now(self, minutes: i64) -> String {
+        let minutes = minutes.max(1);
+        let (days, hours, rest) = (minutes / 1440, minutes % 1440 / 60, minutes % 60);
+        match (self, days, hours, rest) {
+            (Language::Korean, 0, 0, _) => format!("{rest}분 뒤"),
+            (Language::Korean, 0, _, 0) => format!("{hours}시간 뒤"),
+            (Language::Korean, 0, _, _) => format!("{hours}시간 {rest}분 뒤"),
+            (Language::Korean, _, 0, _) => format!("{days}일 뒤"),
+            (Language::Korean, _, _, _) => format!("{days}일 {hours}시간 뒤"),
+            (Language::English, 0, 0, _) => format!("in {rest}m"),
+            (Language::English, 0, _, 0) => format!("in {hours}h"),
+            (Language::English, 0, _, _) => format!("in {hours}h {rest}m"),
+            (Language::English, _, 0, _) => format!("in {days}d"),
+            (Language::English, _, _, _) => format!("in {days}d {hours}h"),
+        }
+    }
+
+    /// When Errand last saw a limit refill.
+    pub fn last_reset(self, date: &str) -> String {
         match self {
-            Language::Korean => format!("초기화 감지   {date}"),
-            Language::English => format!("Reset seen   {date}"),
+            Language::Korean => format!("지난 초기화 {date}"),
+            Language::English => format!("Last reset {date}"),
         }
     }
 
     pub fn reset_seen_tooltip(self) -> &'static str {
         self.pick(
-            "앱이 초기화를 감지한 시각입니다. 기록 전의 초기화 시각은 추측하지 않습니다.",
+            "Errand가 이 한도가 다시 찬 것을 본 시각이에요. 기록을 시작하기 전의 초기화는 추측하지 않아요.",
             "When Errand saw this limit refill. Refills before it started recording are not guessed.",
         )
     }
@@ -673,7 +695,7 @@ impl Language {
     }
 
     pub fn updating(self) -> &'static str {
-        self.pick("갱신 중…", "Updating…")
+        self.pick("확인하는 중…", "Checking…")
     }
 
     pub fn no_data(self) -> &'static str {
@@ -681,29 +703,36 @@ impl Language {
     }
 
     pub fn up_to_date(self) -> &'static str {
-        self.pick("최신 사용량", "Up to date")
+        self.pick("최신 값", "Up to date")
     }
 
+    /// What the values are as of: "10/15 15:00 기준".
+    pub fn as_of(self, time: &str) -> String {
+        match self {
+            Language::Korean => format!("{time} 기준"),
+            Language::English => format!("As of {time}"),
+        }
+    }
+
+    /// Something other than fresh values, and when it was last looked: "갱신 실패 · 이전 값 · 10/15 15:00 확인".
     pub fn checked_at(self, status: &str, time: &str) -> String {
         match self {
-            Language::Korean => format!("{status} · 조회 {time}"),
+            Language::Korean => format!("{status} · {time} 확인"),
             Language::English => format!("{status} · checked {time}"),
         }
     }
 
-    /// The time Claude Code last spoke, which is as fresh as its limits are.
-    pub fn reported_at(self, time: &str) -> String {
+    /// After a card's status, where it has more limits than show at once: "… · 한도 3개".
+    pub fn limit_count(self, status: &str, count: usize) -> String {
         match self {
-            Language::Korean => format!("Claude Code 기준 {time}"),
-            Language::English => format!("From Claude Code, {time}"),
+            Language::Korean => format!("{status} · 한도 {count}개"),
+            Language::English => format!("{status} · {count} limits"),
         }
     }
 
-    pub fn limit_count(self, status: &str, count: usize) -> String {
-        match self {
-            Language::Korean => format!("{status} · {count}개 한도"),
-            Language::English => format!("{status} · {count} limits"),
-        }
+    /// Under a time that is Claude Code's own rather than when Errand looked.
+    pub fn reported_note(self) -> &'static str {
+        self.pick("Claude Code가 마지막으로 알려 준 값이에요.", "The values Claude Code last reported.")
     }
 
     pub fn checking_usage(self) -> &'static str {
@@ -711,11 +740,12 @@ impl Language {
     }
 
     pub fn details_title(self) -> &'static str {
-        self.pick("우리 계정 사용량", "Account usage")
+        self.pick("남은 사용량", "Usage left")
     }
 
+    /// The button that opens the desktop window.
     pub fn show_all(self) -> &'static str {
-        self.pick("전체 보기", "Show all")
+        self.pick("작업 기록 열기", "Open work records")
     }
 
     pub fn close(self) -> &'static str {

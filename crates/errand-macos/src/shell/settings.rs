@@ -1,6 +1,6 @@
 //! A regular settings window for the provider and per-provider model used to suggest task text and to sum up
 //! the desktop window's days, with the switch for those summaries.
-use super::{details::button, kit::{self, Action, Weight, label, ns, rect}};
+use super::{details::{button, primary_button}, kit::{self, Action, Weight, label, ns, rect}};
 use errand_core::{Language, Provider, model::Msg, ports::Poster, tasks::{self, AiSettings, ModelOption, State, words}, theme};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained, runtime::Bool, sel};
 use objc2_app_kit::*;
@@ -13,9 +13,18 @@ define_class!(
     pub struct SettingsView;
     impl SettingsView {
         #[unsafe(method(isFlipped))] fn is_flipped(&self) -> bool { true }
-        #[unsafe(method(drawRect:))] fn draw(&self, dirty: NSRect) {
-            kit::color(theme::Rgb { red: 0.975, green: 0.971, blue: 0.961 }).setFill();
-            NSBezierPath::fillRect(dirty);
+        #[unsafe(method(drawRect:))] fn draw(&self, _dirty: NSRect) {
+            // The desktop window's ground, and a white card under each of the two things to set.
+            kit::color(theme::GROUND).setFill();
+            NSBezierPath::fillRect(self.bounds());
+            for card in [rect(14.0, 96.0, SIZE.0 - 28.0, 130.0), rect(14.0, 236.0, SIZE.0 - 28.0, 108.0)] {
+                let path = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(kit::inset(card, 0.5, 0.5), 14.0, 14.0);
+                kit::color(theme::WHITE).setFill();
+                path.fill();
+                kit::color(theme::EDGE).setStroke();
+                path.setLineWidth(1.0);
+                path.stroke();
+            }
         }
     }
 );
@@ -98,7 +107,6 @@ impl Settings {
         let hint = label(words(language, "목록에서 선택하거나 모델 ID를 직접 입력할 수 있어요.", "Choose from the list or enter a model ID."), 11.0, Weight::Regular, theme::MUTED, mtm);
         hint.setFrame(rect(115.0, 190.0, 315.0, 32.0)); hint.setMaximumNumberOfLines(2); hint.setLineBreakMode(NSLineBreakMode::ByWordWrapping); view.addSubview(&hint);
         // The work-record summaries: on their own for finished days, and kept on this Mac until removed.
-        let separator = NSBox::new(mtm); separator.setBoxType(NSBoxType::Separator); separator.setFrame(rect(28.0, 232.0, 402.0, 1.0)); view.addSubview(&separator);
         let heading = label(words(language, "작업 기록 요약", "Work-record summaries"), 14.0, Weight::Semibold, theme::INK, mtm);
         heading.setFrame(rect(27.0, 246.0, 300.0, 20.0)); view.addSubview(&heading);
         let auto = unsafe { NSButton::checkboxWithTitle_target_action(&ns(words(language, "끝난 날을 자동으로 요약", "Sum up finished days on their own")), None, None, mtm) };
@@ -106,7 +114,7 @@ impl Settings {
         let auto_hint = label(words(language, "지난 날은 한 번, 오늘은 저녁 6시에 요약해요.\n요약은 이 Mac에만 저장돼요.", "Each finished day is summed up once, and today at 6 pm. Summaries stay on this Mac."), 11.0, Weight::Regular, theme::MUTED, mtm);
         auto_hint.setFrame(rect(46.0, 298.0, 384.0, 32.0)); auto_hint.setMaximumNumberOfLines(2); auto_hint.setLineBreakMode(NSLineBreakMode::ByWordWrapping); view.addSubview(&auto_hint);
         let privacy = label(words(language, "로컬 CLI의 로그인 계정을 사용합니다.\n첨부 내용과, 요약할 작업의 요청·답변 일부가 선택한 모델 서비스로 전송됩니다.", "Uses your local CLI login.\nAttachments, and parts of the requests and answers being summed up, go to the selected model service."), 11.0, Weight::Regular, theme::MUTED, mtm);
-        privacy.setFrame(rect(28.0, 344.0, 402.0, 36.0)); privacy.setMaximumNumberOfLines(2); privacy.setLineBreakMode(NSLineBreakMode::ByWordWrapping); view.addSubview(&privacy);
+        privacy.setFrame(rect(28.0, 355.0, 402.0, 36.0)); privacy.setMaximumNumberOfLines(2); privacy.setLineBreakMode(NSLineBreakMode::ByWordWrapping); view.addSubview(&privacy);
         let status = label("", 11.0, Weight::Regular, theme::MUTED, mtm); status.setFrame(rect(28.0, 401.0, 292.0, 34.0)); status.setMaximumNumberOfLines(2); status.setLineBreakMode(NSLineBreakMode::ByWordWrapping); view.addSubview(&status);
         let local = Rc::new(RefCell::new(AiSettings::default()));
         let cached = Rc::new(RefCell::new(vec![]));
@@ -142,7 +150,7 @@ impl Settings {
         }, mtm);
         view.addSubview(&delete);
         let (draft, model_field, current_choices) = (local.clone(), model.clone(), choices.clone());
-        let (save, save_action) = button(words(language, "저장", "Save"), "", false, rect(338.0, 399.0, 91.0, 30.0), move || {
+        let (save, save_action) = primary_button(words(language, "저장", "Save"), "", false, rect(338.0, 399.0, 91.0, 30.0), move || {
             let mut settings = draft.borrow().clone();
             let provider = settings.provider;
             settings.models[provider] = model_id(&model_field, &current_choices.borrow());

@@ -11,7 +11,7 @@ use errand_core::Language;
 use errand_core::layout::{self, BADGE_CIRCLE, BADGE_SIZE, LINE_GAP, LINE_HEIGHT, STACK_WIDTH, STRIP_HEIGHT};
 use errand_core::ports::Poster;
 use errand_core::sessions::SessionState;
-use errand_core::theme::{self, Rgb};
+use errand_core::theme;
 use errand_core::view::{BadgeVm, BatteryVm, CardVm, MenuAction, MenuItemVm, SimpleVm};
 use objc2::rc::Retained;
 use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
@@ -78,7 +78,7 @@ fn draw_mini_battery(vm: &BatteryVm) {
     draw_app_mark(vm.provider, rect(0.0, 1.0, MARK, MARK));
     let body = rect(MARK + 5.5, 0.5, BODY_WIDTH, MINI_HEIGHT - 1.0);
     let shell = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(body, 5.5, 5.5);
-    color(Rgb { red: 0.975, green: 0.973, blue: 0.966 }).setFill();
+    color(theme::SHELL).setFill();
     shell.fill();
     if let Some(level) = vm.level.filter(|level| *level > 0.002) {
         let inner = kit::inset(body, 2.0, 2.0);

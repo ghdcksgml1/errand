@@ -1,7 +1,7 @@
 //! The pet's morning bubble beside the widget: what the last day's work came to, with the way into it, to the
 //! task waiting on the person's answer, or away until tomorrow.
 
-use super::details::{PopoverView, button};
+use super::details::{PopoverView, button, primary_button};
 use super::kit::{Action, FlippedView, Weight, label, ns, rect};
 use errand_core::layout::{NUDGE_HEIGHT, NUDGE_WIDTH};
 use errand_core::model::Msg;
@@ -43,7 +43,7 @@ impl Nudge {
             let poster = poster.clone();
             move || poster.post(msg())
         };
-        let (see, see_action) = button("", "", false, rect(14.0, 76.0, 84.0, 30.0), post(|| Msg::NudgeSee), mtm);
+        let (see, see_action) = primary_button("", "", false, rect(14.0, 76.0, 84.0, 30.0), post(|| Msg::NudgeSee), mtm);
         see.setKeyEquivalent(&ns("\r"));
         let (answer, answer_action) = button("", "", false, rect(100.0, 76.0, 104.0, 30.0), post(|| Msg::NudgeAnswer), mtm);
         let (later, later_action) = button("", "", false, rect(NUDGE_WIDTH - 14.0 - 76.0, 76.0, 76.0, 30.0), post(|| Msg::NudgeLater), mtm);

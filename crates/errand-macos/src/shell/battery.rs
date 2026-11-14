@@ -343,12 +343,12 @@ define_class!(
             let body = self.body();
             let radius = (10.0f64).min(body.size.height * 0.32);
             let shell = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(body, radius, radius);
-            kit::color(Rgb { red: 0.975, green: 0.973, blue: 0.966 }).setFill();
+            kit::color(theme::SHELL).setFill();
             shell.fill();
             let cap = rect(body.origin.x + body.size.width + CAP_GAP, body.origin.y + body.size.height / 2.0 - body.size.height * 0.17, CAP_WIDTH, body.size.height * 0.34);
-            grey(0.78, 1.0).setFill();
+            kit::color(theme::OUTLINE).setFill();
             NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(cap, 1.5, 1.5).fill();
-            grey(0.80, 1.0).setStroke();
+            kit::color(theme::OUTLINE).setStroke();
             shell.setLineWidth(1.0);
             shell.stroke();
         }

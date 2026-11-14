@@ -2,7 +2,7 @@
 //! here; the platform shells only draw it, so macOS and Windows show the same widget.
 
 use crate::avatar::{Avatar, CLOTHES, PARTS};
-use crate::format::{date_or_waiting, elapsed, month_day_time, relative_time, stopwatch, timestamp_from_seconds};
+use crate::format::{elapsed, month_day_time, relative_time, stopwatch, timestamp_from_seconds};
 use crate::i18n::Language;
 use crate::layout::{self, DockShape, MEMBER_ROWS, TrayFold};
 use crate::model::{AppState, COMPLETION_DELAY, Notice, WidgetMode};
@@ -707,16 +707,24 @@ fn card(session: &VisibleSession, deadline: Option<Timestamp>, compact: bool, he
     vm
 }
 
-/// One quota row on an account card.
+/// One limit on an account card.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QuotaVm {
+    /// "주간 한도".
     pub title: String,
     pub remaining: Option<i64>,
+    /// "72%", or that the share left is not known.
     pub value: String,
+    /// "남음" beside a share; nothing beside "확인 불가".
+    pub value_note: &'static str,
     pub value_color: Rgb,
     pub accent: Rgb,
+    /// "3일 18시간 뒤 초기화", or that the time is not known.
     pub next_reset: String,
-    pub last_reset: String,
+    /// The date that is: "10/19 09:00". Empty where the line above already is the date, or there is none.
+    pub reset_at: String,
+    /// "지난 초기화 10/12 09:02", once Errand has seen this limit refill.
+    pub last_reset: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -744,15 +752,22 @@ pub fn account_card(state: &AppState, provider: Provider, context: &ViewContext)
     let quotas = windows
         .iter()
         .map(|window| {
-            let next = window.valid_reset().and_then(timestamp_from_seconds).map(|at| month_day_time(at, &context.zone));
+            let reset = window.valid_reset().and_then(timestamp_from_seconds);
+            let date = reset.map(|at| month_day_time(at, &context.zone));
+            // How long from now, while it is still to come.
+            let until = reset.map(|at| context.now.duration_until(at).as_mins()).filter(|minutes| *minutes > 0).map(|minutes| language.from_now(minutes));
+            let accent = theme::usage(window.remaining_percent, failure.is_some());
             QuotaVm {
-                title: language.window_title(&window.name),
+                title: language.limit_title(&language.window_title(&window.name)),
                 remaining: window.remaining_percent,
-                value: window.remaining_percent.map_or_else(|| language.unknown().to_owned(), |left| language.percent_left(left)),
-                value_color: if failure.is_some() { theme::MUTED } else { theme::INK },
-                accent: theme::usage(window.remaining_percent, failure.is_some()),
-                next_reset: language.next_reset(next.as_deref()),
-                last_reset: language.reset_seen(&date_or_waiting(last_resets.get(&window.identifier).copied(), &context.zone, language)),
+                value: window.remaining_percent.map_or_else(|| language.unknown().to_owned(), |left| format!("{left}%")),
+                value_note: if window.remaining_percent.is_some() { language.left() } else { "" },
+                // Red when little is left, as the dock's battery says it.
+                value_color: if failure.is_some() { theme::MUTED } else if accent == theme::LOW { theme::LOW } else { theme::INK },
+                accent,
+                next_reset: language.resets_in(until.as_deref(), date.as_deref()),
+                reset_at: date.filter(|_| until.is_some()).unwrap_or_default(),
+                last_reset: last_resets.get(&window.identifier).copied().map(|at| language.last_reset(&month_day_time(at, &context.zone))),
             }
         })
         .collect();
@@ -764,25 +779,25 @@ pub fn account_card(state: &AppState, provider: Provider, context: &ViewContext)
         None if windows.is_empty() => language.no_data(),
         None => language.up_to_date(),
     };
-    let mut data_status = status.to_owned();
     let slot = &state.usage[provider];
-    if let (Some(reported), None) = (slot.reported_at, &failure) {
-        data_status = language.reported_at(&month_day_time(reported, &context.zone));
-    } else if let Some(fetched) = slot.fetched_at {
-        data_status = language.checked_at(&data_status, &month_day_time(fetched, &context.zone));
-    }
-    if windows.len() > 1 {
-        data_status = language.limit_count(&data_status, windows.len());
-    }
+    // What the values are as of: Claude Code's own time for its limits, else when Errand last looked.
+    let (data_status, note) = match (slot.reported_at, slot.fetched_at, &failure) {
+        (Some(reported), _, None) => (language.as_of(&month_day_time(reported, &context.zone)), Some(language.reported_note())),
+        (_, Some(fetched), None) if status == language.up_to_date() => (language.as_of(&month_day_time(fetched, &context.zone)), None),
+        (_, Some(fetched), _) => (language.checked_at(status, &month_day_time(fetched, &context.zone)), None),
+        _ => (status.to_owned(), None),
+    };
+    // Two limits show whole; with more, the card scrolls, so it says how many there are.
+    let data_status = if windows.len() > 2 { language.limit_count(&data_status, windows.len()) } else { data_status };
     AccountCardVm {
         provider,
         status: if account.running { language.running_status(label) } else { label.to_owned() },
-        open_title: language.open_button(account.running),
+        open_title: language.open_button(),
         open_enabled: !state.launching,
         compact: windows.len() > 1,
         quotas,
         empty,
-        data_status_tooltip: failure.clone().unwrap_or_else(|| data_status.clone()),
+        data_status_tooltip: failure.clone().unwrap_or_else(|| note.map_or_else(|| data_status.clone(), str::to_owned)),
         data_status_failed: failure.is_some(),
         data_status,
     }
