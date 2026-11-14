@@ -51,7 +51,11 @@ fn run_app(arguments: &[String], language: Language) {
         let has = |flag: &str| arguments.iter().any(|argument| argument == flag);
         let in_room = has("--preview-room") || has("--preview-private-room");
         let character = arguments.iter().position(|argument| argument == "--preview-character").and_then(|index| arguments.get(index + 1));
-        let kind = if has("--preview-settings") {
+        let kind = if has("--preview-onboarding") {
+            use shell::onboarding::Step;
+            let step = if has("--onboarding-accounts") { Step::Accounts } else if has("--onboarding-ai") { Step::Ai } else if has("--onboarding-ready") { Step::Ready } else { Step::Welcome };
+            shell::preview::PreviewKind::Onboarding(step)
+        } else if has("--preview-settings") || has("--preview-settings-error") {
             shell::preview::PreviewKind::Settings
         } else if has("--preview-task-form") || has("--preview-task-detail") {
             shell::preview::PreviewKind::TaskForm

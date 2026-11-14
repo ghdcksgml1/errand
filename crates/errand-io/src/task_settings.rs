@@ -2,8 +2,8 @@
 use errand_core::{PerProvider, Provider, tasks::{AiSettings, ModelOption, valid_model}};
 use serde_json::{Value, json};
 use std::{fs, io::Write, path::Path};
-const READ_ERROR: &str = "AI 설정을 읽지 못했습니다. 플랫폼과 모델을 다시 저장해 주세요. / Could not read AI settings; save your platform and model again.";
-const ERROR: &str = "AI 설정을 저장하지 못했습니다. 폴더 권한을 확인해 주세요. / Could not save AI settings; check folder permissions.";
+const READ_ERROR: &str = "AI 설정을 읽지 못했어요. AI 서비스와 모델을 다시 저장해 주세요. / Could not read AI settings; save your AI service and model again.";
+const ERROR: &str = "AI 설정을 저장하지 못했어요. 폴더 권한을 확인해 주세요. / Could not save AI settings; check folder permissions.";
 
 pub fn load(root: &Path, previous_provider: Provider) -> Result<AiSettings, String> {
     let bytes = match fs::read(root.join("ai-settings.json")) {
@@ -15,16 +15,18 @@ pub fn load(root: &Path, previous_provider: Provider) -> Result<AiSettings, Stri
     if value["version"] != 1 { return Err(READ_ERROR.into()) }
     let provider = match value["provider"].as_str() { Some("codex") => Provider::Codex, Some("claude") => Provider::Claude, _ => return Err(READ_ERROR.into()) };
     let model = |key: &str| value["models"][key].as_str().filter(|id| valid_model(id)).map(str::to_owned).ok_or_else(|| READ_ERROR.to_owned());
-    // Settings saved before summaries existed leave them on.
-    let summaries = value["summaries"]["auto"].as_bool().unwrap_or(true);
-    Ok(AiSettings { provider, models: PerProvider { codex: model("codex")?, claude: model("claude")? }, summaries })
+    // Missing preferences never opt someone into sending their work to an AI service.
+    let summaries = value["summaries"]["auto"].as_bool().unwrap_or(false);
+    let onboarding_complete = value["onboarding_complete"].as_bool().unwrap_or(false);
+    Ok(AiSettings { provider, models: PerProvider { codex: model("codex")?, claude: model("claude")? }, summaries, onboarding_complete })
 }
 pub fn save(root: &Path, settings: &AiSettings) -> Result<(), String> {
     if !settings.valid() { return Err(ERROR.into()) }
     fs::create_dir_all(root).map_err(|_| ERROR)?;
     #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; fs::set_permissions(root, fs::Permissions::from_mode(0o700)).map_err(|_| ERROR)?; }
     let value = json!({"version": 1, "provider": if settings.provider == Provider::Codex { "codex" } else { "claude" },
-        "models": { "codex": settings.models.codex, "claude": settings.models.claude }, "summaries": { "auto": settings.summaries }});
+        "models": { "codex": settings.models.codex, "claude": settings.models.claude }, "summaries": { "auto": settings.summaries },
+        "onboarding_complete": settings.onboarding_complete});
     let mut temp = tempfile::NamedTempFile::new_in(root).map_err(|_| ERROR)?;
     temp.write_all(&serde_json::to_vec(&value).map_err(|_| ERROR)?).map_err(|_| ERROR)?;
     temp.as_file().sync_all().map_err(|_| ERROR)?;

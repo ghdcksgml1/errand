@@ -35,6 +35,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PreviewKind {
     Settings,
+    Onboarding(super::onboarding::Step),
     TaskForm,
     /// The account window.
     Dashboard,
@@ -301,6 +302,13 @@ pub fn render(
     let context = ViewContext { now, zone: errand_core::format::local_zone(), computer: "Mac", language };
     let nothing: Rc<dyn Fn()> = Rc::new(|| {});
     match kind {
+        PreviewKind::Onboarding(step) => {
+            let mut onboarding = super::onboarding::Onboarding::new(mtm, poster, language);
+            onboarding.window.setColorSpace(Some(&NSColorSpace::sRGBColorSpace()));
+            onboarding.render(state);
+            onboarding.preview_step(step);
+            snapshot(&onboarding.view, output)
+        }
         PreviewKind::Settings => {
             let mut settings = super::settings::Settings::new(mtm, poster, language);
             settings.window.setColorSpace(Some(&NSColorSpace::sRGBColorSpace()));

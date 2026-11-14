@@ -41,6 +41,34 @@ fn friday() -> Date {
     "2026-11-13".parse().unwrap()
 }
 
+#[test]
+fn automatic_requests_wait_for_a_saved_onboarding_choice() {
+    use errand_core::{model::{AppState, Effect, Msg, WidgetPreferences, update}, reset_history::ResetHistory, sessions::SessionRecords, tasks};
+    let zone = errand_core::format::local_zone();
+    let today = Timestamp::now().to_zoned(zone.clone()).date();
+    let now = today.at(9, 0, 0, 0).to_zoned(zone.clone()).unwrap().timestamp();
+    let yesterday = today.yesterday().unwrap().at(12, 0, 0, 0).to_zoned(zone).unwrap().timestamp();
+    let work = record("claude:setup", Provider::Claude, "/code/shop-web", "차트", vec![WorkTurn {
+        asked_at: yesterday, ask: "차트를 넣어줘".into(), finished_at: Some(yesterday + jiff::SignedDuration::from_mins(10)),
+        result: Some("차트를 추가했어요.".into()), aborted: false,
+    }]);
+    let mut state = AppState::new(ResetHistory::new(), SessionRecords::new(now), WidgetPreferences::default(), "한결".into());
+    state.journal.language = Some(Language::Korean);
+    state.journal.open = true;
+    assert!(!state.journal.summaries.auto);
+    assert!(!update(&mut state, Msg::JournalScanned(vec![work.clone()]), now).iter().any(|effect| matches!(effect, Effect::Summarize { .. })));
+
+    // A legacy saved preference cannot start requests before the new setup screen is dealt with.
+    state.tasks.settings.summaries = true;
+    update(&mut state, Msg::Tasks(tasks::Msg::BeginOnboarding), now);
+    assert!(!update(&mut state, Msg::JournalScanned(vec![work.clone()]), now).iter().any(|effect| matches!(effect, Effect::Summarize { .. })));
+    let choice = tasks::AiSettings { summaries: true, onboarding_complete: true, ..state.tasks.settings.clone() };
+    update(&mut state, Msg::Tasks(tasks::Msg::SettingsSaved { settings: choice.clone(), result: Err("disk full".into()) }), now);
+    assert!(!state.journal.summaries.auto);
+    update(&mut state, Msg::Tasks(tasks::Msg::SettingsSaved { settings: choice, result: Ok(()) }), now);
+    assert!(update(&mut state, Msg::JournalScanned(vec![work]), now).iter().any(|effect| matches!(effect, Effect::Summarize { .. })));
+}
+
 fn answer() -> serde_json::Value {
     json!({
         "done": [
@@ -105,7 +133,7 @@ fn summaries_are_stored_edited_and_reported() {
 #[test]
 fn finished_days_are_summed_up_once_and_again_when_more_work_ends() {
     let (records, live, zone) = (sample(), HashMap::new(), TimeZone::get("Asia/Seoul").unwrap());
-    let mut summaries = Summaries::default();
+    let mut summaries = Summaries { auto: true, ..Summaries::default() };
     // Friday 16:10 in Seoul: Thursday is due; today waits for the evening.
     let thursday: Date = "2026-11-12".parse().unwrap();
     assert_eq!(journal(&records, &live, &summaries, &zone, "2026-11-13T07:10:00Z").next_to_summarize(&summaries), Some(thursday));
@@ -132,7 +160,7 @@ fn finished_days_are_summed_up_once_and_again_when_more_work_ends() {
     // Off, or already making one, or the last try failed for that day: nothing on its own.
     let off = Summaries { auto: false, ..Summaries::default() };
     assert_eq!(journal(&records, &live, &off, &zone, "2026-11-13T07:10:00Z").next_to_summarize(&off), None);
-    let failed = Summaries { failed: [(thursday, "x".to_owned())].into_iter().collect(), ..Summaries::default() };
+    let failed = Summaries { auto: true, failed: [(thursday, "x".to_owned())].into_iter().collect(), ..Summaries::default() };
     assert_eq!(journal(&records, &live, &failed, &zone, "2026-11-13T07:10:00Z").next_to_summarize(&failed), None);
 }
 
@@ -146,6 +174,7 @@ mod flow {
         let mut state = AppState::new(ResetHistory::new(), SessionRecords::new(now), WidgetPreferences::default(), "한결".to_owned());
         state.journal.open = true;
         state.journal.language = Some(Language::Korean);
+        state.journal.summaries.auto = true;
         state
     }
 
@@ -208,6 +237,7 @@ mod morning {
         let finished = record("claude:x", Provider::Claude, "/code/shop-web", "차트 추가", vec![WorkTurn { asked_at: at(yesterday, 14), ask: "차트 넣어줘".into(), finished_at: Some(at(yesterday, 15)), result: Some("차트를 더했어요.".into()), aborted: false }]);
         let mut state = AppState::new(ResetHistory::new(), SessionRecords::new(at(today, 7)), WidgetPreferences::default(), "한결".to_owned());
         state.journal.language = Some(Language::Korean);
+        state.journal.summaries.auto = true;
 
         // Before the morning, nothing; from 8, the window being closed, the last week is read first.
         assert!(!update(&mut state, Msg::SessionsScanned(vec![]), at(today, 7)).iter().any(|effect| matches!(effect, Effect::ScanJournal(_))));
@@ -256,6 +286,7 @@ mod qa {
         let mut state = AppState::new(ResetHistory::new(), SessionRecords::new(now), WidgetPreferences::default(), "한결".to_owned());
         state.journal.open = true;
         state.journal.language = Some(Language::Korean);
+        state.journal.summaries.auto = true;
         state
     }
 
@@ -354,6 +385,7 @@ mod qa {
         let morning = at(today, 9);
         let mut state = AppState::new(ResetHistory::new(), SessionRecords::new(morning), WidgetPreferences::default(), "한결".to_owned());
         state.journal.language = Some(Language::Korean);
+        state.journal.summaries.auto = true;
         let done = errand_core::journal::summary::Done { key: Some("claude:x".into()), project: "shop-web".into(), text: "차트를 더했어요".into(), report: "차트 추가".into(), kind: Kind::Feature };
         let old = DaySummary { date: yesterday, made_at: morning, by: Provider::Codex, language: Language::Korean, done: vec![done], left: vec![], basis: "old".into(), edited: false };
         state.journal.summaries.days.insert(yesterday, old);

@@ -12,9 +12,11 @@ pub struct AiSettings {
     pub models: PerProvider<String>,
     /// Finished days in the desktop window are summed up on their own.
     pub summaries: bool,
+    /// The person has finished or skipped the first-run setup.
+    pub onboarding_complete: bool,
 }
 impl Default for AiSettings {
-    fn default() -> Self { Self { provider: Provider::Codex, models: PerProvider::default(), summaries: true } }
+    fn default() -> Self { Self { provider: Provider::Codex, models: PerProvider::default(), summaries: false, onboarding_complete: false } }
 }
 impl AiSettings {
     pub fn model(&self) -> &str { &self.models[self.provider] }
@@ -73,6 +75,7 @@ pub struct State {
     pub model_options: Vec<ModelOption>,
     pub settings_error: Option<String>,
     pub settings_saved: bool,
+    pub onboarding: bool,
     pub dragging: bool,
     pub error: Option<String>,
     /// A broken manifest must never be overwritten by a fresh empty list.
@@ -90,6 +93,7 @@ impl Default for State {
             model_options: vec![],
             settings_error: None,
             settings_saved: false,
+            onboarding: false,
             dragging: false,
             error: None,
             readable: true,
@@ -116,6 +120,8 @@ pub enum Msg {
     Memo(String),
     AcceptMemo,
     ShowSettings,
+    BeginOnboarding,
+    SkipOnboarding,
     Configure(AiSettings),
     SettingsSaved { settings: AiSettings, result: Result<(), String> },
     ModelsRead(Vec<ModelOption>),
@@ -156,6 +162,7 @@ pub enum Effect {
     },
     SaveSettings(AiSettings),
     ShowSettings,
+    ShowOnboarding,
     ReadModels,
     CancelTitle,
     Cleanup(Vec<Attachment>),
@@ -290,23 +297,33 @@ pub fn update(state: &mut State, msg: Msg, now: Timestamp) -> Vec<Effect> {
             }
             vec![]
         }
-        Msg::ShowSettings => {
+        Msg::BeginOnboarding if state.settings.onboarding_complete => vec![],
+        Msg::BeginOnboarding | Msg::ShowSettings => {
             state.settings_saved = false;
-            vec![Effect::ReadModels, Effect::ShowSettings]
+            state.onboarding = !state.settings.onboarding_complete;
+            vec![Effect::ReadModels, if state.onboarding { Effect::ShowOnboarding } else { Effect::ShowSettings }]
+        }
+        Msg::SkipOnboarding => {
+            if !state.onboarding { return vec![]; }
+            let settings = AiSettings { summaries: false, ..state.settings.clone() };
+            update(state, Msg::Configure(settings), now)
         }
         Msg::ModelsRead(models) => { state.model_options = models; vec![] }
-        Msg::Configure(settings) => {
+        Msg::Configure(mut settings) => {
             state.settings_saved = false;
             if !settings.valid() {
-                state.settings_error = Some("모델 이름을 확인해 주세요. / Enter a valid model ID.".into());
+                state.settings_error = Some("올바른 모델 ID를 입력해 주세요. / Enter a valid model ID.".into());
                 return vec![];
             }
+            if state.onboarding { settings.onboarding_complete = true; }
             vec![Effect::SaveSettings(settings)]
         }
         Msg::SettingsSaved { settings, result } => match result {
             Ok(()) => {
-                let changed = state.settings != settings;
+                // Summary and onboarding choices do not need another attachment request.
+                let changed = state.settings.provider != settings.provider || state.settings.models != settings.models;
                 state.settings = settings;
+                if state.settings.onboarding_complete { state.onboarding = false; }
                 state.settings_error = None;
                 state.settings_saved = true;
                 if changed { generate(state) } else { vec![] }

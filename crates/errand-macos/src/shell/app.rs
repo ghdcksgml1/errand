@@ -77,6 +77,7 @@ pub struct MacShell {
     widget: Rc<RefCell<Widget>>,
     journal: Journal,
     settings: super::settings::Settings,
+    onboarding: super::onboarding::Onboarding,
     on_menu: Rc<dyn Fn(MenuAction)>,
     hidden: bool,
     language: Language,
@@ -116,7 +117,7 @@ impl MacShell {
             }
         });
         let journal = Journal::new(mtm, poster.clone(), language.window_title_journal());
-        MacShell { settings: super::settings::Settings::new(mtm, poster.clone(), language), mtm, status: StatusMenu::new(mtm), widget, journal, poster, defaults, on_menu, hidden, language }
+        MacShell { settings: super::settings::Settings::new(mtm, poster.clone(), language), onboarding: super::onboarding::Onboarding::new(mtm, poster.clone(), language), mtm, status: StatusMenu::new(mtm), widget, journal, poster, defaults, on_menu, hidden, language }
     }
 
     pub fn widget_preferences(&self) -> WidgetPreferences {
@@ -130,6 +131,7 @@ impl MacShell {
 
 impl Shell for MacShell {
     fn show_settings(&mut self) { self.settings.show(self.mtm); }
+    fn show_onboarding(&mut self) { self.onboarding.show(self.mtm); }
     fn choose_task_files(&mut self) {
         let dialog = objc2_app_kit::NSOpenPanel::openPanel(self.mtm);
         dialog.setAllowsMultipleSelection(true);
@@ -155,7 +157,7 @@ impl Shell for MacShell {
             if !NSWorkspace::sharedWorkspace().openURL(&url) {
                 let alert = NSAlert::new(self.mtm);
                 alert.setMessageText(&ns(
-                    "첨부파일을 열 수 없습니다. / Could not open the attachment.",
+                    errand_core::tasks::words(self.language, "첨부파일을 열 수 없어요.", "Could not open the attachment."),
                 ));
                 alert.runModal();
             }
@@ -169,6 +171,7 @@ impl Shell for MacShell {
         self.widget.borrow_mut().render(state, &context);
         self.journal.render(&view::journal(state, &context));
         self.settings.render(&state.tasks);
+        self.onboarding.render(state);
     }
 
     fn save_widget_preferences(&mut self, preferences: WidgetPreferences) {
@@ -233,7 +236,7 @@ impl Shell for MacShell {
 
     fn edit_summary(&mut self, date: jiff::civil::Date, text: &str) {
         let (title, note, save, cancel) = match self.language {
-            Language::Korean => ("요약 고치기", "한 줄에 하나씩 고쳐 주세요. \"프로젝트 · 내용\"으로 쓰고, 줄을 지우면 빠져요.", "저장", "취소"),
+            Language::Korean => ("요약 수정", "\"프로젝트 · 내용\" 형식으로 한 줄에 하나씩 적어 주세요. 줄을 지우면 해당 항목이 삭제돼요.", "저장", "취소"),
             Language::English => ("Edit the summary", "One item per line, as \"project · words\". Delete a line to drop it.", "Save", "Cancel"),
         };
         let (text, poster) = (text.to_owned(), self.poster.clone());

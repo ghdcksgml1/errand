@@ -361,7 +361,7 @@ impl TaskForm {
         let error = draft
             .and_then(|d| d.error.as_deref())
             .or(state.error.as_deref());
-        let message = error.unwrap_or_else(|| {
+        let message = error.map(|error| self.language.error_text(error)).unwrap_or_else(|| {
             if draft.is_some_and(|d| d.importing) {
                 words(
                     self.language,

@@ -9,6 +9,54 @@ use errand_core::{
 fn now() -> Timestamp {
     "2026-11-13T00:00:00Z".parse().unwrap()
 }
+
+#[test]
+fn onboarding_finishes_only_after_the_choices_are_saved() {
+    let mut state = State::default();
+    assert!(!state.settings.summaries);
+    assert_eq!(update(&mut state, Msg::BeginOnboarding, now()), vec![Effect::ReadModels, Effect::ShowOnboarding]);
+    assert!(state.onboarding);
+    let mut choice = state.settings.clone();
+    choice.provider = Provider::Claude;
+    choice.models.claude = "sonnet".into();
+    choice.summaries = true;
+    let effects = update(&mut state, Msg::Configure(choice.clone()), now());
+    choice.onboarding_complete = true;
+    assert_eq!(effects, vec![Effect::SaveSettings(choice.clone())]);
+    assert!(!state.settings.summaries && !state.settings.onboarding_complete);
+    update(&mut state, Msg::SettingsSaved { settings: choice.clone(), result: Err("disk full".into()) }, now());
+    assert!(state.onboarding && !state.settings.onboarding_complete);
+    update(&mut state, Msg::SettingsSaved { settings: choice.clone(), result: Ok(()) }, now());
+    assert_eq!(state.settings, choice);
+    assert!(!state.onboarding);
+    assert!(update(&mut state, Msg::BeginOnboarding, now()).is_empty());
+    assert_eq!(update(&mut state, Msg::ShowSettings, now()), vec![Effect::ReadModels, Effect::ShowSettings]);
+    assert!(!state.onboarding, "ordinary settings can still be opened later");
+}
+
+#[test]
+fn skipping_onboarding_keeps_models_and_turns_summaries_off() {
+    let mut state = State::default();
+    state.settings.summaries = true;
+    state.settings.models.codex = "chosen-model".into();
+    update(&mut state, Msg::BeginOnboarding, now());
+    let effects = update(&mut state, Msg::SkipOnboarding, now());
+    let [Effect::SaveSettings(settings)] = effects.as_slice() else { panic!("skip persists the safe choice") };
+    assert!(!settings.summaries && settings.onboarding_complete);
+    assert_eq!(settings.models.codex, "chosen-model");
+    assert!(state.onboarding, "a failed save must not silently finish setup");
+    let settings = settings.clone();
+    update(&mut state, Msg::SettingsSaved { settings, result: Ok(()) }, now());
+    assert!(!state.onboarding && !state.settings.summaries);
+}
+
+#[test]
+fn summary_preferences_do_not_resend_attachments() {
+    let mut state = State::default();
+    draft(&mut state);
+    let settings = AiSettings { summaries: true, onboarding_complete: true, ..state.settings.clone() };
+    assert!(update(&mut state, Msg::SettingsSaved { settings, result: Ok(()) }, now()).is_empty());
+}
 fn file() -> Attachment {
     Attachment {
         id: "a.png".into(),

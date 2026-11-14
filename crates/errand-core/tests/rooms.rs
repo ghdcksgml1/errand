@@ -275,7 +275,7 @@ fn a_fourth_room_waits_until_the_person_leaves_one() {
     assert_eq!(view::rooms(&state, &context()).subtitle, Language::Korean.rooms_subtitle());
 
     assert_eq!(update(&mut state, Msg::JoinRoom("dawn".to_owned()), at(NOW)), [sync("dawn", Visibility::Public), Effect::SaveRooms]);
-    let full = "방은 3개까지 들어갈 수 있어요. 다른 방을 나가면 들어가요.";
+    let full = "최대 3개의 방에 참여할 수 있어요. 다른 방에서 나간 뒤 다시 시도해 주세요.";
     assert_eq!(view::rooms(&state, &context()).subtitle, full, "the list says why no more rooms open");
     assert_eq!(shut(&state), [None, None, None, Some(full.to_owned())], "the rooms the person is in can still be left");
 
@@ -361,8 +361,8 @@ fn a_room_that_is_gone_closes_its_tab_and_one_that_turns_the_person_away_says_wh
         assert_eq!((rows(&state).len(), status(&state)), (2, None), "{failure:?}: out of reach a while, the room as it last answered stays");
     }
     let turned_away = [
-        (RoomError::Full, "방이 꽉 찼어요. 자리가 나면 들어가요."),
-        (RoomError::TooManyRooms, "방에 너무 많이 들어가 있어요. 다른 방을 나가면 들어가요."),
+        (RoomError::Full, "방이 꽉 찼어요. 자리가 나면 참여할 수 있어요."),
+        (RoomError::TooManyRooms, "참여할 수 있는 방의 수를 초과했어요. 다른 방에서 나간 뒤 다시 시도해 주세요."),
         (RoomError::ClientTooOld, "작업방을 쓰려면 Errand를 업데이트하세요."),
         (RoomError::Unauthorized, "작업방 서버가 이 Mac을 알아보지 못했어요."),
         (RoomError::Rejected, "작업방 서버가 요청을 받지 않았어요."),

@@ -142,7 +142,7 @@ mod views {
         assert!(day.axis.now.is_some() && day.masthead.can_go_forward == false);
         assert!(day.bars.iter().all(|bar| bar.start < bar.end && bar.lane == 0 && bar.waiting.is_none()));
         // Finished work and no summary yet: before the evening, the card offers to make one now.
-        assert!(matches!(&day.draft, Draft::Offer(note, _) if note == "끝낸 작업 2개 · 저녁 6시에 자동 정리"));
+        assert!(matches!(&day.draft, Draft::Offer(note, _) if note == "끝낸 작업 2개를 아직 정리하지 않았어요."));
 
         let yesterday = journal(&records, &live, &zone).day(&JournalPlace { back: 1, ..Default::default() });
         assert_eq!((yesterday.masthead.big.as_str(), yesterday.tasks.len(), yesterday.masthead.can_go_forward), ("12", 1, true));

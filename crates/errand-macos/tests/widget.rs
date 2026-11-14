@@ -451,6 +451,7 @@ mod widget {
         english(&mut t, mtm, defaults);
         personal_tasks(&mut t, mtm, defaults);
         ai_settings(&mut t, mtm);
+        onboarding_and_errors(&mut t, mtm, defaults);
         hiding(&mut t, mtm, defaults);
         modes(&mut t, mtm, defaults);
         rooms(&mut t, mtm, defaults);
@@ -1427,7 +1428,7 @@ mod widget {
         let list = rooms_panel.contentView().expect("the list's view");
         let way_in = titled(&list, "들어가기").expect("a way into the fourth room");
         t.check(
-            !way_in.isEnabled() && tooltip(&way_in).contains("3개까지") && shows(&list, "3개까지") && titled(&list, "나가기").is_some_and(|out| out.isEnabled()),
+            !way_in.isEnabled() && tooltip(&way_in).contains("최대 3개의 방") && shows(&list, "최대 3개의 방") && titled(&list, "나가기").is_some_and(|out| out.isEnabled()),
             "At three rooms the list shuts its ways in and says why, and its ways out stay open",
         );
         unsafe { way_in.performClick(None) };
@@ -1435,7 +1436,7 @@ mod widget {
         t.check(h.performed(|effect| matches!(effect, Effect::SyncRoom { room, .. } if room == "deadline")) == 0, "A shut way in asks no room");
         h.send(Msg::LeaveRoom("dawn".to_owned()));
         let way_in = titled(&list, "들어가기").expect("the ways in");
-        t.check(way_in.isEnabled() && !shows(&list, "3개까지"), "Leaving a room opens the ways in again");
+        t.check(way_in.isEnabled() && !shows(&list, "최대 3개의 방"), "Leaving a room opens the ways in again");
         h.send(Msg::CloseRooms);
 
         h.send(Msg::RoomsRemembered(names[2..].iter().map(|(id, _)| ((*id).to_owned(), Visibility::Public)).collect()));
@@ -1733,6 +1734,108 @@ mod widget {
         let handled = settings.window.performKeyEquivalent(&event);
         t.check(handled && editor.selectedRange().length == "Sonnet".len(), &format!("Model IDs support Command-A through the window's editing responder chain: handled={handled}, selection={:?}", editor.selectedRange()));
         settings.window.close();
+    }
+
+    fn onboarding_and_errors(t: &mut Checks, mtm: MainThreadMarker, defaults: &Retained<NSUserDefaults>) {
+        use errand_core::tasks::{self, words};
+        use errand_macos::shell::onboarding::Onboarding;
+        use objc2_app_kit::{NSComboBox, NSPopUpButton, NSControlStateValueOff};
+        for language in Language::ALL {
+            let say = |ko, en| words(language, ko, en);
+            let inbox = Arc::new(Inbox::default());
+            let mut onboarding = Onboarding::new(mtm, inbox.clone(), language);
+            let now = Timestamp::from_second(NOW).unwrap();
+            let fresh = || AppState::new(ResetHistory::new(), SessionRecords::new(now), WidgetPreferences::default(), "Test".into());
+            let mut state = fresh();
+            tasks::update(&mut state.tasks, tasks::Msg::BeginOnboarding, now);
+            onboarding.show(mtm);
+            onboarding.render(&state);
+            let checkbox = titled(&onboarding.view, say("하루 작업 기록 자동 요약", "Summarize each day's work automatically")).unwrap();
+            let provider = every(&onboarding.view).into_iter().find_map(|v| v.downcast::<NSPopUpButton>().ok()).unwrap();
+            let model = every(&onboarding.view).into_iter().find_map(|v| v.downcast::<NSComboBox>().ok()).unwrap();
+            t.check(checkbox.state() == NSControlStateValueOff && checkbox.isHiddenOrHasHiddenAncestor(), "First run teaches the app before showing optional AI controls");
+            t.check(shows(&onboarding.view, say("AI에 맡긴 일, 한눈에 확인하세요", "Your AI work, at a glance")), "The welcome screen explains what Errand does");
+            let example = first(&onboarding.view, "ErrandOnboardingExample").unwrap();
+            t.check(example.accessibilityChildren().is_some_and(|children| children.is_empty()) && buttons(&example).iter().all(|button| button.refusesFirstResponder()), "The sample widget is an illustration, not a set of inert keyboard or VoiceOver controls");
+            unsafe { titled(&onboarding.view, say("둘러보기", "Take a look")).unwrap().performClick(None) };
+            t.check(shows(&onboarding.view, say("쓰고 있는 계정을 확인해요", "Check the accounts you use")), "The next step checks the user's environment");
+            t.check(shows(&onboarding.view, say("앱에서 로그인해 주세요", "Sign in in the app")), "Missing accounts give a concrete next action");
+            unsafe { titled(&onboarding.view, say("Codex 열기", "Open Codex")).unwrap().performClick(None) };
+            t.check(matches!(inbox.take(), Some(Msg::OpenApp(Provider::Codex))), "The account action uses the existing open-app flow");
+            state.accounts.codex.email = Some("test@example.com".into());
+            onboarding.render(&state);
+            t.check(shows(&onboarding.view, "test@example.com"), "Existing account checks update the onboarding screen");
+            unsafe { titled(&onboarding.view, say("다음", "Continue")).unwrap().performClick(None) };
+            t.check(!checkbox.isHiddenOrHasHiddenAncestor() && checkbox.state() == NSControlStateValueOff, "The AI step keeps automatic summaries off until explicitly chosen");
+            model.setStringValue(&ns("chosen-codex"));
+            provider.selectItemAtIndex(1);
+            unsafe { provider.sendAction_to(provider.action(), provider.target().as_deref()) };
+            model.setStringValue(&ns("Sonnet"));
+            unsafe { checkbox.performClick(None) };
+            unsafe { titled(&onboarding.view, say("이전", "Back")).unwrap().performClick(None) };
+            // Normal background reads and a close/reopen must not discard a partially completed setup.
+            state.tasks.model_options.push(tasks::ModelOption { id: "cached-codex".into(), label: "Cached Codex".into() });
+            onboarding.render(&state);
+            onboarding.window.close();
+            onboarding.show(mtm);
+            onboarding.render(&state);
+            unsafe { titled(&onboarding.view, say("다음", "Continue")).unwrap().performClick(None) };
+            t.check(provider.indexOfSelectedItem() == 1 && model.stringValue().to_string() == "Sonnet" && checkbox.state() != NSControlStateValueOff, "Back, refresh and reopening preserve the draft and current step");
+            model.setStringValue(&ns("invalid model!"));
+            unsafe { titled(&onboarding.view, say("설정 확인", "Review choices")).unwrap().performClick(None) };
+            t.check(!checkbox.isHiddenOrHasHiddenAncestor() && shows(&onboarding.view, say("올바른 모델 ID를 입력해 주세요.", "Enter a valid model ID.")), "An invalid model stays on the AI step with a localized error");
+            model.setStringValue(&ns("Sonnet"));
+            unsafe { titled(&onboarding.view, say("설정 확인", "Review choices")).unwrap().performClick(None) };
+            t.check(shows(&onboarding.view, "Claude Code · sonnet") && shows(&onboarding.view, say("켜짐 ·", "On ·")), "The final step reflects the actual pending choices");
+            t.check(inbox.is_empty() && !state.tasks.settings.onboarding_complete, "Moving through the steps neither saves settings nor makes model requests");
+            unsafe { titled(&onboarding.view, say("작업 기록 열기", "Open work records")).unwrap().performClick(None) };
+            let Some(Msg::Tasks(message)) = inbox.take() else { panic!("finish submits the choices") };
+            let effects = tasks::update(&mut state.tasks, message, now);
+            let [tasks::Effect::SaveSettings(chosen)] = effects.as_slice() else { panic!("finish persists the choices") };
+            let chosen = chosen.clone();
+            t.check(chosen.summaries && chosen.onboarding_complete && chosen.models.codex == "chosen-codex", "Finishing persists the opt-in and both providers' model drafts");
+            let error = "AI 설정을 저장하지 못했어요. / Could not save AI settings.";
+            tasks::update(&mut state.tasks, tasks::Msg::SettingsSaved { settings: chosen, result: Err(error.into()) }, now);
+            onboarding.render(&state);
+            t.check(onboarding.window.isVisible() && state.tasks.onboarding && inbox.is_empty(), "Save failure keeps setup open and does not open work records");
+            t.check(shows(&onboarding.view, language.error_text(error)) && !shows(&onboarding.view, " / "), "Onboarding errors show only the selected language");
+            unsafe { titled(&onboarding.view, say("작업 기록 열기", "Open work records")).unwrap().performClick(None) };
+            let Some(Msg::Tasks(message)) = inbox.take() else { panic!("retry submits") };
+            let effects = tasks::update(&mut state.tasks, message, now);
+            let [tasks::Effect::SaveSettings(chosen)] = effects.as_slice() else { panic!("retry saves") };
+            tasks::update(&mut state.tasks, tasks::Msg::SettingsSaved { settings: chosen.clone(), result: Ok(()) }, now);
+            onboarding.render(&state);
+            t.check(!onboarding.window.isVisible() && !state.tasks.onboarding && matches!(inbox.take(), Some(Msg::ShowDashboard)), "Successful setup opens the first useful screen after saving");
+            onboarding.render(&state);
+            t.check(inbox.is_empty(), "Background rendering never reopens the records window");
+
+            let mut first_run = fresh();
+            tasks::update(&mut first_run.tasks, tasks::Msg::BeginOnboarding, now);
+            onboarding.show(mtm);
+            onboarding.render(&first_run);
+            unsafe { titled(&onboarding.view, say("나중에 설정", "Set up later")).unwrap().performClick(None) };
+            let Some(Msg::Tasks(message)) = inbox.take() else { panic!("skip submits its choice") };
+            let effects = tasks::update(&mut first_run.tasks, message, now);
+            let [tasks::Effect::SaveSettings(skipped)] = effects.as_slice() else { panic!("skip persists") };
+            t.check(!skipped.summaries && skipped.onboarding_complete, "Skipping keeps automatic summaries off");
+            tasks::update(&mut first_run.tasks, tasks::Msg::SettingsSaved { settings: skipped.clone(), result: Ok(()) }, now);
+            onboarding.render(&first_run);
+            t.check(!onboarding.window.isVisible() && inbox.is_empty(), "Skipping goes directly to the widget without forcing open work records");
+
+            let mut settings = errand_macos::shell::settings::Settings::new(mtm, inbox.clone(), language);
+            first_run.tasks.settings_error = Some(error.into());
+            settings.render(&first_run.tasks);
+            t.check(shows(&settings.view, language.error_text(error)) && !shows(&settings.view, " / "), "Everyday settings errors still show only the selected language");
+            let mut h = Harness::new(mtm, defaults, language);
+            let error = "파일을 읽을 수 없어요. / Could not read the file.";
+            h.send(Msg::Tasks(tasks::Msg::Drop(vec![tasks::Input::Png(vec![])])));
+            let token = h.state.tasks.draft.as_ref().unwrap().token;
+            h.send(Msg::Tasks(tasks::Msg::Imported { token, result: Err(error.into()) }));
+            let form = h.widget.borrow().task_panel.contentView().unwrap();
+            t.check(shows(&form, language.error_text(error)) && !shows(&form, " / "), "Attachment errors show only the selected language");
+            h.send(Msg::Tasks(tasks::Msg::Cancel));
+            h.send(Msg::SetWidgetHidden(true));
+        }
     }
 
     /// The same widget in English: its own words, the view's words, and the services' data as they gave it.

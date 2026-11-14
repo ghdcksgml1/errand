@@ -137,7 +137,7 @@ pub struct Summaries {
 
 impl Default for Summaries {
     fn default() -> Summaries {
-        Summaries { days: BTreeMap::new(), making: None, failed: BTreeMap::new(), auto: true, unreadable: false }
+        Summaries { days: BTreeMap::new(), making: None, failed: BTreeMap::new(), auto: false, unreadable: false }
     }
 }
 

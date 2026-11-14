@@ -142,7 +142,7 @@ pub fn read_inputs(pasteboard: &NSPasteboard) -> Vec<Input> {
     inputs
 }
 impl DropView {
-    pub fn new(mtm: MainThreadMarker, poster: Arc<dyn Poster>, content: &NSView) -> Retained<Self> {
+    pub fn new(mtm: MainThreadMarker, poster: Arc<dyn Poster>, content: &NSView, language: errand_core::Language) -> Retained<Self> {
         let outline = Outline::alloc(mtm).set_ivars(Cell::new(false));
         let outline: Retained<Outline> =
             unsafe { msg_send![super(outline), initWithFrame: content.bounds()] };
@@ -155,7 +155,7 @@ impl DropView {
             unsafe { msg_send![super(this), initWithFrame: content.frame()] };
         view.registerForDraggedTypes(&types());
         view.setToolTip(Some(&ns(
-            "파일이나 이미지를 놓아 작업 등록 / Drop files or images to add a task",
+            tasks::words(language, "파일이나 이미지를 놓아 작업 등록", "Drop files or images to add a task"),
         )));
         view.hold(content);
         view

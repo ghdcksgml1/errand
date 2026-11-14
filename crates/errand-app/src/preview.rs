@@ -98,6 +98,10 @@ pub fn state(arguments: &[String], now: Timestamp, language: Language) -> AppSta
     if has("--preview-tray") || compact {
         add_sessions(&mut state, arguments, now, language);
     }
+    if has("--preview-onboarding") { state.tasks.onboarding = true; }
+    if has("--preview-settings-error") {
+        state.tasks.settings_error = Some("AI 설정을 저장하지 못했어요. 폴더 권한을 확인해 주세요. / Could not save AI settings; check folder permissions.".into());
+    }
     if has("--preview-task-form") || has("--preview-task-detail") || has("--preview-personal-task") {
         use errand_core::tasks::{self, Attachment};
         let attachments = vec![Attachment {

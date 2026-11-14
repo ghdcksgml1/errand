@@ -11,6 +11,15 @@ publish.workspace = true
 name = "errand"
 path = "src/main.rs"
 
+[features]
+# Native UI E2E checks require a logged-in desktop session; keep them out of headless CI.
+native-e2e = []
+
+[[test]]
+name = "onboarding_e2e"
+harness = false
+required-features = ["native-e2e"]
+
 [dependencies]
 errand-core.workspace = true
 errand-io.workspace = true

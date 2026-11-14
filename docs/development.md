@@ -32,6 +32,10 @@ python3 scripts/install.py --update
 
 `scripts/test.sh`는 모든 테스트를 돌립니다. 위젯 검사는 실제 AppKit 창을 쓰므로 화면에 위젯이 잠깐 나타나고, GUI 세션이 필요합니다. 그래서 GitHub Actions에서는 위젯 검사를 빼고 돌립니다. 테스트는 임시 폴더에서 돌고 실제 로그인 정보를 쓰지 않습니다.
 
+출시 전에는 GUI 세션에서 `zsh scripts/e2e.sh`도 실행합니다. 온보딩의 실제 버튼에서 Runtime과 설정 파일 저장을 거쳐 새 Runtime으로 재실행하는 흐름을 한국어·영어로 확인합니다. 첫 실행, 실제 저장 실패와 재시도, 기존 설정에서 건너뛰기를 검사하고 HTTP 호출이 없었는지도 확인합니다. 개인 계정 조회와 Keychain 작업은 이 격리 테스트에서 실행하지 않습니다. 이어서 작업 기록 창에 키보드·마우스 이벤트를 넣어 날짜 이동, 구간 선택, 다시 보기, 상세 열기를 검사합니다.
+
+배포할 실행 파일을 그대로 검사하려면 `ERRAND_E2E_BINARY="$PWD/dist/Errand.app/Contents/MacOS/Errand" zsh scripts/e2e.sh`를 사용합니다. PNG는 `.build/e2e`에 저장되며 `ERRAND_E2E_OUTPUT`으로 바꿀 수 있습니다. 온보딩 저장 검사는 `native-e2e` 기능을 켠 테스트 바이너리에서 수행하므로 GUI 없는 CI와 배포 앱에는 포함되지 않습니다.
+
 실제 Keychain 이전 검사는 임시 키체인과 가짜 인증값만 사용하는 별도 테스트입니다. 개인 키체인은 변경하지 않으며, 실행 후 임시 키체인을 삭제합니다.
 
 ```sh
@@ -50,7 +54,7 @@ MACOSX_DEPLOYMENT_TARGET=13.0 cargo test --locked -p errand-macos --lib identity
 
 ## 버전 올리기
 
-버전은 `Cargo.toml`의 `version` 한 곳에서 정합니다. `version`을 고치고, `cargo update --workspace`로 `Cargo.lock`을 맞추고, `CHANGELOG.md`에 적은 뒤, 그 커밋에 `v1.8.0` 같은 태그를 답니다.
+버전은 `Cargo.toml`의 `version` 한 곳에서 정합니다. `version`을 고치고, `cargo update --workspace`로 `Cargo.lock`을 맞추고, `CHANGELOG.md`에 적은 뒤, 공개할 커밋에 `v2.0.0` 같은 태그를 답니다. 배포용 안내 문안은 `docs/releases/`에 보관합니다.
 
 ## 출시하기
 

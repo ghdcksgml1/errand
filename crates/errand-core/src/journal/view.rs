@@ -372,7 +372,7 @@ pub struct WeekDay {
     pub lines: Vec<DraftLine>,
     /// Lines left out to keep the day short.
     pub more: usize,
-    /// "오늘 초안", "고침" or "정리 전": how far the day's summary is.
+    /// "오늘 초안", "수정됨" or "정리 전": how far the day's summary is.
     pub note: Option<String>,
     /// The day's work across 08–19, as fractions, in its service's colour.
     pub strip: Vec<(f64, f64, Provider)>,
@@ -775,7 +775,7 @@ impl Journal<'_> {
             let pick = |korean: &'static str, english: &'static str| self.language.pick(korean, english);
             let made = self.clock(summary.made_at);
             let chip = match (summary.edited, today) {
-                (true, _) => format!("{} · {made}", pick("고침", "Edited")),
+                (true, _) => format!("{} · {made}", pick("수정됨", "Edited")),
                 (false, true) => format!("{} · {made}", pick("초안", "Draft")),
                 (false, false) => format!("{made} {}", pick("정리", "")).trim().to_owned(),
             };
@@ -797,7 +797,7 @@ impl Journal<'_> {
                 title: if today { pick("오늘 정리", "Today's summary") } else { pick("이날 정리", "That day's summary") }.to_owned(),
                 chip,
                 note: match self.language {
-                    Language::Korean => format!("작업 {}개 기준 · 고친 내용은 주간 정리와 보고서에 반영돼요.", records.len()),
+                    Language::Korean => format!("작업 {}개 기준 · 수정한 내용은 주간 정리와 보고서에 반영돼요.", records.len()),
                     Language::English => format!("From {} tasks · edits carry into the week and the reports.", records.len()),
                 },
                 done: summary.done.iter().map(|item| DraftLine { key: item.key.clone(), project: item.project.clone(), text: item.text.clone(), mark: self.summary_marks(date, item.key.as_deref()) }).collect(),
@@ -815,10 +815,7 @@ impl Journal<'_> {
             return Draft::Failed(self.language.pick("저장된 요약을 읽지 못했어요. 폴더 권한을 확인해 주세요.", "Could not read saved summaries. Check folder permissions.").into(), None);
         }
         if let Some(why) = summaries.failed.get(&date) {
-            let why = match why.split_once(" / ") {
-                Some((korean, english)) => if self.language == Language::Korean { korean } else { english },
-                None => why.as_str(),
-            };
+            let why = self.language.error_text(why);
             return Draft::Failed(why.to_owned(), Some(self.language.pick("다시 시도", "Try again").into()));
         }
         if finished == 0 {
@@ -970,7 +967,7 @@ impl Journal<'_> {
                 Some(summary) => {
                     summaries.push(summary);
                     let lines = summary.done.iter().map(|item| DraftLine { key: item.key.clone(), project: item.project.clone(), text: item.text.clone(), mark: self.summary_marks(date, item.key.as_deref()) }).collect();
-                    let note = if summary.edited { Some(pick("고침", "Edited").to_owned()) } else if today { Some(pick("오늘 초안", "Today's draft").to_owned()) } else { None };
+                    let note = if summary.edited { Some(pick("수정됨", "Edited").to_owned()) } else if today { Some(pick("오늘 초안", "Today's draft").to_owned()) } else { None };
                     (lines, note)
                 }
                 None => {
@@ -1179,7 +1176,7 @@ impl Journal<'_> {
             index,
             save_one: pick("이 카드 저장", "Save this card").to_owned(),
             save_all: match self.language {
-                Language::Korean => format!("{}장을 한 장으로 저장", ["", "한", "두", "세", "네", "다섯", "여섯"].get(count).copied().unwrap_or("모든")),
+                Language::Korean => format!("{count}장을 한 장으로 저장"),
                 Language::English => "Save all as one image".to_owned(),
             },
         }
@@ -1390,11 +1387,7 @@ impl Journal<'_> {
             Some(Translate::Working)
         } else if let Some((_, why)) = translations.failed.as_ref().filter(|(failed, _)| failed == key) {
             // The CLI's messages come in both languages, Korean first.
-            let why = match (why.split_once(" / "), self.language) {
-                (Some((korean, _)), Language::Korean) => korean,
-                (Some((_, english)), Language::English) => english,
-                (None, _) => why.as_str(),
-            };
+            let why = self.language.error_text(why);
             Some(Translate::Failed(why.to_owned(), waiting.clone()))
         } else if !waiting.is_empty() {
             Some(Translate::Offer(waiting.clone()))
@@ -1611,7 +1604,7 @@ impl Words {
             loading: pick("기록을 읽는 중…", "Reading records…"),
             empty: pick("이 기간에 맡긴 작업이 없어요", "No tasks in this period"),
             more_lines: pick("외 {}개", "+{} more"),
-            edit: pick("고치기", "Edit"),
+            edit: pick("수정", "Edit"),
             copy_report: pick("보고서로 복사", "Copy as report"),
             redo: pick("다시 정리", "Sum up again"),
             left: pick("남은 일", "Left"),

@@ -6,7 +6,7 @@ use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retain
 use objc2_app_kit::*;
 use objc2_foundation::NSRect;
 use std::{cell::RefCell, rc::Rc, sync::Arc};
-pub const SIZE: (f64, f64) = (460.0, 452.0);
+pub const SIZE: (f64, f64) = (520.0, 620.0);
 
 define_class!(
     #[unsafe(super(NSView))] #[thread_kind = MainThreadOnly] #[name = "ErrandSettingsView"]
@@ -17,7 +17,8 @@ define_class!(
             // The desktop window's ground, and a white card under each of the two things to set.
             kit::color(theme::GROUND).setFill();
             NSBezierPath::fillRect(self.bounds());
-            for card in [rect(14.0, 96.0, SIZE.0 - 28.0, 130.0), rect(14.0, 236.0, SIZE.0 - 28.0, 108.0)] {
+            // 16 + 488 + 16 = 520: both groups share the same outer edges.
+            for card in [rect(16.0, 116.0, SIZE.0 - 32.0, 164.0), rect(16.0, 292.0, SIZE.0 - 32.0, 158.0)] {
                 let path = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(kit::inset(card, 0.5, 0.5), 14.0, 14.0);
                 kit::color(theme::WHITE).setFill();
                 path.fill();
@@ -49,7 +50,17 @@ define_class!(
     }
 );
 
-fn options(provider: Provider, cached: &[ModelOption], language: Language) -> Vec<ModelOption> {
+pub(super) fn window(mtm: MainThreadMarker, size: (f64, f64), title: &str) -> Retained<NSWindow> {
+    let window: Retained<SettingsWindow> = unsafe { msg_send![SettingsWindow::alloc(mtm), initWithContentRect: rect(0.0, 0.0, size.0, size.1), styleMask: NSWindowStyleMask::Titled | NSWindowStyleMask::Closable, backing: NSBackingStoreType::Buffered, defer: false] };
+    let window = Retained::into_super(window);
+    window.setTitle(&ns(title));
+    unsafe { window.setReleasedWhenClosed(false) };
+    window.setAppearance(NSAppearance::appearanceNamed(unsafe { NSAppearanceNameAqua }).as_deref());
+    window.setBackgroundColor(Some(&kit::color(theme::GROUND)));
+    window
+}
+
+pub(super) fn options(provider: Provider, cached: &[ModelOption], language: Language) -> Vec<ModelOption> {
     let mut options = vec![ModelOption { id: String::new(), label: words(language, "기본 모델 (자동)", "Default model (automatic)").into() }];
     match provider {
         Provider::Codex => options.extend(cached.iter().cloned()),
@@ -57,11 +68,11 @@ fn options(provider: Provider, cached: &[ModelOption], language: Language) -> Ve
     }
     options
 }
-fn model_id(field: &NSComboBox, options: &[ModelOption]) -> String {
+pub(super) fn model_id(field: &NSComboBox, options: &[ModelOption]) -> String {
     let text = field.stringValue().to_string();
     options.iter().find(|option| option.label == text).map_or_else(|| text.trim().into(), |option| option.id.clone())
 }
-fn fill(field: &NSComboBox, options: &[ModelOption], selected: &str) {
+pub(super) fn fill(field: &NSComboBox, options: &[ModelOption], selected: &str) {
     unsafe {
         field.removeAllItems();
         for option in options { field.addItemWithObjectValue(&ns(&option.label)); }
@@ -84,38 +95,32 @@ pub struct Settings {
 }
 impl Settings {
     pub fn new(mtm: MainThreadMarker, poster: Arc<dyn Poster>, language: Language) -> Self {
-        let window: Retained<SettingsWindow> = unsafe { msg_send![SettingsWindow::alloc(mtm), initWithContentRect: rect(0.0, 0.0, SIZE.0, SIZE.1), styleMask: NSWindowStyleMask::Titled | NSWindowStyleMask::Closable, backing: NSBackingStoreType::Buffered, defer: false] };
-        let window = Retained::into_super(window);
-        window.setTitle(&ns(words(language, "Errand 설정", "Errand Settings")));
-        unsafe { window.setReleasedWhenClosed(false) };
-        window.setAppearance(NSAppearance::appearanceNamed(unsafe { NSAppearanceNameAqua }).as_deref());
-        window.setBackgroundColor(Some(&NSColor::windowBackgroundColor()));
+        let window = window(mtm, SIZE, words(language, "Errand 설정", "Errand Settings"));
         let view: Retained<SettingsView> = unsafe { msg_send![SettingsView::alloc(mtm), initWithFrame: rect(0.0, 0.0, SIZE.0, SIZE.1)] };
         window.setContentView(Some(&view));
-        let title = label(words(language, "AI 작업 도우미", "AI task assistant"), 21.0, Weight::Semibold, theme::INK, mtm);
-        title.setFrame(rect(26.0, 23.0, 400.0, 28.0)); view.addSubview(&title);
-        let subtitle = label(words(language, "작업 제목과 메모 추천, 작업 기록 요약에 쓸 AI를 골라 주세요.", "Choose the AI that suggests task titles and notes and sums up your work records."), 12.0, Weight::Regular, theme::MUTED, mtm);
-        subtitle.setFrame(rect(27.0, 60.0, 408.0, 32.0)); subtitle.setMaximumNumberOfLines(2); subtitle.setLineBreakMode(NSLineBreakMode::ByWordWrapping); view.addSubview(&subtitle);
-        for (caption, y) in [(words(language, "플랫폼", "Platform"), 108.0), (words(language, "모델", "Model"), 155.0)] {
-            let text = label(caption, 12.0, Weight::Semibold, theme::INK, mtm); text.setFrame(rect(28.0, y + 5.0, 80.0, 20.0)); view.addSubview(&text);
+        let title = label(words(language, "AI 작업 도우미", "AI task assistant"), 24.0, Weight::Semibold, theme::INK, mtm);
+        title.setFrame(rect(28.0, 22.0, 464.0, 32.0)); view.addSubview(&title);
+        let subtitle = label(words(language, "제목·메모 추천, 작업 기록 요약과 번역에 사용할 AI를 선택해 주세요.", "Choose the AI for task titles, notes, work summaries and translations."), 13.0, Weight::Regular, theme::MUTED, mtm);
+        subtitle.setFrame(rect(28.0, 64.0, 464.0, 42.0)); subtitle.setMaximumNumberOfLines(2); subtitle.setLineBreakMode(NSLineBreakMode::ByWordWrapping); view.addSubview(&subtitle);
+        for (caption, y) in [(words(language, "AI 서비스", "AI service"), 139.0), (words(language, "모델", "Model"), 189.0)] {
+            let text = label(caption, 13.0, Weight::Semibold, theme::INK, mtm); text.setFrame(rect(28.0, y + 5.0, 88.0, 20.0)); view.addSubview(&text);
         }
-        let provider = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), rect(112.0, 105.0, 318.0, 29.0), false);
-        provider.addItemWithTitle(&ns("Codex")); provider.addItemWithTitle(&ns("Claude Code")); provider.setAccessibilityLabel(Some(&ns(words(language, "플랫폼", "Platform")))); view.addSubview(&provider);
-        let model = NSComboBox::initWithFrame(NSComboBox::alloc(mtm), rect(114.0, 153.0, 314.0, 28.0));
+        let provider = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), rect(126.0, 138.0, 366.0, 29.0), false);
+        provider.addItemWithTitle(&ns("Codex")); provider.addItemWithTitle(&ns("Claude Code")); provider.setAccessibilityLabel(Some(&ns(words(language, "AI 서비스", "AI service")))); view.addSubview(&provider);
+        let model = NSComboBox::initWithFrame(NSComboBox::alloc(mtm), rect(128.0, 188.0, 362.0, 28.0));
         model.setFont(Some(&kit::font(13.0, Weight::Regular))); model.setCompletes(false); model.setNumberOfVisibleItems(8);
         model.setAccessibilityLabel(Some(&ns(words(language, "모델", "Model")))); view.addSubview(&model);
-        let hint = label(words(language, "목록에서 선택하거나 모델 ID를 직접 입력할 수 있어요.", "Choose from the list or enter a model ID."), 11.0, Weight::Regular, theme::MUTED, mtm);
-        hint.setFrame(rect(115.0, 190.0, 315.0, 32.0)); hint.setMaximumNumberOfLines(2); hint.setLineBreakMode(NSLineBreakMode::ByWordWrapping); view.addSubview(&hint);
-        // The work-record summaries: on their own for finished days, and kept on this Mac until removed.
-        let heading = label(words(language, "작업 기록 요약", "Work-record summaries"), 14.0, Weight::Semibold, theme::INK, mtm);
-        heading.setFrame(rect(27.0, 246.0, 300.0, 20.0)); view.addSubview(&heading);
-        let auto = unsafe { NSButton::checkboxWithTitle_target_action(&ns(words(language, "끝난 날을 자동으로 요약", "Sum up finished days on their own")), None, None, mtm) };
-        auto.setFrame(rect(26.0, 274.0, 280.0, 22.0)); view.addSubview(&auto);
-        let auto_hint = label(words(language, "지난 날은 한 번, 오늘은 저녁 6시에 요약해요.\n요약은 이 Mac에만 저장돼요.", "Each finished day is summed up once, and today at 6 pm. Summaries stay on this Mac."), 11.0, Weight::Regular, theme::MUTED, mtm);
-        auto_hint.setFrame(rect(46.0, 298.0, 384.0, 32.0)); auto_hint.setMaximumNumberOfLines(2); auto_hint.setLineBreakMode(NSLineBreakMode::ByWordWrapping); view.addSubview(&auto_hint);
-        let privacy = label(words(language, "로컬 CLI의 로그인 계정을 사용합니다.\n첨부 내용과, 요약할 작업의 요청·답변 일부가 선택한 모델 서비스로 전송됩니다.", "Uses your local CLI login.\nAttachments, and parts of the requests and answers being summed up, go to the selected model service."), 11.0, Weight::Regular, theme::MUTED, mtm);
-        privacy.setFrame(rect(28.0, 355.0, 402.0, 36.0)); privacy.setMaximumNumberOfLines(2); privacy.setLineBreakMode(NSLineBreakMode::ByWordWrapping); view.addSubview(&privacy);
-        let status = label("", 11.0, Weight::Regular, theme::MUTED, mtm); status.setFrame(rect(28.0, 401.0, 292.0, 34.0)); status.setMaximumNumberOfLines(2); status.setLineBreakMode(NSLineBreakMode::ByWordWrapping); view.addSubview(&status);
+        let hint = label(words(language, "목록에서 선택하거나 모델 ID를 직접 입력할 수 있어요.\n기본 모델을 그대로 사용해도 돼요.", "Choose from the list or enter a model ID.\nYou can keep the default model."), 12.0, Weight::Regular, theme::MUTED, mtm);
+        hint.setFrame(rect(128.0, 226.0, 362.0, 40.0)); hint.setMaximumNumberOfLines(2); hint.setLineBreakMode(NSLineBreakMode::ByWordWrapping); view.addSubview(&hint);
+        let heading = label(words(language, "작업 기록 요약", "Work summaries"), 15.0, Weight::Semibold, theme::INK, mtm);
+        heading.setFrame(rect(28.0, 305.0, 300.0, 20.0)); view.addSubview(&heading);
+        let auto = unsafe { NSButton::checkboxWithTitle_target_action(&ns(words(language, "하루 작업 기록 자동 요약", "Summarize each day's work automatically")), None, None, mtm) };
+        auto.setFrame(rect(26.0, 332.0, 464.0, 24.0)); view.addSubview(&auto);
+        let auto_hint = label(words(language, "켜면 지난 작업은 자동으로, 오늘 작업은 오후 6시부터 요약해요.\n창을 열지 않아도 아침에 지난 작업을 요약할 수 있어요.\n요청·답변 일부와 커밋 메시지가 선택한 AI로 전송되고,\n완성된 요약은 이 Mac에 저장돼요.", "When enabled, past work and today's work after 6 pm are summarized. Morning summaries can run with the window closed. Parts of requests, answers and commit messages go to the selected AI. Finished summaries are saved on this Mac."), 12.0, Weight::Regular, theme::MUTED, mtm);
+        auto_hint.setFrame(rect(46.0, 363.0, 444.0, 76.0)); auto_hint.setMaximumNumberOfLines(5); auto_hint.setLineBreakMode(NSLineBreakMode::ByWordWrapping); view.addSubview(&auto_hint);
+        let privacy = label(words(language, "이 Mac에 로그인된 Codex 또는 Claude Code 계정을 사용해요.\n제목·메모 추천에는 첨부 내용, 번역에는 답변 일부를 전송해요.\nAI 기능을 사용하면 해당 계정의 사용량에 반영돼요.", "Uses your Codex or Claude Code login on this Mac. Title and note suggestions and translations also send their content to the selected AI and may count toward your account's usage."), 12.0, Weight::Regular, theme::MUTED, mtm);
+        privacy.setFrame(rect(28.0, 464.0, 464.0, 54.0)); privacy.setMaximumNumberOfLines(3); privacy.setLineBreakMode(NSLineBreakMode::ByWordWrapping); view.addSubview(&privacy);
+        let status = label("", 12.0, Weight::Regular, theme::MUTED, mtm); status.setFrame(rect(28.0, 530.0, 464.0, 36.0)); status.setMaximumNumberOfLines(2); status.setLineBreakMode(NSLineBreakMode::ByWordWrapping); view.addSubview(&status);
         let local = Rc::new(RefCell::new(AiSettings::default()));
         let cached = Rc::new(RefCell::new(vec![]));
         let choices = Rc::new(RefCell::new(options(Provider::Codex, &[], language)));
@@ -136,11 +141,11 @@ impl Settings {
         });
         auto_action.attach(&auto);
         let delete_poster = poster.clone();
-        let (delete, delete_action) = button(words(language, "요약 지우기", "Delete summaries"), "", false, rect(318.0, 270.0, 112.0, 28.0), move || {
+        let (delete, delete_action) = button(words(language, "요약 삭제", "Delete summaries"), "", false, rect(348.0, 300.0, 144.0, 28.0), move || {
             let Some(mtm) = MainThreadMarker::new() else { return };
             let alert = NSAlert::new(mtm);
             alert.setMessageText(&ns(words(language, "저장된 작업 요약을 모두 지울까요?", "Delete every saved work summary?")));
-            alert.setInformativeText(&ns(words(language, "지운 요약은 되돌릴 수 없어요. 자동 요약이 켜져 있으면 지난 7일은 작업 기록 창을 열 때 다시 요약돼요.", "This cannot be undone. With automatic summaries on, the last 7 days are summed up again when the work-record window opens.")));
+            alert.setInformativeText(&ns(words(language, "삭제한 요약은 되돌릴 수 없어요. 자동 요약이 켜져 있으면 지난 7일의 작업이 다시 요약될 수 있어요.", "This cannot be undone. With automatic summaries on, work from the last 7 days may be summarized again.")));
             let go = alert.addButtonWithTitle(&ns(words(language, "지우기", "Delete")));
             go.setHasDestructiveAction(true);
             alert.addButtonWithTitle(&ns(words(language, "취소", "Cancel")));
@@ -150,7 +155,7 @@ impl Settings {
         }, mtm);
         view.addSubview(&delete);
         let (draft, model_field, current_choices) = (local.clone(), model.clone(), choices.clone());
-        let (save, save_action) = primary_button(words(language, "저장", "Save"), "", false, rect(338.0, 399.0, 91.0, 30.0), move || {
+        let (save, save_action) = primary_button(words(language, "저장", "Save"), "", false, rect(380.0, 576.0, 112.0, 32.0), move || {
             let mut settings = draft.borrow().clone();
             let provider = settings.provider;
             settings.models[provider] = model_id(&model_field, &current_choices.borrow());
@@ -173,7 +178,9 @@ impl Settings {
             fill(&self.model, &self.choices.borrow(), &model);
             self.applied = Some(state.settings.clone());
         }
-        let message = state.settings_error.as_deref().unwrap_or(if state.settings_saved { words(self.language, "저장했어요.", "Saved.") } else { "" });
+        let message = state.settings_error.as_deref().map(|error| self.language.error_text(error)).unwrap_or(
+            if state.settings_saved { words(self.language, "저장했어요.", "Saved.") }
+            else { "" });
         self.status.setStringValue(&ns(message)); self.status.setToolTip(Some(&ns(message)));
     }
     pub fn show(&mut self, mtm: MainThreadMarker) {

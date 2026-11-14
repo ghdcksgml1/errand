@@ -3,6 +3,30 @@ use errand_io::task_settings::{load, save, codex_models};
 use std::fs;
 
 #[test]
+fn first_run_and_older_settings_do_not_enable_summaries() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = load(temp.path(), Provider::Claude).unwrap();
+    assert!(!settings.summaries && !settings.onboarding_complete);
+    let mut old = serde_json::json!({"version": 1, "provider": "claude", "models": {"codex": "", "claude": "sonnet"}});
+    fs::write(temp.path().join("ai-settings.json"), old.to_string()).unwrap();
+    let settings = load(temp.path(), Provider::Codex).unwrap();
+    assert!(!settings.summaries && !settings.onboarding_complete);
+    assert_eq!(settings.models.claude, "sonnet");
+
+    // A previous explicit preference survives migration, while setup still needs to be completed.
+    for enabled in [true, false] {
+        old["summaries"] = serde_json::json!({"auto": enabled});
+        fs::write(temp.path().join("ai-settings.json"), old.to_string()).unwrap();
+        let mut settings = load(temp.path(), Provider::Codex).unwrap();
+        assert_eq!(settings.summaries, enabled);
+        assert!(!settings.onboarding_complete);
+        settings.onboarding_complete = true;
+        save(temp.path(), &settings).unwrap();
+        assert_eq!(load(temp.path(), Provider::Codex).unwrap(), settings, "setup and the summary choice survive a restart");
+    }
+}
+
+#[test]
 fn remembers_each_providers_model_and_migrates_the_previous_provider() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("tasks");

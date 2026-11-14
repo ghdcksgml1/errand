@@ -578,7 +578,7 @@ fn apply(state: &mut AppState, msg: Msg, now: Timestamp) -> Vec<Effect> {
             }
             let effects = crate::tasks::update(&mut state.tasks, msg, now).into_iter().map(Effect::Tasks).collect();
             if was_open && !state.tasks.open() { state.badge_open = false; }
-            state.journal.summaries.auto = state.tasks.settings.summaries;
+            state.journal.summaries.auto = state.tasks.settings.summaries && state.tasks.settings.onboarding_complete;
             if !state.journal.summaries.auto {
                 state.journal.nudge = None;
             }

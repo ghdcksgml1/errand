@@ -8,6 +8,7 @@ mod compact;
 mod journal;
 mod nudge;
 pub mod settings;
+pub mod onboarding;
 mod details;
 mod dock;
 pub mod kit;

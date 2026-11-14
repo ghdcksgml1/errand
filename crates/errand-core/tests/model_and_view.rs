@@ -140,7 +140,7 @@ fn an_empty_claude_card_says_where_its_usage_comes_from() {
     read(&mut state, Provider::Codex, Ok(Vec::new()));
     read(&mut state, Provider::Claude, Ok(Vec::new()));
     let details = view::details(&state, &context());
-    assert_eq!(details.cards[0].empty.as_ref().unwrap().1, "해당 계정으로 로그인한 뒤\n다시 확인해주세요.");
+    assert_eq!(details.cards[0].empty.as_ref().unwrap().1, "해당 계정으로 로그인한 뒤\n다시 확인해 주세요.");
     assert_eq!(details.cards[1].empty.as_ref().unwrap().1, "새로고침을 누르거나 터미널에서\nClaude Code를 쓰면 표시돼요.", "signing in again would not help");
 }
 

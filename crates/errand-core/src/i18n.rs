@@ -45,6 +45,16 @@ impl Language {
         }
     }
 
+    /// I/O errors carry both translations; show only the one used by the interface.
+    /// System errors without a translation are kept as reported.
+    pub fn error_text(self, message: &str) -> &str {
+        match (message.split_once(" / "), self) {
+            (Some((korean, _)), Language::Korean) => korean,
+            (Some((_, english)), Language::English) => english,
+            (None, _) => message,
+        }
+    }
+
     // Times.
 
     pub fn just_now(self) -> &'static str {
@@ -678,14 +688,14 @@ impl Language {
     pub fn no_limits(self, provider: Provider, failure: Option<String>, loading: bool) -> (String, String) {
         match failure {
             Some(failure) => (self.pick("사용량을 가져오지 못했어요", "Couldn't get usage").to_owned(), failure),
-            None if loading => (self.pick("사용량을 확인하고 있어요", "Checking usage").to_owned(), self.pick("잠시만 기다려주세요.", "Just a moment.").to_owned()),
+            None if loading => (self.pick("사용량을 확인하고 있어요", "Checking usage").to_owned(), self.pick("잠시만 기다려 주세요.", "Just a moment.").to_owned()),
             None if provider == Provider::Claude => (
                 self.pick("사용량 정보가 없어요", "No usage yet").to_owned(),
                 self.pick("새로고침을 누르거나 터미널에서\nClaude Code를 쓰면 표시돼요.", "Press refresh, or use Claude Code\nin Terminal, to see it here.").to_owned(),
             ),
             None => (
                 self.pick("사용량 정보가 없어요", "No usage yet").to_owned(),
-                self.pick("해당 계정으로 로그인한 뒤\n다시 확인해주세요.", "Sign in to this account,\nthen check again.").to_owned(),
+                self.pick("해당 계정으로 로그인한 뒤\n다시 확인해 주세요.", "Sign in to this account,\nthen check again.").to_owned(),
             ),
         }
     }
@@ -781,7 +791,7 @@ impl Language {
             Mood::Healthy => self.pick("아직 여유가 있어요", "Plenty left"),
             Mood::Low => self.pick("잠깐 쉬어가도 좋아요", "Maybe take a short break"),
             Mood::Reset => self.pick("새 한도가 열렸어요", "A fresh limit just opened"),
-            Mood::Unknown => self.pick("사용량을 확인해주세요", "Check your usage"),
+            Mood::Unknown => self.pick("사용량을 확인해 주세요", "Check your usage"),
         }
     }
 
@@ -855,7 +865,7 @@ impl Language {
     /// Why no more rooms can be joined, at the list's top and on its buttons.
     pub fn rooms_full(self) -> String {
         match self {
-            Language::Korean => format!("방은 {MAX_ROOMS}개까지 들어갈 수 있어요. 다른 방을 나가면 들어가요."),
+            Language::Korean => format!("최대 {MAX_ROOMS}개의 방에 참여할 수 있어요. 다른 방에서 나간 뒤 다시 시도해 주세요."),
             Language::English => format!("You can be in {MAX_ROOMS} rooms at once. Leave one to join another."),
         }
     }
@@ -980,13 +990,13 @@ impl Language {
             RoomError::CredentialsUnavailable => self.pick("작업방 인증정보를 읽지 못했어요. 키체인 접근을 허용한 뒤 다시 시도해 주세요.", "Couldn't read your rooms credentials. Allow Keychain access, then try again."),
             RoomError::Unauthorized => self.pick("작업방 서버가 이 Mac을 알아보지 못했어요.", "The rooms server didn't recognize this Mac."),
             RoomError::NotFound => self.pick("이 방은 이제 없어요.", "This room is gone."),
-            RoomError::Full => self.pick("방이 꽉 찼어요. 자리가 나면 들어가요.", "The room is full. You'll get in when someone leaves."),
-            RoomError::TooManyRooms => self.pick("방에 너무 많이 들어가 있어요. 다른 방을 나가면 들어가요.", "You're in too many rooms. Leave one to get in."),
+            RoomError::Full => self.pick("방이 꽉 찼어요. 자리가 나면 참여할 수 있어요.", "The room is full. You can join when a spot opens."),
+            RoomError::TooManyRooms => self.pick("참여할 수 있는 방의 수를 초과했어요. 다른 방에서 나간 뒤 다시 시도해 주세요.", "You're in too many rooms. Leave one, then try again."),
             RoomError::RateLimited => self.pick("작업방 서버가 잠시 쉬어 달래요. 곧 다시 이어져요.", "The rooms server asked for a break. Back soon."),
             RoomError::ClientTooOld => self.pick("작업방을 쓰려면 Errand를 업데이트하세요.", "Update Errand to use work rooms."),
             RoomError::Rejected => self.pick("작업방 서버가 요청을 받지 않았어요.", "The rooms server turned the request down."),
             RoomError::TooManyOwned => self.owned_rooms_full(),
-            RoomError::TooManyInvites => self.pick("이 방에 살아 있는 링크가 너무 많아요. 쓰지 않는 링크를 지우세요.", "This room has too many live links. Delete one you don't use."),
+            RoomError::TooManyInvites => self.pick("이 방에 유효한 초대 링크가 너무 많아요. 쓰지 않는 링크를 삭제해 주세요.", "This room has too many active invite links. Delete one you don't use."),
             RoomError::InviteNotFound => self.pick("코드가 맞지 않거나 기한이 지났어요.", "That code is wrong or has run out."),
             // ROOM_MEMBERS is 20.
             RoomError::TooManyMembers => self.pick("이 방은 20명이 다 찼어요. 방장에게 알려 주세요.", "This room is full at 20 people. Let its owner know."),

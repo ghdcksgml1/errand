@@ -58,7 +58,7 @@ impl Runtime {
             Err(error) => state.tasks.settings_error = Some(error),
         }
         state.journal.language = Some(platform.language);
-        state.journal.summaries.auto = state.tasks.settings.summaries;
+        state.journal.summaries.auto = state.tasks.settings.summaries && state.tasks.settings.onboarding_complete;
         state.journal.nudged = errand_io::summaries::load_nudged(&platform.session_tray.with_file_name("nudged"));
         match errand_io::summaries::load(&platform.session_tray.with_file_name("summaries")) {
             Ok(kept) => state.journal.summaries.days = kept.into_iter().map(|summary| (summary.date, summary)).collect(),
@@ -167,6 +167,7 @@ impl Runtime {
             }
             TaskEffect::PickFiles => self.shell.choose_task_files(),
             TaskEffect::ShowSettings => self.shell.show_settings(),
+            TaskEffect::ShowOnboarding => self.shell.show_onboarding(),
             TaskEffect::ReadModels => return Some(Msg::Tasks(TaskMsg::ModelsRead(errand_io::task_settings::codex_models(&self.platform.codex.home)))),
             TaskEffect::SaveSettings(settings) => {
                 let result = errand_io::task_settings::save(&root, &settings);
@@ -183,6 +184,7 @@ impl Runtime {
     /// What the app does on launch: check accounts, read usage and sessions, and draw. The first launch also
     /// makes this install's ID, ready for the room server.
     pub fn start(&mut self) {
+        self.dispatch(Msg::Tasks(errand_core::tasks::Msg::BeginOnboarding));
         self.platform.make_install_id();
         for msg in [Msg::CheckAccounts, Msg::RefreshUsage, Msg::ScanSessions, Msg::CheckForUpdate] {
             self.dispatch(msg);

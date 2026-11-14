@@ -161,7 +161,7 @@ impl Widget {
             let simple = Simple::new(mtm, poster.clone(), language, compact_events.clone());
             let character = Character::new(mtm, poster.clone(), language, compact_events);
             let panel = make_panel(mtm, NSSize::new(STACK_WIDTH, layout::dock_height(DockShape::FULL)), language.window_title_usage());
-            let drop_view = DropView::new(mtm, poster.clone(), &dock.view);
+            let drop_view = DropView::new(mtm, poster.clone(), &dock.view, language);
             panel.setContentView(Some(&drop_view));
             let task_form = TaskForm::new(mtm, poster.clone(), language);
             let task_panel = make_typing_panel(
