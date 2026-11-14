@@ -10,14 +10,17 @@ preview() {
   "$errand" --preview --language ko "$@" > /dev/null
 }
 preview --preview-tray "$images/tasks.png"
+preview --preview-journal-week "$images/records.png"
 preview --preview-details "$images/usage.png"
+preview --preview-simple-open "$images/simple.png"
 preview --preview-room "$images/room.png"
 preview --preview-avatar "$images/character-editor.png"
-# One for each body, and each introduces a part of the app.
+# Each introduces a part of the app.
 characters=(
   tasks 'avatar:triangle,sprout,happy,grin,hoodie,blush,6366F1'
   usage 'avatar:dome,bear,sparkly,smile,overalls,blush,F97316'
   open 'avatar:square,cat,dots,cat,tee,plain,14B8A6'
+  records 'avatar:square,bear,happy,smile,collar,blush,A855F7'
   rooms 'avatar:cloud,beanie,sleepy,round,stripes,blush,EC4899'
   private 'avatar:hexagon,sprout,squint,flat,collar,plain,3B82F6'
 )
