@@ -25,3 +25,4 @@ python3 Tests/StartupTests.py
 python3 Tests/InstallTests.py
 python3 Tests/ConnectClaudeTests.py
 python3 Tests/PackageTests.py
+python3 Tests/BuildPrivacyTests.py

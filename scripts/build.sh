@@ -3,7 +3,7 @@ set -euo pipefail
 cd "${0:A:h:h}"
 mkdir -p .build dist
 # Cargo.lock pins every dependency; --locked stops the build rather than quietly resolving newer ones.
-MACOSX_DEPLOYMENT_TARGET=13.0 cargo build --release --locked --bin errand --bin make-icon
+MACOSX_DEPLOYMENT_TARGET=13.0 python3 scripts/build_privacy.py build --bin errand --bin make-icon
 
 app='dist/Errand.app'
 # Builds before 1.5 also made a Codex A launcher; the app replaces it.
@@ -12,7 +12,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 if [[ -n "${ERRAND_SIGN_IDENTITY:-}" ]]; then
   # A release also has to run on Intel Macs; everyday builds stay native, and quicker.
   for target in aarch64-apple-darwin x86_64-apple-darwin; do
-    MACOSX_DEPLOYMENT_TARGET=13.0 cargo build --release --locked --bin errand --target "$target"
+    MACOSX_DEPLOYMENT_TARGET=13.0 python3 scripts/build_privacy.py build --bin errand --target "$target"
   done
   /usr/bin/lipo -create target/{aarch64,x86_64}-apple-darwin/release/errand -output "$app/Contents/MacOS/Errand"
 else
@@ -51,6 +51,7 @@ info = {
 with (app / 'Contents/Info.plist').open('wb') as f:
     plistlib.dump(info, f)
 PY
+python3 scripts/build_privacy.py check "$app"
 # Signed for this computer, unless ERRAND_SIGN_IDENTITY names a Developer ID certificate, as scripts/release.sh does.
 if [[ -n "${ERRAND_SIGN_IDENTITY:-}" ]]; then
   /usr/bin/codesign --force --options runtime --timestamp --sign "$ERRAND_SIGN_IDENTITY" "$app"
