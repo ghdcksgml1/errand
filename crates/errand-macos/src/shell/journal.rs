@@ -710,31 +710,35 @@ fn replay_button(pen: &mut Pen, x: f64, y: f64, playing: bool, words: &Words) {
     pen.hit(frame, Hit::Replay);
 }
 
-/// The date line: the big number, the two lines beside it, the way back and forward, and the period's counts.
+/// The date line: fixed paging controls, the date and its two labels, and the period's counts.
 fn masthead(pen: &mut Pen, masthead: &Masthead, screen: &Screen, look: &Look) {
     let big = kit::font(104.0, Weight::Bold);
     let baseline = 100.0;
-    let width = big_number(pen, &masthead.big, PAD, baseline - big.ascender());
-    let x = PAD + width + 14.0;
-    let top_width = pen.text(&masthead.top, x, 56.0, 22.0, Weight::Semibold, theme::INK.alpha(1.0));
-    let bottom_width = pen.text(&masthead.bottom, x, 86.0, 12.0, Weight::Regular, SOFT.alpha(1.0));
-    let mut x = x + top_width.max(bottom_width) + 18.0;
-    for (icon, step, enabled) in [("chevron-left", -1, true), ("chevron-right", 1, masthead.can_go_forward)] {
-        let frame = rect(x, 78.0, 26.0, 26.0);
-        pen.round(frame, 13.0, Some(theme::INK.alpha(if enabled { 0.07 } else { 0.04 })), None);
-        pen.icon(icon, kit::inset(frame, 6.0, 6.0), if enabled { theme::INK } else { FAINT });
+    let button_size = 32.0;
+    let button_gap = 8.0;
+    // Keep the larger controls on the date's lower edge.
+    let button_y = baseline + 4.0 - button_size;
+    // Paging stays under the pointer when the date's digits or month name change width.
+    for (index, (icon, step, enabled)) in [("chevron-left", -1, true), ("chevron-right", 1, masthead.can_go_forward)].into_iter().enumerate() {
+        let frame = rect(PAD + index as f64 * (button_size + button_gap), button_y, button_size, button_size);
+        pen.round(frame, button_size / 2.0, Some(theme::INK.alpha(if enabled { 0.07 } else { 0.04 })), None);
+        pen.icon(icon, kit::inset(frame, 8.0, 8.0), if enabled { theme::INK } else { FAINT });
         if enabled {
             pen.hit(frame, Hit::Step(step));
         }
-        x += 30.0;
     }
+    let date_x = PAD + button_size * 2.0 + button_gap + 20.0;
+    let width = big_number(pen, &masthead.big, date_x, baseline - big.ascender());
+    let x = date_x + width + 14.0;
+    let top_width = pen.text(&masthead.top, x, 56.0, 22.0, Weight::Semibold, theme::INK.alpha(1.0));
+    let bottom_width = pen.text(&masthead.bottom, x, 86.0, 12.0, Weight::Regular, SOFT.alpha(1.0));
     // The way into the week's recap cards.
     if let Body::Week(view) = &screen.body
         && let Some(recap) = &view.recap
     {
         let words = recap.title.replace('\n', " ");
         let words_width = text_width(&words, 12.0, Weight::Semibold);
-        let frame = rect(x + 8.0, 78.0, words_width + 38.0, 26.0);
+        let frame = rect(x + top_width.max(bottom_width) + 12.0, 78.0, words_width + 38.0, 26.0);
         pen.round(frame, 13.0, Some(INDIGO.alpha(1.0)), None);
         pen.text(&words, frame.origin.x + 13.0, 83.0, 12.0, Weight::Semibold, theme::WHITE.alpha(1.0));
         pen.icon("chevron-right", rect(frame.origin.x + words_width + 17.0, 84.5, 13.0, 13.0), LAVENDER);
