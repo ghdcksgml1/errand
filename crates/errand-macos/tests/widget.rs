@@ -1651,14 +1651,22 @@ mod widget {
             t.check(accepted && panel.isVisible() && h.state.widget.mode == mode, "A native file drop opens registration without changing the widget size");
             let form = panel.contentView().unwrap();
             t.check(titled(&form, "작업 등록").is_some_and(|b| !b.isEnabled()), "Registration waits for attachments to finish importing");
+            let memo = labels(&form).into_iter().find(|field| spoken(field) == "메모").unwrap();
+            let title = labels(&form).into_iter().find(|field| spoken(field) == "제목 (필수)").unwrap();
+            let (skip, retry) = (titled(&form, "직접 입력").unwrap(), titled(&form, "다시 추천").unwrap());
+            t.check(!title.isEnabled() && !memo.isEnabled() && skip.isHidden(), "The title and note cannot be typed into while the attachments are copied");
+            t.check(panel.isKeyWindow() && title.currentEditor().is_none(), "The form takes typing when it opens, without putting it in a field that waits");
             let token = h.state.tasks.draft.as_ref().unwrap().token;
             h.send(Msg::Tasks(tasks::Msg::Imported { token, result: Ok(vec![Attachment { id: "sample.txt".into(), name: "검토 요청.txt".into(), bytes: 42, image: false }]) }));
+            t.check(!title.isEnabled() && !memo.isEnabled() && !skip.isHidden() && retry.isHidden(), "While a suggestion is on its way the fields stay locked, and typing by hand is offered where asking again was");
+            t.check(memo.placeholderString().is_none_or(|text| text.is_empty()), "A note that waits shows no placeholder to type over");
             h.send(Msg::Tasks(tasks::Msg::Title("직접 수정한 제목".into())));
             let revision = h.state.tasks.draft.as_ref().unwrap().revision;
             h.send(Msg::Tasks(tasks::Msg::Generated { token, revision, result: Ok(tasks::Suggestion { title: "늦게 온 제목".into(), memo: "온보딩 문서의 확인할 내용".into() }) }));
             t.check(shows(&form, "직접 수정한 제목"), "A late AI answer leaves the typed title in the native field");
-            let memo = labels(&form).into_iter().find(|field| spoken(field) == "메모").unwrap();
-            let title = labels(&form).into_iter().find(|field| spoken(field) == "제목 (필수)").unwrap();
+            t.check(title.isEnabled() && memo.isEnabled() && skip.isHidden() && !retry.isHidden(), "The answer frees the title and note, and asking again comes back");
+            let caret = title.currentEditor().map(|editor| editor.selectedRange());
+            t.check(caret.is_some_and(|range| range.location == "직접 수정한 제목".encode_utf16().count() && range.length == 0), &format!("Typing goes to the end of the title once it is free: {caret:?}"));
             t.check(memo.stringValue().is_empty() && memo.placeholderString().is_some_and(|text| text.to_string() == "온보딩 문서의 확인할 내용"), "The suggested note is a placeholder until accepted");
             panel.makeKeyAndOrderFront(None);
             panel.makeFirstResponder(Some(&memo));
@@ -1676,12 +1684,32 @@ mod widget {
             t.check(h.state.tasks.draft.as_ref().unwrap().memo == "온보딩 문서의 확인할 내용" && memo.stringValue().to_string() == "온보딩 문서의 확인할 내용", "Click or focused Tab accepts the suggested note in the editor and model");
             let again: bool = unsafe { msg_send![&*memo.delegate().unwrap(), control: &*memo, textView: &*editor, doCommandBySelector: objc2::sel!(insertTab:)] };
             t.check(!again, "Tab resumes normal navigation once the note is accepted");
+            // Asking again locks the fields, the note being typed into among them; typing by hand stops the request.
+            h.send(Msg::Tasks(tasks::Msg::Retry));
+            t.check(!title.isEnabled() && !memo.isEnabled() && !skip.isHidden() && memo.currentEditor().is_none(), "Asking again locks the fields, even the one being typed into");
+            let stopped = h.performed(|e| matches!(e, Effect::Tasks(tasks::Effect::CancelTitle)));
+            unsafe { skip.performClick(None) }; h.pump();
+            t.check(title.isEnabled() && memo.isEnabled() && skip.isHidden() && !h.state.tasks.draft.as_ref().unwrap().generating
+                && h.performed(|e| matches!(e, Effect::Tasks(tasks::Effect::CancelTitle))) == stopped + 1, "Typing by hand stops the suggestion and frees the fields");
+            t.check(memo.currentEditor().is_some() && title.currentEditor().is_none(), "Typing goes back to the note it was taken from");
             t.check(h.state.tasks.records.is_empty(), "Dropping and editing does not register a task");
             let go = titled(&form, "작업 등록").unwrap(); unsafe { go.performClick(None) }; h.pump();
             t.check(h.performed(|e| matches!(e, Effect::Tasks(tasks::Effect::Save { .. }))) > 0, "The registration button asks to persist the draft");
             h.send(Msg::Tasks(tasks::Msg::Cancel));
             t.check(!panel.isVisible() && h.state.tasks.draft.is_none(), "Cancel closes registration in every widget size");
         }
+        // While the fields wait no field holds typing, and Escape still closes the form.
+        let root = h.widget.borrow().panel.contentView().unwrap();
+        let _: bool = unsafe { msg_send![&*root, performDragOperation: &*info] };
+        h.pump();
+        let panel = h.widget.borrow().task_panel.clone();
+        let escape = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::KeyDown, NSPoint::new(0.0, 0.0), NSEventModifierFlags::empty(), 0.0, panel.windowNumber(), None, &ns("\u{1b}"), &ns("\u{1b}"), false, 53,
+        ).unwrap();
+        t.check(panel.isVisible() && h.state.tasks.draft.as_ref().is_some_and(|draft| draft.locked()), "A drop opens registration with its fields waiting");
+        panel.sendEvent(&escape);
+        h.pump();
+        t.check(!panel.isVisible() && h.state.tasks.draft.is_none(), "Escape closes registration while its fields wait");
         h.state.tasks.records.push(tasks::Task { id: "manual:detail".into(), title: "첨부 확인".into(), memo: String::new(), attachments: vec![], created: h.now, done: false });
         h.send(Msg::Tasks(tasks::Msg::Open("manual:detail".into())));
         let panel = h.widget.borrow().task_panel.clone();

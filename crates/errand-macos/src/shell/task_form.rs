@@ -73,6 +73,7 @@ pub struct TaskForm {
     files: Retained<FlippedView>,
     go: Retained<NSButton>,
     retry: Retained<NSButton>,
+    skip: Retained<NSButton>,
     add: Retained<NSButton>,
     settings: Retained<NSButton>,
     accept_memo: Retained<NSButton>,
@@ -83,6 +84,10 @@ pub struct TaskForm {
     _watchers: Vec<Retained<Watcher>>,
     selected: Rc<RefCell<Option<String>>>,
     key: Option<String>,
+    /// The title and note are dimmed: the attachments are being copied or a suggestion is on its way.
+    locked: bool,
+    /// The note was being typed into when the fields were locked, so typing goes back to it.
+    resume_memo: bool,
     attachments: Vec<tasks::Attachment>,
     poster: Arc<dyn Poster>,
     language: Language,
@@ -188,6 +193,23 @@ impl TaskForm {
             mtm,
         );
         body.addSubview(&retry);
+        // In the same place while a suggestion is on its way, when there is nothing to ask again yet.
+        let post = poster.clone();
+        let (skip, skip_action) = button(
+            words(language, "직접 입력", "Enter manually"),
+            "pencil",
+            false,
+            rect(362.0 - retry_width, 261.0, retry_width, 24.0),
+            move || post.post(Msg::Tasks(tasks::Msg::SkipSuggestion)),
+            mtm,
+        );
+        skip.setToolTip(Some(&ns(words(
+            language,
+            "추천을 멈추고 제목과 메모를 직접 입력합니다",
+            "Stop the suggestion and type the title and note yourself",
+        ))));
+        skip.setHidden(true);
+        body.addSubview(&skip);
         let post = poster.clone();
         let settings_width = if language == Language::Korean { 54.0 } else { 74.0 };
         let (settings, settings_action) = button(words(language, "설정", "Settings"), "", false, rect(332.0 - settings_width, 16.0, settings_width, 27.0),
@@ -282,6 +304,7 @@ impl TaskForm {
             files,
             go,
             retry,
+            skip,
             add,
             settings,
             accept_memo,
@@ -289,10 +312,13 @@ impl TaskForm {
             cancel,
             selected,
             key: None,
+            locked: false,
+            resume_memo: false,
             attachments: vec![],
             _actions: vec![
                 close_action,
                 retry_action,
+                skip_action,
                 settings_action,
                 accept_action,
                 add_action,
@@ -331,6 +357,7 @@ impl TaskForm {
             )
         } else {
             self.key = None;
+            self.locked = false;
             return false;
         };
         let changed = self.key.as_ref() != Some(&key);
@@ -358,6 +385,31 @@ impl TaskForm {
         }
         self.title.setEditable(draft.is_some());
         self.memo.setEditable(draft.is_some());
+        // Typing while a suggestion is on its way would make the answer give way to it, so the fields wait.
+        let locked = draft.is_some_and(|d| d.locked());
+        let freed = self.locked && !locked && !changed && draft.is_some();
+        if changed {
+            self.resume_memo = false;
+        }
+        if locked && !self.locked {
+            // A field being typed into gives the typing up before it dims, and takes it back when freed.
+            let typing = (self.title.currentEditor().is_some(), self.memo.currentEditor().is_some());
+            self.resume_memo = !changed && typing.1;
+            if (typing.0 || typing.1) && let Some(window) = self.body.window() {
+                window.makeFirstResponder(Some(&self.body));
+            }
+        }
+        self.locked = locked;
+        self.title.setEnabled(!locked);
+        self.memo.setEnabled(!locked);
+        // The person may have gone back to another app while waiting; typing is not taken from it.
+        if freed && let Some(window) = self.body.window() && window.isKeyWindow() {
+            let field = if self.resume_memo { &self.memo } else { &self.title };
+            window.makeFirstResponder(Some(field));
+            if let Some(editor) = field.currentEditor() {
+                editor.setSelectedRange(objc2_foundation::NSRange::new(field.stringValue().length(), 0));
+            }
+        }
         let error = draft
             .and_then(|d| d.error.as_deref())
             .or(state.error.as_deref());
@@ -371,8 +423,8 @@ impl TaskForm {
             } else if draft.is_some_and(|d| d.generating) {
                 words(
                     self.language,
-                    "AI가 제목과 메모를 추천하는 중...",
-                    "Suggesting a title and note...",
+                    "AI가 제목과 메모를 추천하는 중... 끝나면 수정할 수 있어요.",
+                    "Suggesting a title and note... You can edit them after.",
                 )
             } else if draft.is_none() {
                 words(self.language, "첨부파일을 누르면 다시 열 수 있어요.", "Click an attachment to open it again.")
@@ -405,7 +457,9 @@ impl TaskForm {
                     !d.importing && !d.title.trim().is_empty() && !d.attachments.is_empty()
                 }),
         );
-        self.retry.setHidden(draft.is_none());
+        let suggesting = draft.is_some_and(|d| d.generating);
+        self.retry.setHidden(draft.is_none() || suggesting);
+        self.skip.setHidden(!suggesting);
         self.retry.setEnabled(
             draft.is_some_and(|d| !d.importing && !d.generating && !d.attachments.is_empty()),
         );
@@ -416,7 +470,9 @@ impl TaskForm {
         self.cancel.setHidden(draft.is_none());
         let suggestion = draft.filter(|d| d.memo.is_empty() && !d.memo_edited).and_then(|d| d.memo_suggestion.clone());
         *self.memo_suggestion.borrow_mut() = suggestion.clone();
-        self.memo.setPlaceholderString(Some(&ns(suggestion.as_deref().unwrap_or(words(self.language, "기억할 내용을 적어 두세요", "Anything to remember")))));
+        // AppKit draws a dimmed field's placeholder darker than its text, which reads as a note already typed.
+        let placeholder = if locked { "" } else { suggestion.as_deref().unwrap_or(words(self.language, "기억할 내용을 적어 두세요", "Anything to remember")) };
+        self.memo.setPlaceholderString(Some(&ns(placeholder)));
         self.accept_memo.setHidden(suggestion.is_none());
         self.accept_memo.setToolTip(suggestion.as_ref().map(|text| ns(text)).as_deref());
         let provider = if state.settings.provider == Provider::Claude { "Claude Code" } else { "Codex" };
@@ -475,7 +531,8 @@ impl TaskForm {
         }
         changed && draft.is_some()
     }
+    /// Where typing goes when the form takes it: the title, or nowhere in particular while the fields wait.
     pub fn focus(&self) -> &NSView {
-        &self.title
+        if self.locked { &self.body } else { &self.title }
     }
 }

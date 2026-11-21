@@ -66,6 +66,10 @@ pub struct Draft {
     pub generating: bool,
     pub error: Option<String>,
 }
+impl Draft {
+    /// The title and note are not typed into while the attachments are copied or a suggestion is on its way.
+    pub fn locked(&self) -> bool { self.importing || self.generating }
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct State {
     pub records: Vec<Task>,
@@ -126,6 +130,8 @@ pub enum Msg {
     SettingsSaved { settings: AiSettings, result: Result<(), String> },
     ModelsRead(Vec<ModelOption>),
     Retry,
+    /// Stop waiting for the suggestion and type the title and note by hand.
+    SkipSuggestion,
     Imported {
         token: u64,
         result: Result<Vec<Attachment>, String>,
@@ -336,6 +342,15 @@ pub fn update(state: &mut State, msg: Msg, now: Timestamp) -> Vec<Effect> {
                 if draft.memo.is_empty() { draft.memo_edited = false; }
             }
             generate(state)
+        }
+        Msg::SkipSuggestion => {
+            let Some(draft) = state.draft.as_mut().filter(|d| d.generating) else {
+                return vec![];
+            };
+            // A new revision makes the answer already on its way a stale one.
+            draft.generating = false;
+            draft.revision += 1;
+            vec![Effect::CancelTitle]
         }
         Msg::Generated {
             token,

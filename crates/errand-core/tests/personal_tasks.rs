@@ -122,6 +122,39 @@ fn draft_needs_confirmation_and_late_ai_preserves_edits() {
     assert!(state.draft.is_none());
 }
 #[test]
+fn fields_stay_locked_until_the_suggestion_ends_or_is_skipped() {
+    let mut state = State::default();
+    update(&mut state, Msg::Drop(vec![Input::File("a.png".into())]), now());
+    assert!(state.draft.as_ref().unwrap().locked(), "the attachments are still being copied");
+    assert!(update(&mut state, Msg::SkipSuggestion, now()).is_empty(), "there is no suggestion to stop yet");
+    assert!(state.draft.as_ref().unwrap().locked());
+    let token = state.draft.as_ref().unwrap().token;
+    update(&mut state, Msg::Imported { token, result: Ok(vec![file()]) }, now());
+    let waiting = state.draft.clone().unwrap();
+    assert!(waiting.locked(), "the suggestion is on its way");
+    // Skipping stops the request and frees the fields; the answer already on its way changes nothing.
+    assert_eq!(update(&mut state, Msg::SkipSuggestion, now()), vec![Effect::CancelTitle]);
+    assert!(!state.draft.as_ref().unwrap().locked());
+    let late = Suggestion { title: "늦은 제목".into(), memo: "늦은 메모".into() };
+    update(&mut state, Msg::Generated { token, revision: waiting.revision, result: Ok(late) }, now());
+    let draft = state.draft.clone().unwrap();
+    assert_eq!((draft.title.as_str(), draft.memo_suggestion), ("request.png", None));
+    // Asking again locks them until the answer comes, or fails.
+    assert!(matches!(&update(&mut state, Msg::Retry, now())[..], [Effect::Generate { .. }]));
+    let waiting = state.draft.clone().unwrap();
+    assert!(waiting.locked());
+    update(&mut state, Msg::Generated { token, revision: waiting.revision, result: Err("failed".into()) }, now());
+    let draft = state.draft.clone().unwrap();
+    assert!(!draft.locked() && draft.error.is_some());
+    assert!(update(&mut state, Msg::SkipSuggestion, now()).is_empty(), "nothing is left to stop");
+    update(&mut state, Msg::Retry, now());
+    let waiting = state.draft.clone().unwrap();
+    let answer = Suggestion { title: "문서 확인".into(), memo: String::new() };
+    update(&mut state, Msg::Generated { token, revision: waiting.revision, result: Ok(answer) }, now());
+    let draft = state.draft.clone().unwrap();
+    assert!(!draft.locked() && draft.title == "문서 확인");
+}
+#[test]
 fn cancellation_and_provider_switch_ignore_old_results() {
     let mut state = State::default();
     draft(&mut state);

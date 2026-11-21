@@ -125,14 +125,17 @@ pub fn state(arguments: &[String], now: Timestamp, language: Language) -> AppSta
                 },
                 now,
             );
-            tasks::update(
-                &mut state.tasks,
-                tasks::Msg::Title("온보딩 문서 수정안 확인하기".into()),
-                now,
-            );
-            let draft = state.tasks.draft.as_mut().unwrap();
-            draft.memo_suggestion = Some("금요일 회의 전에 의견 보내기".into());
-            draft.generating = false;
+            // With `--preview-suggesting` the draft stays as it is while the suggestion is on its way.
+            if !has("--preview-suggesting") {
+                tasks::update(
+                    &mut state.tasks,
+                    tasks::Msg::Title("온보딩 문서 수정안 확인하기".into()),
+                    now,
+                );
+                let draft = state.tasks.draft.as_mut().unwrap();
+                draft.memo_suggestion = Some("금요일 회의 전에 의견 보내기".into());
+                draft.generating = false;
+            }
         } else {
             state.tasks.records.push(tasks::Task {
                 id: "manual:preview".into(),
